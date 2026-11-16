@@ -1,0 +1,524 @@
+{
+  "concurrency" : 0,
+  "endpoint" : "http:\/\/127.0.0.1:9102",
+  "generatedAt" : "2026-11-16T20:53:16Z",
+  "memoryBudgetMB" : 0,
+  "mode" : "both",
+  "network" : "wired",
+  "partSizeMB" : 0,
+  "profile" : "localhost",
+  "runs" : 3,
+  "scenarios" : [
+    {
+      "medianElapsedSeconds" : 0.01008296012878418,
+      "medianMegabytesPerSecond" : 396.7088978742522,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "peakFootprintBytes" : 11632640,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.010336995124816895,
+          "megabytesPerSecond" : 386.959648495612,
+          "peakFootprintBytes" : 11534336,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.009992003440856934,
+          "megabytesPerSecond" : 400.3201183502547,
+          "peakFootprintBytes" : 11583488,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.01008296012878418,
+          "megabytesPerSecond" : 396.7088978742522,
+          "peakFootprintBytes" : 11632640,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "medianElapsedSeconds" : 0.0021260976791381836,
+      "medianMegabytesPerSecond" : 1881.3811045696664,
+      "mode" : "baseline",
+      "operation" : "download",
+      "peakFootprintBytes" : 20561920,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.0021799802780151367,
+          "megabytesPerSecond" : 1834.8789850713622,
+          "peakFootprintBytes" : 20414464,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.0021260976791381836,
+          "megabytesPerSecond" : 1881.3811045696664,
+          "peakFootprintBytes" : 20480000,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.002030014991760254,
+          "megabytesPerSecond" : 1970.4287979329379,
+          "peakFootprintBytes" : 20561920,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "concurrency" : 1,
+      "medianElapsedSeconds" : 0.010004043579101562,
+      "medianMegabytesPerSecond" : 399.8383222116301,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 1,
+      "partSizeBytes" : 4194304,
+      "peakFootprintBytes" : 20627456,
+      "profile" : "localhost",
+      "reason" : "single PUT",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.01019299030303955,
+          "megabytesPerSecond" : 392.42654815507865,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20611072,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.010004043579101562,
+          "megabytesPerSecond" : 399.8383222116301,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20627456,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.00997006893157959,
+          "megabytesPerSecond" : 401.200836970168,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20627456,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "concurrency" : 1,
+      "medianElapsedSeconds" : 0.0016889572143554688,
+      "medianMegabytesPerSecond" : 2368.3252399774137,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 1,
+      "partSizeBytes" : 4194304,
+      "peakFootprintBytes" : 20774912,
+      "profile" : "localhost",
+      "reason" : "below 8.00 MiB parallel threshold",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.0017809867858886719,
+          "megabytesPerSecond" : 2245.945917001339,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20725760,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.0016889572143554688,
+          "megabytesPerSecond" : 2368.3252399774137,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20774912,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.0016089677810668945,
+          "megabytesPerSecond" : 2486.065940579388,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 20774912,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "medianElapsedSeconds" : 0.07774698734283447,
+      "medianMegabytesPerSecond" : 411.5915110497111,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "peakFootprintBytes" : 50315264,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.07774698734283447,
+          "megabytesPerSecond" : 411.5915110497111,
+          "peakFootprintBytes" : 50315264,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.07501006126403809,
+          "megabytesPerSecond" : 426.609436930852,
+          "peakFootprintBytes" : 50315264,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.07912194728851318,
+          "megabytesPerSecond" : 404.43898433533263,
+          "peakFootprintBytes" : 50315264,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 0.011237025260925293,
+      "medianMegabytesPerSecond" : 2847.728758897977,
+      "mode" : "baseline",
+      "operation" : "download",
+      "peakFootprintBytes" : 89636864,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.011237025260925293,
+          "megabytesPerSecond" : 2847.728758897977,
+          "peakFootprintBytes" : 89587712,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.01084589958190918,
+          "megabytesPerSecond" : 2950.4237761315426,
+          "peakFootprintBytes" : 89636864,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.0145111083984375,
+          "megabytesPerSecond" : 2205.2071503680336,
+          "peakFootprintBytes" : 89636864,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 7,
+      "medianElapsedSeconds" : 0.023773908615112305,
+      "medianMegabytesPerSecond" : 1346.0134182419897,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 7,
+      "partSizeBytes" : 5242880,
+      "peakFootprintBytes" : 257753088,
+      "profile" : "localhost",
+      "reason" : "wired, 153.2 MB\/s\/connection, 7 parts of 5.00 MiB",
+      "requests" : 9,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 0.023773908615112305,
+          "megabytesPerSecond" : 1346.0134182419897,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 185712640,
+          "requests" : 9,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 0.02486288547515869,
+          "megabytesPerSecond" : 1287.0589792151127,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 220626944,
+          "requests" : 9,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 0.022714972496032715,
+          "megabytesPerSecond" : 1408.7624365642073,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 257753088,
+          "requests" : 9,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 1,
+      "medianElapsedSeconds" : 0.0076160430908203125,
+      "medianMegabytesPerSecond" : 4201.656899574255,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 1,
+      "partSizeBytes" : 33554432,
+      "peakFootprintBytes" : 258326528,
+      "profile" : "localhost",
+      "reason" : "low round-trip link",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.007597088813781738,
+          "megabytesPerSecond" : 4212.139779378305,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 33554432,
+          "peakFootprintBytes" : 257785856,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.008008956909179688,
+          "megabytesPerSecond" : 3995.5265539414145,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 33554432,
+          "peakFootprintBytes" : 258326528,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.0076160430908203125,
+          "megabytesPerSecond" : 4201.656899574255,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 33554432,
+          "peakFootprintBytes" : 258326528,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 0.29568397998809814,
+      "medianMegabytesPerSecond" : 432.8946059409517,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "peakFootprintBytes" : 357367808,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.2950810194015503,
+          "megabytesPerSecond" : 433.77917108865563,
+          "peakFootprintBytes" : 357335040,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.29612505435943604,
+          "megabytesPerSecond" : 432.2498151224781,
+          "peakFootprintBytes" : 357367808,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.29568397998809814,
+          "megabytesPerSecond" : 432.8946059409517,
+          "peakFootprintBytes" : 357367808,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "medianElapsedSeconds" : 0.038363099098205566,
+      "medianMegabytesPerSecond" : 3336.5396177283083,
+      "mode" : "baseline",
+      "operation" : "download",
+      "peakFootprintBytes" : 501497856,
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.04189097881317139,
+          "megabytesPerSecond" : 3055.5504699678722,
+          "peakFootprintBytes" : 500891648,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.03638803958892822,
+          "megabytesPerSecond" : 3517.639351995938,
+          "peakFootprintBytes" : 501039104,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.038363099098205566,
+          "megabytesPerSecond" : 3336.5396177283083,
+          "peakFootprintBytes" : 501497856,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "concurrency" : 8,
+      "medianElapsedSeconds" : 0.09645307064056396,
+      "medianMegabytesPerSecond" : 1327.0702441086285,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 8,
+      "partSizeBytes" : 16777216,
+      "peakFootprintBytes" : 625131520,
+      "profile" : "localhost",
+      "reason" : "wired, 176.4 MB\/s\/connection, 8 parts of 16.00 MiB, staged parts",
+      "requests" : 10,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.09387803077697754,
+          "megabytesPerSecond" : 1363.4712929171333,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 16777216,
+          "peakFootprintBytes" : 620658688,
+          "requests" : 10,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.09645307064056396,
+          "megabytesPerSecond" : 1327.0702441086285,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 16777216,
+          "peakFootprintBytes" : 620806144,
+          "requests" : 10,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.1506730318069458,
+          "megabytesPerSecond" : 849.5216328029007,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 16777216,
+          "peakFootprintBytes" : 625131520,
+          "requests" : 10,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "concurrency" : 1,
+      "medianElapsedSeconds" : 0.020516037940979004,
+      "medianMegabytesPerSecond" : 6239.02141184537,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 1,
+      "partSizeBytes" : 134217728,
+      "peakFootprintBytes" : 625131520,
+      "profile" : "localhost",
+      "reason" : "low round-trip link",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.020957112312316895,
+          "megabytesPerSecond" : 6107.711696748028,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 134217728,
+          "peakFootprintBytes" : 625131520,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.020516037940979004,
+          "megabytesPerSecond" : 6239.02141184537,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 134217728,
+          "peakFootprintBytes" : 625131520,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 1,
+          "elapsedSeconds" : 0.020486950874328613,
+          "megabytesPerSecond" : 6247.879481196576,
+          "parallel" : false,
+          "partCount" : 1,
+          "partSizeBytes" : 134217728,
+          "peakFootprintBytes" : 625131520,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    }
+  ],
+  "schema" : "backu.benchmark.v2",
+  "sizesMB" : [
+    4,
+    32,
+    128
+  ],
+  "warmups" : 1
+}

@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 // Standalone benchmark for Backu's S3 transfer layer.
 //
 // It is compiled with swiftc against the app's real sources, so the numbers come
@@ -27,8 +31,10 @@ struct Options {
     var concurrency = 0
     /// 0 means "let TransferTuning decide".
     var partSizeMB = 0
+    /// 0 means "let the planner derive it from physical memory".
+    var memoryBudgetMB = 0
     var network = "wifi"
-    var pass = "pass2"
+    var pass = "pass3"
     var output: String?
     var prefix = "bench"
 
@@ -56,6 +62,7 @@ struct Options {
             case "--warmups": options.warmups = max(0, Int(value()) ?? 1)
             case "--concurrency": options.concurrency = max(0, Int(value()) ?? 0)
             case "--part-size-mb": options.partSizeMB = max(0, Int(value()) ?? 0)
+            case "--memory-budget-mb": options.memoryBudgetMB = max(0, Int(value()) ?? 0)
             case "--network": options.network = value()
             case "--pass": options.pass = value()
             case "--output": options.output = value()
@@ -88,8 +95,10 @@ struct Options {
       --warmups N           warm-up runs (default 1)
       --concurrency N       0 = adaptive (default), >0 forces a cap
       --part-size-mb N      0 = adaptive (default), >0 forces a part size
+      --memory-budget-mb N  0 = derive from RAM (default), >0 overrides the
+                            in-flight part payload budget (debugging aid)
       --network NAME        wifi, wired, cellular, expensive, constrained or unknown
-      --pass NAME           results prefix (default pass2)
+      --pass NAME           results prefix (default pass3)
       --output PATH         JSON report path
       --prefix KEY          object key prefix (default bench)
     """
@@ -104,6 +113,8 @@ struct Sample: Codable {
     var concurrency: Int?
     var partCount: Int?
     var parallel: Bool?
+    /// Peak physical footprint during this transfer, from a 25 ms sampler.
+    var peakFootprintBytes: Int64?
 }
 
 struct Scenario: Codable {
@@ -119,6 +130,7 @@ struct Scenario: Codable {
     var concurrency: Int?
     var partCount: Int?
     var reason: String?
+    var peakFootprintBytes: Int64?
     var samples: [Sample]
 }
 
@@ -134,6 +146,7 @@ struct Report: Codable {
     var warmups: Int
     var concurrency: Int
     var partSizeMB: Int
+    var memoryBudgetMB: Int
     var scenarios: [Scenario]
 }
 
@@ -158,6 +171,62 @@ func megabytes(_ bytes: Int) -> Double {
     Double(bytes) / (1024 * 1024)
 }
 
+/// Internal (anonymous) memory: what the app itself allocated. File-backed
+/// pages, such as a mapped part file, are reclaimable and are excluded, so this
+/// is the number that decides whether a phone gets killed under pressure.
+func internalMemory() -> Int64 {
+    #if canImport(Darwin)
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return Int64(bitPattern: info.internal)
+    #else
+    return 0
+    #endif
+}
+
+/// Samples memory while one transfer runs so the report can prove the payload
+/// budget instead of asserting it.
+final class MemorySampler: @unchecked Sendable {
+    private let lock = NSLock()
+    private var peak: Int64 = 0
+    private var task: Task<Void, Never>?
+
+    func start() {
+        peak = internalMemory()
+        task = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard let self, !Task.isCancelled else { return }
+                self.record(internalMemory())
+            }
+        }
+    }
+
+    /// Kept synchronous so the sampler never touches `NSLock` from an async
+    /// context.
+    private func record(_ value: Int64) {
+        lock.lock()
+        peak = max(peak, value)
+        lock.unlock()
+    }
+
+    func stop() -> Int64 {
+        task?.cancel()
+        task = nil
+        record(internalMemory())
+        lock.lock()
+        let result = peak
+        lock.unlock()
+        return result
+    }
+}
+
 func describe(_ scenario: Scenario) -> String {
     let plan: String
     if let partSize = scenario.partSizeBytes, let concurrency = scenario.concurrency {
@@ -170,8 +239,14 @@ func describe(_ scenario: Scenario) -> String {
     } else {
         plan = ""
     }
+    let memory: String
+    if let peak = scenario.peakFootprintBytes, peak > 0 {
+        memory = String(format: "  peak=%4.0fMiB", Double(peak) / (1024 * 1024))
+    } else {
+        memory = ""
+    }
     return String(
-        format: "%-9s %-9s %5d MiB  %8.2f MB/s  %7.2fs  req=%-4d retry=%-3d%@",
+        format: "%-9s %-9s %5d MiB  %8.2f MB/s  %7.2fs  req=%-4d retry=%-3d%@%@",
         (scenario.mode as NSString).utf8String!,
         (scenario.operation as NSString).utf8String!,
         scenario.sizeMB,
@@ -179,7 +254,8 @@ func describe(_ scenario: Scenario) -> String {
         scenario.medianElapsedSeconds,
         scenario.requests,
         scenario.retries,
-        plan
+        plan,
+        memory
     )
 }
 
@@ -262,6 +338,7 @@ func run() async -> Int32 {
         warmups: options.warmups,
         concurrency: options.concurrency,
         partSizeMB: options.partSizeMB,
+        memoryBudgetMB: options.memoryBudgetMB,
         scenarios: []
     )
 
@@ -293,6 +370,8 @@ func run() async -> Int32 {
                     let measured = runIndex >= options.warmups
                     let planBox = PlanBox()
                     metrics.reset()
+                    let sampler = MemorySampler()
+                    sampler.start()
                     let started = Date()
                     do {
                         if operation == "upload" {
@@ -304,6 +383,7 @@ func run() async -> Int32 {
                                 sizeMB: sizeMB,
                                 mode: mode,
                                 runIndex: runIndex,
+                                workDirectory: workDirectory,
                                 planBox: planBox
                             )
                         } else {
@@ -324,6 +404,7 @@ func run() async -> Int32 {
                         return 1
                     }
                     let elapsed = Date().timeIntervalSince(started)
+                    let peakFootprint = sampler.stop()
                     let snapshot = metrics.snapshot()
                     let plan = planBox.take()
                     if let plan { lastPlan = plan }
@@ -337,7 +418,8 @@ func run() async -> Int32 {
                                 partSizeBytes: plan?.partSize,
                                 concurrency: plan?.concurrency,
                                 partCount: plan?.partCount,
-                                parallel: plan?.parallel
+                                parallel: plan?.parallel,
+                                peakFootprintBytes: peakFootprint
                             )
                         )
                     }
@@ -355,6 +437,7 @@ func run() async -> Int32 {
                     concurrency: lastPlan?.concurrency,
                     partCount: lastPlan?.partCount,
                     reason: lastPlan?.reason,
+                    peakFootprintBytes: samples.compactMap(\.peakFootprintBytes).max(),
                     samples: samples
                 )
                 report.scenarios.append(scenario)
@@ -396,6 +479,7 @@ func upload(
     sizeMB: Int,
     mode: String,
     runIndex: Int,
+    workDirectory: URL,
     planBox: PlanBox
 ) async throws {
     let key = "\(options.prefix)/upload/\(sizeMB)/\(mode)-\(runIndex).bin"
@@ -409,6 +493,10 @@ func upload(
         concurrency: options.concurrency > 0 ? options.concurrency : nil,
         threshold: MultipartUploader.defaultThreshold,
         tuning: tuning,
+        // Keep the benchmark's upload journal next to its own scratch files
+        // instead of the app's Application Support copy.
+        journal: MultipartUploadJournal(fileURL: workDirectory.appendingPathComponent("upload-journal.json")),
+        memoryBudget: options.memoryBudgetMB > 0 ? Int64(options.memoryBudgetMB) * 1024 * 1024 : nil,
         onPlan: { plan in planBox.set(plan) }
     )
     _ = try await uploader.upload(fileURL: source, key: key, contentType: "application/octet-stream")

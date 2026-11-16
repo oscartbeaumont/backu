@@ -140,6 +140,16 @@ final class NewRetryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.045)
     }
 
+    func testParallelTransfersRetryLongerThanMetadataRequests() {
+        // A range or part is one of many requests; a single unlucky response
+        // must not fail the object, so it gets a longer budget than a HEAD.
+        XCTAssertGreaterThan(
+            S3RetryPolicy.parallelTransfer.maxAttempts,
+            S3RetryPolicy.default.maxAttempts
+        )
+        XCTAssertEqual(S3RetryPolicy.parallelTransfer.maxAttempts, 7)
+    }
+
     func testCancellationStopsRetries() async {
         let policy = S3RetryPolicy(
             maxAttempts: 5,

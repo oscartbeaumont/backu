@@ -31,98 +31,128 @@ extension S3Client {
         var roundTrip: TimeInterval?
         var etag: String?
         var supportsRanges = true
+        // A hint alone cannot decide whether ranges pay off, so a large object
+        // still probes. The probe is served from the short-lived HEAD cache when
+        // this object was opened recently, which skips a round trip on every
+        // repeated viewer open.
+        var needsProbe = hint == nil || size >= Self.parallelDownloadThreshold
+        // A 412 means the cached metadata (or a resumed partial file) belongs to
+        // an older object version. Re-probe once, fresh, and start over.
+        var preconditionRetries = 0
 
-        // An unknown size needs a HEAD anyway; a large object uses it as the
-        // latency probe that decides whether ranges are worth the extra
-        // requests and the concatenation pass.
-        if hint == nil || size >= Self.parallelDownloadThreshold {
-            let probeStarted = Date()
-            let head = try await headObject(key: key)
-            roundTrip = Date().timeIntervalSince(probeStarted)
-            guard let head else {
-                throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
-            }
-            size = head.size
-            etag = head.etag
-            supportsRanges = head.acceptRanges != false
-        }
-
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        progress?(0)
-
-        if size == 0 {
-            try Data().write(to: destination, options: .atomic)
-            progress?(1)
-            return
-        }
-
-        let plan = tuning.plan(
-            serverKey: connection.transferTuningKey,
-            direction: .download,
-            size: size,
-            latency: roundTrip,
-            minimumLatencyForParallel: minimumRoundTripForParallel,
-            concurrencyCap: concurrency > 0 ? concurrency : nil
-        )
-        onPlan?(plan)
-
-        if plan.parallel, plan.partCount > 1, plan.concurrency > 1, supportsRanges {
-            do {
-                try await downloadParallel(
-                    key: key,
-                    to: destination,
-                    size: size,
-                    plan: plan,
-                    etag: etag,
-                    progress: progress
-                )
-                record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: plan)
-                return
-            } catch S3DownloadError.rangeUnsupported {
-                // The service ignored Range. Fall back to one stream; any part
-                // files were already cleaned up.
-            }
-        }
-
-        var single = plan
-        single.concurrency = 1
-        single.partCount = 1
-        single.parallel = false
-        single.reason = "single stream"
-
-        // A 412 means the object changed between the HEAD and the GET (or a
-        // resumed partial file belongs to an older version). Re-probe once so
-        // the viewer gets the current bytes instead of a failure.
-        var recovered = false
         while true {
-            do {
-                try await downloadSingle(
+            if needsProbe {
+                let (head, latency) = try await headObjectForDownload(
                     key: key,
-                    to: destination,
-                    size: size,
-                    etag: etag,
-                    progress: progress
+                    useCache: preconditionRetries == 0
                 )
-                break
-            } catch let error as S3Error {
-                guard !recovered,
-                      case let .http(status, _, _, _) = error,
-                      status == 412 else { throw error }
-                recovered = true
-                try? FileManager.default.removeItem(at: destination.appendingPathExtension("part"))
-                try? FileManager.default.removeItem(at: destination)
-                let head = try await headObject(key: key)
+                roundTrip = latency
                 guard let head else {
                     throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
                 }
                 size = head.size
                 etag = head.etag
+                supportsRanges = head.acceptRanges != false
+                needsProbe = false
             }
+
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            progress?(0)
+
+            if size == 0 {
+                try Data().write(to: destination, options: .atomic)
+                progress?(1)
+                return
+            }
+
+            let plan = tuning.plan(
+                serverKey: connection.transferTuningKey,
+                direction: .download,
+                size: size,
+                latency: roundTrip,
+                minimumLatencyForParallel: minimumRoundTripForParallel,
+                concurrencyCap: concurrency > 0 ? concurrency : nil
+            )
+            onPlan?(plan)
+
+            if plan.parallel, plan.partCount > 1, plan.concurrency > 1, supportsRanges {
+                do {
+                    try await downloadParallel(
+                        key: key,
+                        to: destination,
+                        size: size,
+                        plan: plan,
+                        etag: etag,
+                        progress: progress
+                    )
+                    record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: plan)
+                    return
+                } catch S3DownloadError.rangeUnsupported {
+                    // The service ignored Range. Fall back to one stream; any
+                    // part files were already cleaned up.
+                    supportsRanges = false
+                } catch let error as S3Error {
+                    if case let .http(status, _, _, _) = error,
+                       status == 412,
+                       preconditionRetries == 0 {
+                        preconditionRetries = 1
+                        invalidateCachedHead(key: key)
+                        needsProbe = true
+                        continue
+                    }
+                    tuning.penalise(serverKey: connection.transferTuningKey, direction: .download)
+                    throw error
+                } catch {
+                    if !(error is CancellationError) {
+                        tuning.penalise(serverKey: connection.transferTuningKey, direction: .download)
+                    }
+                    throw error
+                }
+            }
+
+            var single = plan
+            single.concurrency = 1
+            single.partCount = 1
+            single.parallel = false
+            single.reason = "single stream"
+
+            // A 412 means the object changed between the HEAD and the GET (or a
+            // resumed partial file belongs to an older version). Re-probe once so
+            // the viewer gets the current bytes instead of a failure.
+            var recovered = preconditionRetries > 0
+            while true {
+                do {
+                    try await downloadSingle(
+                        key: key,
+                        to: destination,
+                        size: size,
+                        etag: etag,
+                        progress: progress
+                    )
+                    break
+                } catch let error as S3Error {
+                    guard !recovered,
+                          case let .http(status, _, _, _) = error,
+                          status == 412 else { throw error }
+                    recovered = true
+                    try? FileManager.default.removeItem(at: destination.appendingPathExtension("part"))
+                    try? FileManager.default.removeItem(at: destination)
+                    invalidateCachedHead(key: key)
+                    let (head, latency) = try await headObjectForDownload(key: key, useCache: false)
+                    roundTrip = latency
+                    guard let head else {
+                        throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
+                    }
+                    size = head.size
+                    etag = head.etag
+                }
+            }
+            record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: single)
+            return
         }
-        record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: single)
     }
 
     private func record(
@@ -240,7 +270,8 @@ extension S3Client {
         etag: String?,
         progress: (@Sendable (Double) -> Void)?
     ) async throws {
-        let partCount = max(2, plan.partCount)
+        let maximumRanges = Int(max(1, size / TransferPlanner.minimumDownloadRangeSize))
+        let partCount = max(2, min(plan.partCount, maximumRanges))
         let concurrency = max(1, min(plan.concurrency, partCount))
         let base = size / Int64(partCount)
         let tempRoot = destination.deletingLastPathComponent()
@@ -255,9 +286,25 @@ extension S3Client {
             return (index, start, end)
         }
 
-        var downloaded: [Int: URL] = [:]
+        // Assembled inside the per-download directory, so a crash or failure
+        // can never leave a full-length `.part` that the single-stream resume
+        // path would mistake for a complete download. The final move into place
+        // is still atomic.
+        let assembled = tempRoot.appendingPathComponent("assembled.bin")
+        FileManager.default.createFile(atPath: assembled.path, contents: nil)
+        let output = try FileHandle(forWritingTo: assembled)
+        // Pre-size once so every range can be written at its own offset with
+        // `pwrite`; the kernel allocates blocks as they arrive.
         do {
-            try await withThrowingTaskGroup(of: (Int, URL, Int64).self) { group in
+            try output.truncate(atOffset: UInt64(size))
+        } catch {
+            try? output.close()
+            throw error
+        }
+        let descriptor = output.fileDescriptor
+
+        do {
+            try await withThrowingTaskGroup(of: (Int, URL, Int64, Int64).self) { group in
                 var next = 0
                 var inFlight = 0
                 while next < ranges.count || inFlight > 0 {
@@ -281,20 +328,25 @@ extension S3Client {
                                 index: range.index,
                                 temporaryDirectory: tempRoot
                             )
-                            return (range.index, url, length)
+                            return (range.index, url, range.start, length)
                         }
                     }
-                    guard let (index, url, length) = try await group.next() else { break }
+                    guard let (index, url, start, length) = try await group.next() else { break }
                     inFlight -= 1
                     guard length == fileSize(url) else {
+                        try? FileManager.default.removeItem(at: url)
                         throw S3Error.decoding("Range \(index) downloaded the wrong number of bytes")
                     }
-                    downloaded[index] = url
+                    // Copy the finished range straight into its slot while the
+                    // remaining ranges are still on the wire, instead of a
+                    // sequential concatenation pass after everything finished.
+                    try writeRange(of: url, into: descriptor, at: start)
+                    try? FileManager.default.removeItem(at: url)
                     tracker.finished(index: index, length: length)
                 }
             }
         } catch {
-            for url in downloaded.values { try? FileManager.default.removeItem(at: url) }
+            try? output.close()
             if error is CancellationError, !Task.isCancelled {
                 // A sibling range hit a service that ignores Range and the
                 // group cancelled the rest; fall back to a single stream.
@@ -302,36 +354,14 @@ extension S3Client {
             }
             throw error
         }
+        try output.close()
 
-        let partial = destination.appendingPathExtension("part")
-        try? FileManager.default.removeItem(at: partial)
-        FileManager.default.createFile(atPath: partial.path, contents: nil)
-        let output = try FileHandle(forWritingTo: partial)
-        do {
-            for index in 0..<partCount {
-                guard let url = downloaded[index] else {
-                    throw S3Error.decoding("Missing range \(index)")
-                }
-                let input = try FileHandle(forReadingFrom: url)
-                while true {
-                    let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
-                    if chunk.isEmpty { break }
-                    try output.write(contentsOf: chunk)
-                }
-                try? input.close()
-                try? FileManager.default.removeItem(at: url)
-            }
-            try output.close()
-        } catch {
-            try? output.close()
-            throw error
-        }
-
-        let written = fileSize(partial)
+        let written = fileSize(assembled)
         guard written == size else {
+            try? FileManager.default.removeItem(at: assembled)
             throw S3Error.decoding("Assembled \(written) of \(size) bytes")
         }
-        try replace(destination: destination, with: partial)
+        try replace(destination: destination, with: assembled)
         progress?(1)
     }
 
@@ -400,7 +430,9 @@ extension S3Client {
         temporaryDirectory: URL? = nil,
         progress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws -> (URL, URLResponse) {
-        let policy = S3RetryPolicy.default
+        // A range is one request among many; a longer budget keeps one unlucky
+        // response from failing the whole object.
+        let policy = S3RetryPolicy.parallelTransfer
         var attempt = 0
         while true {
             if Task.isCancelled { throw CancellationError() }
@@ -486,6 +518,37 @@ extension S3Client {
 
     private func fileSize(_ url: URL) -> Int64 {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// Copies `source` into the already-open destination at `offset`. `pwrite`
+    /// makes concurrent callers safe for distinct offsets and needs no shared
+    /// seek position or lock.
+    private func writeRange(of source: URL, into descriptor: Int32, at offset: Int64) throws {
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        var position = offset
+        while true {
+            let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            try chunk.withUnsafeBytes { buffer in
+                guard let base = buffer.baseAddress, buffer.count > 0 else { return }
+                var written = 0
+                while written < buffer.count {
+                    let result = pwrite(
+                        descriptor,
+                        base.advanced(by: written),
+                        buffer.count - written,
+                        off_t(position) + off_t(written)
+                    )
+                    if result < 0 {
+                        if errno == EINTR { continue }
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    written += result
+                }
+            }
+            position += Int64(chunk.count)
+        }
     }
 
     private func append(_ source: URL, to destination: URL) throws {

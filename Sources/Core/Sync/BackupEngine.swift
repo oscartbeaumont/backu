@@ -203,6 +203,10 @@ final class BackupEngine {
 
         runTask = Task { [weak self] in
             guard let self else { return }
+            // A previous launch may have died between CreateMultipartUpload and
+            // Complete/Abort. Clean those up before starting new work; the
+            // bucket lifecycle rule is the backstop for ids we never saw.
+            await client.abortStaleMultipartUploads()
             if candidates.isEmpty {
                 // Still publish the index so names and tags edited while every
                 // photo was already uploaded reach the bucket.

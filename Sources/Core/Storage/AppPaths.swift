@@ -68,6 +68,27 @@ enum AppPaths {
         }
         pruneDirectory(imageCache, maxBytes: 500 * 1024 * 1024)
         pruneDirectory(thumbnailCache, maxBytes: 250 * 1024 * 1024)
+        pruneStaleTransferScratch()
+    }
+
+    /// A process killed mid-download leaves its assembled-range directory
+    /// behind. Those can be tens of megabytes, so clear anything older than an
+    /// hour rather than waiting for the cache size prune to catch it.
+    private static func pruneStaleTransferScratch() {
+        let deadline = Date().addingTimeInterval(-60 * 60)
+        for directory in [imageCache, stagingDirectory] {
+            guard let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey]
+            ) else { continue }
+            for file in files where file.lastPathComponent.hasPrefix(".backu-download-") {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                if modified < deadline {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            }
+        }
     }
 
     /// Keeps the on-disk preview cache bounded on devices with a large library.

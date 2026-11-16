@@ -17,6 +17,17 @@ struct S3RetryPolicy: Sendable {
         maxDelay: 10
     )
 
+    /// Parallel parts and ranges are one request among many, so a single
+    /// unlucky request must not fail the whole transfer. At a 30% transient
+    /// failure rate, five attempts fails roughly one request in 400; seven makes
+    /// it one in 4000 while a genuinely dead link still gives up quickly.
+    static let parallelTransfer = S3RetryPolicy(
+        maxAttempts: 7,
+        baseDelay: 0.2,
+        multiplier: 2,
+        maxDelay: 10
+    )
+
     init(
         maxAttempts: Int = 5,
         baseDelay: TimeInterval = 0.2,

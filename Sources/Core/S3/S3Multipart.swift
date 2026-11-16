@@ -27,8 +27,8 @@ extension S3Client {
         // A lost response here means the upload may exist server-side with an id
         // we never saw. Retrying would create a second, orphaned upload, so only
         // status-code failures (which prove nothing was created) are retried.
-        // Pass 3 should reconcile orphans with ListMultipartUploads + a bucket
-        // lifecycle rule.
+        // The id of every upload we *do* learn about is journalled, and a bucket
+        // lifecycle rule covers the id we never saw.
         let (data, response) = try await perform(request, retryTransportErrors: false)
         try validate(response, data: data)
         guard let uploadID = MultipartResponseParser.uploadID(from: data), !uploadID.isEmpty else {
@@ -49,7 +49,7 @@ extension S3Client {
             partNumber: partNumber,
             payloadHash: hash
         )
-        let (body, response) = try await self.upload(request, data: data)
+        let (body, response) = try await self.upload(request, data: data, policy: .parallelTransfer)
         try validate(response, data: body)
         guard let etag = response.value(forHTTPHeaderField: "ETag") else {
             throw S3Error.decoding("UploadPart returned no ETag")
@@ -70,7 +70,7 @@ extension S3Client {
             partNumber: partNumber,
             payloadHash: payloadHash
         )
-        let (body, response) = try await self.upload(request, data: data)
+        let (body, response) = try await self.upload(request, data: data, policy: .parallelTransfer)
         try validate(response, data: body)
         guard let etag = response.value(forHTTPHeaderField: "ETag") else {
             throw S3Error.decoding("UploadPart returned no ETag")
@@ -92,7 +92,7 @@ extension S3Client {
             partNumber: partNumber,
             payloadHash: payloadHash
         )
-        let (body, response) = try await self.upload(request, fileURL: fileURL)
+        let (body, response) = try await self.upload(request, fileURL: fileURL, policy: .parallelTransfer)
         try validate(response, data: body)
         guard let etag = response.value(forHTTPHeaderField: "ETag") else {
             throw S3Error.decoding("UploadPart returned no ETag")
@@ -136,6 +136,7 @@ extension S3Client {
         sign(&request, payloadHash: SigV4Signer.sha256Hex(body))
         let (data, response) = try await self.upload(request, data: body)
         try validate(response, data: data)
+        invalidateCachedHead(key: upload.key)
         return MultipartResponseParser.etag(from: data) ?? ""
     }
 
@@ -352,6 +353,10 @@ struct MultipartUploader: Sendable {
     var temporaryDirectory: URL?
     var transport: MultipartTransport?
     var tuning: TransferTuning
+    /// Crash/cancel recovery for upload ids. `nil` disables journalling.
+    var journal: MultipartUploadJournal?
+    /// Payload budget; the default follows `ProcessInfo.physicalMemory`.
+    var memoryBudget: Int64?
     /// Called once per upload with the adaptive decision, for logging and the
     /// benchmark report.
     var onPlan: (@Sendable (TransferPlan) -> Void)?
@@ -365,6 +370,8 @@ struct MultipartUploader: Sendable {
         temporaryDirectory: URL? = nil,
         transport: MultipartTransport? = nil,
         tuning: TransferTuning = .shared,
+        journal: MultipartUploadJournal? = .shared,
+        memoryBudget: Int64? = nil,
         onPlan: (@Sendable (TransferPlan) -> Void)? = nil,
         progress: (@Sendable (Double) -> Void)? = nil
     ) {
@@ -375,6 +382,8 @@ struct MultipartUploader: Sendable {
         self.temporaryDirectory = temporaryDirectory
         self.transport = transport
         self.tuning = tuning
+        self.journal = journal
+        self.memoryBudget = memoryBudget
         self.onPlan = onPlan
         self.progress = progress
     }
@@ -416,10 +425,19 @@ struct MultipartUploader: Sendable {
         let effectivePartSize = plan.partSize
         let partCount = plan.partCount
 
-        let tempRoot = (temporaryDirectory ?? FileManager.default.temporaryDirectory)
-            .appendingPathComponent("backu-multipart-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        // Only the file-backed and staged paths touch disk, so an in-memory
+        // upload no longer creates (and deletes) an empty temporary directory.
+        let needsStaging = (transport?.fileBacked ?? false) || plan.stagesParts
+        var tempRoot: URL?
+        if needsStaging {
+            let root = (temporaryDirectory ?? FileManager.default.temporaryDirectory)
+                .appendingPathComponent("backu-multipart-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            tempRoot = root
+        }
+        defer {
+            if let tempRoot { try? FileManager.default.removeItem(at: tempRoot) }
+        }
 
         let upload: S3MultipartUpload
         do {
@@ -428,6 +446,14 @@ struct MultipartUploader: Sendable {
             hashTask.cancel()
             throw error
         }
+
+        // Journal the id before the first part can reach the server, so a crash
+        // or a lost complete leaves a record that the next launch can abort.
+        journal?.begin(
+            key: key,
+            uploadId: upload.uploadId,
+            serverKey: client.connection.transferTuningKey
+        )
 
         do {
             let parts = try await uploadParts(
@@ -444,6 +470,7 @@ struct MultipartUploader: Sendable {
                 throw S3Error.decoding("Only \(parts.count) of \(partCount) parts uploaded")
             }
             try await complete(upload: upload, parts: parts, size: size)
+            journal?.finish(uploadId: upload.uploadId)
             let hash = try await hashTask.value
             progress?(1)
             record(
@@ -454,8 +481,17 @@ struct MultipartUploader: Sendable {
             )
             return hash
         } catch {
-            await abort(upload)
+            let aborted = await abort(upload)
+            if aborted {
+                // Only forget the id once the server confirmed the abort; an
+                // offline abort keeps the record for the next launch.
+                journal?.finish(uploadId: upload.uploadId)
+            }
             hashTask.cancel()
+            if !(error is CancellationError) {
+                // A user cancel says nothing about the link; a real failure does.
+                tuning.penalise(serverKey: client.connection.transferTuningKey, direction: .upload)
+            }
             throw error
         }
     }
@@ -464,13 +500,17 @@ struct MultipartUploader: Sendable {
         var plan = tuning.plan(
             serverKey: client.connection.transferTuningKey,
             direction: .upload,
-            size: size
+            size: size,
+            memoryBudget: memoryBudget ?? TransferPlanner.memoryBudget()
         )
         if let partSize {
             let requested = Int64(max(Int(Self.minimumPartSize), partSize))
             plan.partSize = requested
             plan.partCount = Int(TransferPlanner.ceilDiv(size, requested))
             plan.concurrency = max(1, min(concurrency ?? plan.concurrency, plan.partCount))
+            // A forced part size must still respect the payload budget.
+            let inFlight = Int64(plan.concurrency) * requested * 2
+            plan.stagesParts = inFlight > (memoryBudget ?? TransferPlanner.memoryBudget())
             plan.reason = "explicit \(Double(requested) / (1024 * 1024)) MiB parts"
         } else if let concurrency {
             plan.concurrency = max(1, min(concurrency, plan.partCount))
@@ -519,11 +559,12 @@ struct MultipartUploader: Sendable {
         partSize: Int64,
         partCount: Int,
         concurrency: Int,
-        tempRoot: URL
+        tempRoot: URL?
     ) async throws -> [S3MultipartPart] {
         let tracker = MultipartProgressTracker(total: size, callback: progress)
         let transport = transport ?? .direct(client: client)
         let maxConcurrent = max(1, concurrency)
+        let stagesFiles = transport.fileBacked || tempRoot != nil
 
         return try await withThrowingTaskGroup(of: S3MultipartPart.self) { group in
             var nextPart = 1
@@ -548,6 +589,7 @@ struct MultipartUploader: Sendable {
                             size: size,
                             partSize: partSize,
                             tempRoot: tempRoot,
+                            stagesFiles: stagesFiles,
                             transport: transport,
                             tracker: tracker
                         )
@@ -567,7 +609,8 @@ struct MultipartUploader: Sendable {
         fileURL: URL,
         size: Int64,
         partSize: Int64,
-        tempRoot: URL,
+        tempRoot: URL?,
+        stagesFiles: Bool,
         transport: MultipartTransport,
         tracker: MultipartProgressTracker
     ) async throws -> S3MultipartPart {
@@ -580,9 +623,13 @@ struct MultipartUploader: Sendable {
 
         let payload: MultipartTransport.Payload
         let hash: String
-        if transport.fileBacked {
-            // Background sessions need a file. Hash and write it in one pass so
-            // the source is not read twice.
+        if stagesFiles {
+            // Background sessions need a file, and the in-memory path stages
+            // when `concurrency x partSize` would blow the payload budget.
+            // Hash and write it in one pass so the source is not read twice.
+            guard let tempRoot else {
+                throw S3Error.decoding("A staged part needs a temporary directory")
+            }
             let partURL = tempRoot.appendingPathComponent("part-\(number).bin")
             hash = try Self.writePart(of: fileURL, offset: offset, length: length, to: partURL)
             payload = .file(partURL)
@@ -652,12 +699,23 @@ struct MultipartUploader: Sendable {
         return SigV4Signer.hex(Data(hasher.finalize()))
     }
 
-    private func abort(_ upload: S3MultipartUpload) async {
+    private func abort(_ upload: S3MultipartUpload) async -> Bool {
         let client = self.client
         // An abort must still run when the parent task was cancelled, so give it
         // an unstructured task that does not inherit cancellation.
-        await Task.detached(priority: .utility) {
-            try? await client.abortMultipartUpload(upload: upload)
+        return await Task.detached(priority: .utility) {
+            do {
+                try await client.abortMultipartUpload(upload: upload)
+                return true
+            } catch let error as S3Error {
+                if case let .http(status, _, _, _) = error, status == 404 {
+                    // Already gone; nothing left to clean up.
+                    return true
+                }
+                return false
+            } catch {
+                return false
+            }
         }.value
     }
 }

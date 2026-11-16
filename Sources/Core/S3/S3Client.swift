@@ -66,11 +66,21 @@ struct S3Client: Sendable {
     let credentials: S3Credentials
     let session: URLSession
     let metrics: S3Metrics?
+    /// Short-lived HEAD cache so repeated viewer opens of the same object skip a
+    /// round trip. Pass `nil` (or `.disabled()`) in tests that count requests.
+    let headCache: S3HeadCache?
 
-    init(connection: S3Connection, credentials: S3Credentials, session: URLSession? = nil, metrics: S3Metrics? = nil) {
+    init(
+        connection: S3Connection,
+        credentials: S3Credentials,
+        session: URLSession? = nil,
+        metrics: S3Metrics? = nil,
+        headCache: S3HeadCache? = .shared
+    ) {
         self.connection = connection
         self.credentials = credentials
         self.metrics = metrics
+        self.headCache = headCache
         if let session {
             self.session = session
         } else {
@@ -136,12 +146,14 @@ struct S3Client: Sendable {
         sign(&request, payloadHash: hash)
         let (body, response) = try await upload(request, data: data)
         try validate(response, data: body)
+        invalidateCachedHead(key: key)
     }
 
     func putFile(key: String, fileURL: URL, contentType: String) async throws -> String {
         let (request, hash) = try signedPutFileRequest(key: key, fileURL: fileURL, contentType: contentType)
         let (body, response) = try await upload(request, fileURL: fileURL)
         try validate(response, data: body)
+        invalidateCachedHead(key: key)
         return hash
     }
 
@@ -198,6 +210,7 @@ struct S3Client: Sendable {
         sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
         let (data, response) = try await perform(request)
         try validate(response, data: data)
+        invalidateCachedHead(key: key)
     }
 
     // MARK: - Verification
@@ -318,8 +331,12 @@ struct S3Client: Sendable {
         }
     }
 
-    func upload(_ request: URLRequest, data: Data) async throws -> (Data, HTTPURLResponse) {
-        try await sendWithRetry {
+    func upload(
+        _ request: URLRequest,
+        data: Data,
+        policy: S3RetryPolicy = .default
+    ) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry(policy: policy) {
             let (body, response) = try await self.session.upload(for: request, from: data)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
@@ -328,8 +345,12 @@ struct S3Client: Sendable {
         }
     }
 
-    func upload(_ request: URLRequest, fileURL: URL) async throws -> (Data, HTTPURLResponse) {
-        try await sendWithRetry {
+    func upload(
+        _ request: URLRequest,
+        fileURL: URL,
+        policy: S3RetryPolicy = .default
+    ) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry(policy: policy) {
             let (body, response) = try await self.session.upload(for: request, fromFile: fileURL)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
@@ -348,9 +369,9 @@ struct S3Client: Sendable {
     /// retry because the request provably failed.
     private func sendWithRetry(
         retryTransportErrors: Bool = true,
+        policy: S3RetryPolicy = .default,
         _ operation: () async throws -> (Data, HTTPURLResponse)
     ) async throws -> (Data, HTTPURLResponse) {
-        let policy = S3RetryPolicy.default
         var attempt = 0
         while true {
             metrics?.recordRequest()

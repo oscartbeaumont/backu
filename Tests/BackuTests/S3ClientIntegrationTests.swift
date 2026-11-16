@@ -265,6 +265,122 @@ final class S3ClientIntegrationTests: XCTestCase {
         try await client.deleteObject(key: key)
     }
 
+    func testRepeatedDownloadReusesCachedHeadMetadata() async throws {
+        try await requireServer()
+        let bytes = 24 * 1024 * 1024
+        let metrics = S3Metrics()
+        let cache = S3HeadCache()
+        let client = S3Client(
+            connection: S3Connection(endpoint: endpoint, region: "us-east-1", bucket: bucket, pathStyle: true),
+            credentials: S3Credentials(accessKeyID: "testkey", secretAccessKey: "testsecret"),
+            metrics: metrics,
+            headCache: cache
+        )
+        let key = "Backu/Tests/headcache-\(UUID().uuidString.prefix(8)).bin"
+        let source = try makeTemporaryFile(bytes: bytes, fill: 0x19)
+        defer { try? FileManager.default.removeItem(at: source) }
+        _ = try await client.putFile(key: key, fileURL: source, contentType: "application/octet-stream")
+
+        func download() async throws -> URL {
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("backu-headcache-\(UUID().uuidString).bin")
+            try await client.downloadObject(
+                key: key,
+                to: destination,
+                sizeHint: Int64(bytes),
+                concurrency: 3,
+                minimumRoundTripForParallel: 0,
+                tuning: .inMemory
+            )
+            return destination
+        }
+
+        metrics.reset()
+        let first = try await download()
+        defer { try? FileManager.default.removeItem(at: first) }
+        XCTAssertEqual(metrics.snapshot().requests, 4, "HEAD + three ranges")
+        XCTAssertEqual(try first.resourceValues(forKeys: [.fileSizeKey]).fileSize, bytes)
+
+        // A second open within the TTL skips the metadata round trip entirely.
+        metrics.reset()
+        let second = try await download()
+        defer { try? FileManager.default.removeItem(at: second) }
+        XCTAssertEqual(metrics.snapshot().requests, 3, "cached HEAD + three ranges")
+        XCTAssertEqual(try second.resourceValues(forKeys: [.fileSizeKey]).fileSize, bytes)
+
+        // Writing the object invalidates the entry, so the next open probes.
+        try await client.putObject(key: key, data: Data("small".utf8), contentType: "text/plain")
+        metrics.reset()
+        let third = try await download()
+        XCTAssertEqual(try third.resourceValues(forKeys: [.fileSizeKey]).fileSize, 5)
+        XCTAssertEqual(metrics.snapshot().requests, 2, "the PUT invalidated the cached HEAD: HEAD + one GET")
+        try? FileManager.default.removeItem(at: third)
+
+        try await client.deleteObject(key: key)
+    }
+
+    func testCachedHeadIsRevalidatedWhenAnotherDeviceReplacesTheObject() async throws {
+        try await requireServer()
+        let bytes = 24 * 1024 * 1024
+        let cache = S3HeadCache()
+        let reader = S3Client(
+            connection: S3Connection(endpoint: endpoint, region: "us-east-1", bucket: bucket, pathStyle: true),
+            credentials: S3Credentials(accessKeyID: "testkey", secretAccessKey: "testsecret"),
+            headCache: cache
+        )
+        // A second "device" sharing the bucket but not the cache, so a write it
+        // makes leaves the reader's cached HEAD stale, like a real overwrite
+        // from another app instance.
+        let writer = S3Client(
+            connection: reader.connection,
+            credentials: reader.credentials,
+            headCache: nil
+        )
+        let key = "Backu/Tests/overwrite-\(UUID().uuidString.prefix(8)).bin"
+        let first = try makeTemporaryFile(bytes: bytes, fill: 0x11)
+        let second = try makeTemporaryFile(bytes: bytes, fill: 0x22)
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        _ = try await writer.putFile(key: key, fileURL: first, contentType: "application/octet-stream")
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-overwrite-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        func download() async throws -> Data {
+            try await reader.downloadObject(
+                key: key,
+                to: destination,
+                sizeHint: Int64(bytes),
+                concurrency: 4,
+                minimumRoundTripForParallel: 0,
+                tuning: .inMemory
+            )
+            return try Data(contentsOf: destination)
+        }
+
+        let original = try await download()
+        XCTAssertEqual(original.first, 0x11)
+        XCTAssertNotNil(cache.value(server: reader.connection.transferTuningKey, key: key))
+
+        _ = try await writer.putFile(key: key, fileURL: second, contentType: "application/octet-stream")
+
+        // The cached size and ETag are now stale. The range GETs fail 412, the
+        // downloader drops the entry, re-probes and returns the new bytes.
+        let replaced = try await download()
+        XCTAssertEqual(replaced.first, 0x22)
+        XCTAssertEqual(replaced.last, 0x22)
+        XCTAssertEqual(replaced.count, bytes)
+        let refreshed = try await reader.headObject(key: key)?.etag
+        XCTAssertEqual(
+            cache.value(server: reader.connection.transferTuningKey, key: key)?.head.etag,
+            refreshed
+        )
+        try await reader.deleteObject(key: key)
+    }
+
     func testDownloadResumesFromAPartialFile() async throws {
         try await requireServer()
         let client = makeClient()
@@ -304,6 +420,7 @@ final class S3ClientIntegrationTests: XCTestCase {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
 
+        let journal = MultipartUploadJournal(fileURL: staging.appendingPathComponent("journal.json"))
         let uploadID = IDBox()
         // File-backed on purpose: this exercises the staged part file that a
         // cancelled upload must clean up.
@@ -323,7 +440,8 @@ final class S3ClientIntegrationTests: XCTestCase {
             threshold: 0,
             temporaryDirectory: staging,
             transport: transport,
-            tuning: .inMemory
+            tuning: .inMemory,
+            journal: journal
         )
         let task = Task {
             try await uploader.upload(fileURL: source, key: key, contentType: "application/octet-stream")
@@ -347,8 +465,122 @@ final class S3ClientIntegrationTests: XCTestCase {
             XCTAssertEqual(status, 404)
             XCTAssertEqual(code, "NoSuchUpload")
         }
+        // A cancelled upload that was aborted leaves no journal record, and no
+        // staged part files behind (the journal file lives outside the staging
+        // tree the uploader owns).
+        XCTAssertTrue(journal.records().isEmpty, "cancelled upload left a journal record")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: staging.path)
+            .filter { $0 != "journal.json" }
         XCTAssertTrue(leftovers.isEmpty, "Temporary part files left behind: \(leftovers)")
+    }
+
+    func testStaleMultipartUploadsAreAbortedAndForgotten() async throws {
+        try await requireServer()
+        let client = makeClient()
+        let key = "Backu/Tests/orphan-\(UUID().uuidString.prefix(8)).bin"
+        let upload = try await client.createMultipartUpload(key: key, contentType: "application/octet-stream")
+        _ = try await client.uploadPart(
+            upload: upload,
+            partNumber: 1,
+            data: Data(repeating: 0x66, count: 64 * 1024)
+        )
+
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-orphans-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let journal = MultipartUploadJournal(fileURL: journalURL)
+        journal.begin(
+            key: key,
+            uploadId: upload.uploadId,
+            serverKey: client.connection.transferTuningKey
+        )
+        // A record for a different server must not be touched by this client.
+        journal.begin(key: "elsewhere", uploadId: "other-server-id", serverKey: "other.test/bucket")
+
+        let aborted = await client.abortStaleMultipartUploads(journal: journal, olderThan: 0)
+        XCTAssertEqual(aborted, 1)
+        XCTAssertEqual(journal.records().map(\.uploadId), ["other-server-id"])
+
+        do {
+            _ = try await client.listParts(upload: upload)
+            XCTFail("The stale upload survived recovery")
+        } catch let error as S3Error {
+            guard case let .http(status, code, _, _) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(status, 404)
+            XCTAssertEqual(code, "NoSuchUpload")
+        }
+    }
+
+    func testForcedPartFailureAbortsTheUploadAndClearsTheJournal() async throws {
+        try await requireServer()
+        let client = makeClient()
+        let key = "Backu/Tests/forced-\(UUID().uuidString.prefix(8)).bin"
+        let source = try makeTemporaryFile(bytes: 12 * 1024 * 1024, fill: 0x5F)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-forced-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        let journal = MultipartUploadJournal(fileURL: staging.appendingPathComponent("journal.json"))
+        let seen = IDBox()
+        // Part 1 succeeds against the real server, part 2 never leaves the
+        // process. The uploader must abort the whole upload and forget it.
+        let uploader = MultipartUploader(
+            client: client,
+            partSize: 5 * 1024 * 1024,
+            concurrency: 1,
+            threshold: 0,
+            temporaryDirectory: staging,
+            transport: .direct(client: client),
+            tuning: .inMemory,
+            journal: journal
+        )
+        // Wrap the direct transport so the failure is forced, not injected.
+        var failing = uploader
+        failing.transport = MultipartTransport(fileBacked: false) { upload, number, payload, hash, size, progress in
+            seen.set(upload.uploadId)
+            if number >= 2 {
+                throw S3Error.transport(URLError(.networkConnectionLost))
+            }
+            return try await MultipartTransport.direct(client: client).uploadPart(
+                upload,
+                number,
+                payload,
+                hash,
+                size,
+                progress
+            )
+        }
+
+        do {
+            _ = try await failing.upload(fileURL: source, key: key, contentType: "application/octet-stream")
+            XCTFail("The upload should have failed")
+        } catch {
+            // Expected.
+        }
+
+        let id = try XCTUnwrap(seen.value)
+        XCTAssertTrue(journal.records().isEmpty, "failed upload left a journal record")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: staging.path)
+            .filter { $0 != "journal.json" }
+        XCTAssertTrue(leftovers.isEmpty, "staged part files left behind: \(leftovers)")
+
+        do {
+            _ = try await client.listParts(upload: S3MultipartUpload(key: key, uploadId: id))
+            XCTFail("The failed multipart upload was not aborted")
+        } catch let error as S3Error {
+            guard case let .http(status, code, _, _) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(status, 404)
+            XCTAssertEqual(code, "NoSuchUpload")
+        }
+        let head = try await client.headObject(key: key)
+        XCTAssertNil(head, "a failed upload must not leave an object behind")
     }
 
     func testBackgroundUploaderCarriesAPartETag() async throws {

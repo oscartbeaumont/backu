@@ -143,6 +143,11 @@ struct TransferPlan: Equatable, Sendable {
     /// Aggregate bytes/second from the last comparable transfer, if known.
     var estimatedBytesPerSecond: Double?
     var reason: String
+    /// Uploads only: parts are staged in the temporary directory instead of
+    /// being held in memory, because `concurrency * partSize` exceeds the
+    /// payload budget. Streaming from disk keeps the plan (and therefore the
+    /// throughput) while bounding peak memory.
+    var stagesParts: Bool = false
 
     var isSingleStream: Bool { concurrency <= 1 || !parallel }
 
@@ -172,6 +177,12 @@ struct TransferPlanner: Sendable {
     static let minimumUploadPartSize: Int64 = 5 * 1024 * 1024
     /// Ranges have no S3 minimum; 1 MiB keeps small parallel downloads useful.
     static let minimumDownloadRangeSize: Int64 = 1024 * 1024
+    /// A share of the object worth one connection. Uploads cannot go below the
+    /// 5 MiB S3 minimum, so a 32 MiB upload feeds 7 lanes (6 x 5 MiB + 2 MiB).
+    /// Downloads use 4 MiB ranges: small enough that a 32 MiB object fills 8
+    /// connections, large enough that request overhead stays negligible.
+    static let uploadWorkPerConnection = minimumUploadPartSize
+    static let downloadWorkPerConnection: Int64 = 4 * 1024 * 1024
     static let maximumPartSize: Int64 = 64 * 1024 * 1024
     static let maximumParts = 10_000
     static let uploadMultipartThreshold: Int64 = 16 * 1024 * 1024
@@ -182,6 +193,26 @@ struct TransferPlanner: Sendable {
     /// Hard ceiling across both directions, matching the client's URLSession
     /// pool. More sockets than this just queue.
     static let connectionBudget = 10
+    /// Connections a first (unmeasured) transfer may use. Going beyond this is
+    /// only worth it once the previous transfer proved the link still scales.
+    static let unmeasuredConcurrencyCeiling = 8
+    /// How many connections a proven-scaling transfer adds, and how many each
+    /// failed transfer gives back.
+    static let concurrencyStep = 2
+    /// A transfer at this concurrency counts as evidence that the link
+    /// tolerated a wide fan-out.
+    static let evidenceConcurrency = unmeasuredConcurrencyCeiling
+    /// The latest transfer must stay within this fraction of the best
+    /// throughput and best per-connection throughput ever seen, otherwise more
+    /// connections are not helping and the plan stops growing.
+    static let scalingTolerance = 0.85
+    /// Peak part payload the direct (in-memory) transport may hold.
+    static func memoryBudget(
+        physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> Int64 {
+        let ramShare = Int64(clamping: physicalMemory / 16)
+        return min(96 * 1024 * 1024, max(8 * 1024 * 1024, ramShare))
+    }
 
     struct Input: Sendable {
         var size: Int64
@@ -194,6 +225,13 @@ struct TransferPlanner: Sendable {
         var minimumLatencyForParallel: TimeInterval = 0.008
         /// Caller-supplied upper bound (`concurrency:` on the old APIs).
         var concurrencyCap: Int?
+        /// Upper bound for this plan. `TransferTuning` raises it to
+        /// `connectionBudget` once the previous transfer showed linear scaling.
+        var concurrencyCeiling: Int = TransferPlanner.unmeasuredConcurrencyCeiling
+        /// Consecutive failed transfers; each one gives back a growth step.
+        var concurrencyPenalty: Int = 0
+        /// Peak payload budget; upload parts are staged to disk above this.
+        var memoryBudget: Int64 = TransferPlanner.memoryBudget()
 
         init(
             size: Int64,
@@ -203,7 +241,10 @@ struct TransferPlanner: Sendable {
             measuredConcurrency: Int? = nil,
             latency: TimeInterval? = nil,
             minimumLatencyForParallel: TimeInterval = 0.008,
-            concurrencyCap: Int? = nil
+            concurrencyCap: Int? = nil,
+            concurrencyCeiling: Int = TransferPlanner.unmeasuredConcurrencyCeiling,
+            concurrencyPenalty: Int = 0,
+            memoryBudget: Int64 = TransferPlanner.memoryBudget()
         ) {
             self.size = size
             self.direction = direction
@@ -213,6 +254,9 @@ struct TransferPlanner: Sendable {
             self.latency = latency
             self.minimumLatencyForParallel = minimumLatencyForParallel
             self.concurrencyCap = concurrencyCap
+            self.concurrencyCeiling = concurrencyCeiling
+            self.concurrencyPenalty = concurrencyPenalty
+            self.memoryBudget = memoryBudget
         }
     }
 
@@ -239,20 +283,29 @@ struct TransferPlanner: Sendable {
         }
 
         let minimumUnit = isDownload ? minimumDownloadRangeSize : minimumUploadPartSize
+        let workPerConnection = isDownload ? downloadWorkPerConnection : uploadWorkPerConnection
+        let allowance = max(1, min(input.concurrencyCeiling, connectionBudget))
+
         var concurrency = desiredConcurrency(
             direction: input.direction,
             network: input.network,
-            size: size
+            size: size,
+            ceiling: allowance
         )
+        if input.concurrencyPenalty > 0 {
+            // A flaky link does not need fewer bytes in flight, it needs fewer
+            // sockets competing. Back off one growth step per failure.
+            concurrency = max(1, concurrency - concurrencyStep * input.concurrencyPenalty)
+        }
         if let cap = input.concurrencyCap, cap > 0 {
             concurrency = min(concurrency, cap)
         }
-        concurrency = max(1, min(concurrency, connectionBudget))
+        concurrency = max(1, min(concurrency, allowance))
 
         // Do not plan more connections than the object can feed with useful
-        // chunks. This is what turns 32 MiB into six ~5.3 MiB parts instead of
-        // one part per connection with an idle tail.
-        let feedable = Int(max(1, size / minimumUnit))
+        // chunks. The ceiling (not the floor) is what matters: only the last
+        // part may be smaller than 5 MiB, so a 32 MiB upload feeds 7 lanes.
+        let feedable = Int(max(1, ceilDiv(size, workPerConnection)))
         let wantedParts = max(1, min(concurrency, feedable))
         concurrency = min(concurrency, wantedParts)
 
@@ -266,7 +319,8 @@ struct TransferPlanner: Sendable {
         var partSize = min(ideal, maximumPartSize)
         partSize = max(partSize, minimumUnit)
 
-        // At least the planned number of parts for a file that can support it.
+        // At least the planned number of parts for a file that can support it,
+        // but never so small that a non-final upload part breaks the 5 MiB rule.
         let maximumForConcurrency = ceilDiv(size, Int64(max(wantedParts, 1)))
         partSize = min(partSize, maximumForConcurrency)
         partSize = max(partSize, minimumUnit)
@@ -279,13 +333,47 @@ struct TransferPlanner: Sendable {
         }
         partSize = max(partSize, 1)
 
+        // Balance the waves. If the ideal part size would need more parts than
+        // there are connections, growing the parts until the count is a multiple
+        // of the connection count removes the idle tail wave (a 100 MiB upload
+        // at 8 connections becomes 8 x 12.5 MiB instead of 13 x 8 MiB, where the
+        // last wave only has five sockets busy).
+        let wanted = max(1, wantedParts)
+        let unalignedParts = Int(ceilDiv(size, partSize))
+        if wanted > 1, unalignedParts > wanted {
+            let waves = max(1, unalignedParts / wanted)
+            let balancedParts = waves * wanted
+            let balancedPartSize = ceilDiv(size, Int64(balancedParts))
+            if balancedPartSize > partSize {
+                partSize = balancedPartSize
+            }
+        }
+
         let partCount = Int(ceilDiv(size, partSize))
-        let effectiveConcurrency = max(1, min(concurrency, partCount))
+        var effectiveConcurrency = max(1, min(concurrency, partCount))
+
+        // Keep every planned connection inside the payload budget. Downloads
+        // stream straight to disk, so only the upload path can stage. URLSession
+        // keeps its own copy of each in-memory body while it sends it, so the
+        // real peak is about twice the part payload — budget for both.
+        var stagesParts = false
+        if !isDownload, Int64(effectiveConcurrency) * partSize * 2 > input.memoryBudget {
+            // Prefer moving the payload to disk over collapsing the plan: fewer
+            // connections cost far more time than writing parts we were going
+            // to send anyway. Only shrink the plan if a single part alone is
+            // over budget, which the 64 MiB ceiling makes unlikely.
+            stagesParts = true
+            if partSize * 2 > input.memoryBudget {
+                let reduced = max(1, Int(input.memoryBudget / (partSize * 2)))
+                effectiveConcurrency = min(effectiveConcurrency, reduced)
+            }
+        }
 
         let throughputDescription = perConnection.map {
             String(format: "%.1f MB/s/connection", $0 / 1_000_000)
         } ?? "no history"
-        let reason = "\(network.displayName), \(throughputDescription), \(partCount) part\(partCount == 1 ? "" : "s") of \(megabytes(partSize)) MiB"
+        let staging = stagesParts ? ", staged parts" : ""
+        let reason = "\(network.displayName), \(throughputDescription), \(partCount) part\(partCount == 1 ? "" : "s") of \(megabytes(partSize)) MiB\(staging)"
 
         return TransferPlan(
             direction: input.direction,
@@ -295,29 +383,32 @@ struct TransferPlanner: Sendable {
             parallel: isDownload ? partCount > 1 : true,
             network: network,
             estimatedBytesPerSecond: input.throughput,
-            reason: reason
+            reason: reason,
+            stagesParts: stagesParts
         )
     }
 
     static func desiredConcurrency(
         direction: TransferDirection,
         network: NetworkSnapshot,
-        size: Int64
+        size: Int64,
+        ceiling: Int = TransferPlanner.unmeasuredConcurrencyCeiling
     ) -> Int {
-        let large = size >= 64 * 1024 * 1024
+        let allowance = max(1, min(ceiling, connectionBudget))
         switch network.kind {
-        case .wired:
-            return 8
-        case .wifi, .unknown:
-            return large ? 8 : 6
+        case .wired, .wifi, .unknown:
+            // Wired and Wi-Fi are unmetered and the link scales with sockets,
+            // so fill the allowance. The feedable clamp keeps small objects
+            // from opening sockets they cannot use.
+            return allowance
         case .cellular:
             // Four streams fills a typical mobile link without inviting
             // bufferbloat; more is usually counter-productive on radio.
-            return 4
+            return min(4, allowance)
         case .expensive:
-            return 3
+            return min(3, allowance)
         case .constrained:
-            return 2
+            return min(2, allowance)
         }
     }
 
@@ -339,15 +430,43 @@ struct TransferPlanner: Sendable {
 // MARK: - Per-server memory
 
 struct TransferSample: Codable, Equatable, Sendable {
-    /// Aggregate bytes per second at `concurrency`.
+    /// Aggregate bytes per second at `concurrency`, smoothed with an EWMA.
     var throughput: Double
     var concurrency: Int
+    /// Best aggregate throughput ever seen for this server and direction.
+    var peakThroughput: Double?
+    /// Best aggregate throughput divided by the concurrency it was measured at.
+    /// A falling per-connection figure is the signal that more sockets are
+    /// stealing from each other rather than adding capacity.
+    var peakPerConnection: Double?
+    /// Raw (unsmoothed) rate of the most recent transfer. The EWMA above is for
+    /// part sizing; scaling decisions must compare like with like.
+    var lastObservedThroughput: Double?
+
+    init(
+        throughput: Double,
+        concurrency: Int,
+        peakThroughput: Double? = nil,
+        peakPerConnection: Double? = nil,
+        lastObservedThroughput: Double? = nil
+    ) {
+        self.throughput = throughput
+        self.concurrency = concurrency
+        self.peakThroughput = peakThroughput
+        self.peakPerConnection = peakPerConnection
+        self.lastObservedThroughput = lastObservedThroughput
+    }
 }
 
 struct TransferTuningState: Codable, Equatable, Sendable {
     var network: NetworkKind
     var upload: TransferSample?
     var download: TransferSample?
+    /// Consecutive failed transfers. Each one costs the next plan a growth step,
+    /// so a flaky link falls back to fewer sockets instead of retrying a wide
+    /// fan-out that keeps timing out.
+    var uploadFailures: Int? = nil
+    var downloadFailures: Int? = nil
 }
 
 /// Small, lock-guarded store keyed by endpoint + bucket. Persisting the EWMA
@@ -455,11 +574,13 @@ struct TransferTuning: Sendable {
         size: Int64,
         latency: TimeInterval? = nil,
         minimumLatencyForParallel: TimeInterval = 0.008,
-        concurrencyCap: Int? = nil
+        concurrencyCap: Int? = nil,
+        memoryBudget: Int64 = TransferPlanner.memoryBudget()
     ) -> TransferPlan {
         let network = networkProvider()
         let state = stateForPlanning(serverKey: serverKey, network: network)
         let sample = direction == .upload ? state?.upload : state?.download
+        let failures = (direction == .upload ? state?.uploadFailures : state?.downloadFailures) ?? 0
         return TransferPlanner.plan(
             TransferPlanner.Input(
                 size: size,
@@ -469,8 +590,39 @@ struct TransferTuning: Sendable {
                 measuredConcurrency: sample?.concurrency,
                 latency: latency,
                 minimumLatencyForParallel: minimumLatencyForParallel,
-                concurrencyCap: concurrencyCap
+                concurrencyCap: concurrencyCap,
+                concurrencyCeiling: concurrencyCeiling(for: sample, network: network),
+                concurrencyPenalty: failures,
+                memoryBudget: memoryBudget
             )
+        )
+    }
+
+    /// The last transfer is the evidence for the next one. Only a transfer that
+    /// already used a wide fan-out, kept its per-connection throughput near the
+    /// best ever seen and matched its best aggregate throughput proves that the
+    /// link still scales; only then may the plan use more than the unmeasured
+    /// ceiling (up to the connection budget).
+    private func concurrencyCeiling(for sample: TransferSample?, network: NetworkSnapshot) -> Int {
+        guard let sample,
+              sample.concurrency >= TransferPlanner.evidenceConcurrency,
+              network.kind == .wired || network.kind == .wifi || network.kind == .unknown
+        else {
+            return TransferPlanner.unmeasuredConcurrencyCeiling
+        }
+        let latest = sample.lastObservedThroughput ?? sample.throughput
+        let perConnection = latest / Double(max(1, sample.concurrency))
+        if let peakPerConnection = sample.peakPerConnection,
+           perConnection < peakPerConnection * TransferPlanner.scalingTolerance {
+            return TransferPlanner.unmeasuredConcurrencyCeiling
+        }
+        if let peakThroughput = sample.peakThroughput,
+           latest < peakThroughput * TransferPlanner.scalingTolerance {
+            return TransferPlanner.unmeasuredConcurrencyCeiling
+        }
+        return min(
+            TransferPlanner.connectionBudget,
+            sample.concurrency + TransferPlanner.concurrencyStep
         )
     }
 
@@ -492,14 +644,39 @@ struct TransferTuning: Sendable {
         let previous = direction == .upload ? state.upload : state.download
         let alpha = previous == nil ? 1.0 : 0.35
         let throughput = previous.map { $0.throughput * (1 - alpha) + observed * alpha } ?? observed
+        let observedPerConnection = observed / Double(max(1, plan.concurrency))
+        let peakThroughput = max(previous?.peakThroughput ?? 0, observed)
+        let peakPerConnection = max(previous?.peakPerConnection ?? 0, observedPerConnection)
         let sample = TransferSample(
             throughput: throughput,
-            concurrency: max(1, plan.concurrency)
+            concurrency: max(1, plan.concurrency),
+            peakThroughput: peakThroughput,
+            peakPerConnection: peakPerConnection,
+            lastObservedThroughput: observed
         )
         if direction == .upload {
             state.upload = sample
+            state.uploadFailures = 0
         } else {
             state.download = sample
+            state.downloadFailures = 0
+        }
+        state.network = network.kind
+        store.setState(state, for: serverKey)
+    }
+
+    /// A transfer that exhausted its retries. The next plan gives back a growth
+    /// step and stops trusting the wide fan-out until a success resets it.
+    func penalise(serverKey: String, direction: TransferDirection) {
+        let network = networkProvider()
+        var state = stateForPlanning(serverKey: serverKey, network: network)
+            ?? TransferTuningState(network: network.kind)
+        let failures = (direction == .upload ? state.uploadFailures : state.downloadFailures) ?? 0
+        let next = min(failures + 1, TransferPlanner.connectionBudget)
+        if direction == .upload {
+            state.uploadFailures = next
+        } else {
+            state.downloadFailures = next
         }
         state.network = network.kind
         store.setState(state, for: serverKey)

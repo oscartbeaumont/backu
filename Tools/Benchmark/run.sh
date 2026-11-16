@@ -4,7 +4,8 @@
 #
 #   ./Tools/Benchmark/run.sh
 #
-# Override with BACKU_BENCH_SIZES=4,32 (MiB), BACKU_BENCH_RUNS=3, BACKU_BENCH_PORT_BASE=9200.
+# Override with BACKU_BENCH_SIZES=4,32 (MiB), BACKU_BENCH_RUNS=3,
+# BACKU_BENCH_PORT_BASE=9200 and BACKU_BENCH_PASS=pass4 (results prefix).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -14,6 +15,7 @@ SIZES="${BACKU_BENCH_SIZES:-4,32,128}"
 RUNS="${BACKU_BENCH_RUNS:-3}"
 BASE_PORT="${BACKU_BENCH_PORT_BASE:-9101}"
 WORK="${BACKU_BENCH_WORK:-${TMPDIR:-/tmp}/backu-bench-s3}"
+PASS="${BACKU_BENCH_PASS:-pass3}"
 MOCK="Tools/MockS3/mock_s3.py"
 
 mkdir -p "$RESULT_DIR" "$WORK"
@@ -38,7 +40,7 @@ start_mock() {
   shift
   rm -rf "$WORK/$port"
   mkdir -p "$WORK/$port"
-  python3 "$MOCK" --port "$port" --data-dir "$WORK/$port" --quiet "$@" \
+  python3 "$MOCK" --port "$port" --data-dir "$WORK/$port" "$@" \
     >"$WORK/mock-$port.log" 2>&1 &
   PIDS+=("$!")
   for _ in $(seq 1 50); do
@@ -71,25 +73,32 @@ run_profile() {
     --sizes "$sizes" \
     --runs "$RUNS" \
     --network "$network" \
-    --pass pass2 \
+    --pass "$PASS" \
     --output "$RESULT_DIR/$output"
 }
 
 # Shaped: per-connection 60 Mbps + 25 ms latency. This models a single-stream
-# limited high-RTT mobile link; adaptive parts/ranges can add up to ~8x here.
-run_profile shaped "$SHAPED_PORT" "$SIZES" "pass2-shaped.json" wifi
+# limited high-RTT mobile link; adaptive parts/ranges can add up to ~10x here.
+run_profile shaped "$SHAPED_PORT" "$SIZES" "$PASS-shaped.json" wifi
 
 # Localhost: no shaping, so this is a correctness and no-regression guard. The
 # downloader's latency probe keeps it on one stream.
-run_profile localhost "$PLAIN_PORT" "$SIZES" "pass2-localhost.json" wired
+run_profile localhost "$PLAIN_PORT" "$SIZES" "$PASS-localhost.json" wired
 
 # Cellular: same shaped link, but the planner treats it as a metered radio and
 # caps concurrency at 4. Shows the network-aware decision, not a different mock.
-run_profile cellular "$SHAPED_PORT" "32,128" "pass2-cellular.json" cellular
+run_profile cellular "$SHAPED_PORT" "32,128" "$PASS-cellular.json" cellular
 
 # Failure injection: proves retries work and that their counts are visible.
-run_profile retry "$RETRY_PORT" "32" "pass2-retry.json" wifi
+run_profile retry "$RETRY_PORT" "32" "$PASS-retry.json" wifi
+
+# Cross-check the report against what the server actually saw: the planned part
+# and range counts, plus any multipart upload that was created but neither
+# completed nor aborted.
+echo
+echo "→ Mock audit (shaped port $SHAPED_PORT)"
+python3 Tools/Benchmark/audit_log.py "$WORK/mock-$SHAPED_PORT.log" || true
 
 echo
 echo "Reports written to $RESULT_DIR:"
-ls -1 "$RESULT_DIR"/pass2-*.json
+ls -1 "$RESULT_DIR"/"$PASS"-*.json

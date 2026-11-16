@@ -1,0 +1,186 @@
+{
+  "concurrency" : 0,
+  "endpoint" : "http:\/\/127.0.0.1:9103",
+  "generatedAt" : "2026-11-16T20:57:28Z",
+  "memoryBudgetMB" : 0,
+  "mode" : "both",
+  "network" : "wifi",
+  "partSizeMB" : 0,
+  "profile" : "retry",
+  "runs" : 3,
+  "scenarios" : [
+    {
+      "medianElapsedSeconds" : 9.190449953079224,
+      "medianMegabytesPerSecond" : 3.481875225192704,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "peakFootprintBytes" : 50905088,
+      "profile" : "retry",
+      "requests" : 4,
+      "retries" : 3,
+      "samples" : [
+        {
+          "elapsedSeconds" : 18.554713010787964,
+          "megabytesPerSecond" : 1.724629207759493,
+          "peakFootprintBytes" : 50905088,
+          "requests" : 4,
+          "retries" : 3
+        },
+        {
+          "elapsedSeconds" : 9.190449953079224,
+          "megabytesPerSecond" : 3.481875225192704,
+          "peakFootprintBytes" : 31064064,
+          "requests" : 2,
+          "retries" : 1
+        },
+        {
+          "elapsedSeconds" : 4.555537939071655,
+          "megabytesPerSecond" : 7.02441740755672,
+          "peakFootprintBytes" : 27951104,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 4.53070604801178,
+      "medianMegabytesPerSecond" : 7.062916830378486,
+      "mode" : "baseline",
+      "operation" : "download",
+      "peakFootprintBytes" : 95715328,
+      "profile" : "retry",
+      "requests" : 2,
+      "retries" : 1,
+      "samples" : [
+        {
+          "elapsedSeconds" : 4.472671031951904,
+          "megabytesPerSecond" : 7.154561507295782,
+          "peakFootprintBytes" : 95682560,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.53070604801178,
+          "megabytesPerSecond" : 7.062916830378486,
+          "peakFootprintBytes" : 95715328,
+          "requests" : 2,
+          "retries" : 1
+        },
+        {
+          "elapsedSeconds" : 4.732309937477112,
+          "megabytesPerSecond" : 6.762025400445313,
+          "peakFootprintBytes" : 95649792,
+          "requests" : 2,
+          "retries" : 1
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 7,
+      "medianElapsedSeconds" : 2.927662968635559,
+      "medianMegabytesPerSecond" : 10.930219886243819,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 7,
+      "partSizeBytes" : 5242880,
+      "peakFootprintBytes" : 220692480,
+      "profile" : "retry",
+      "reason" : "wifi, 2.0 MB\/s\/connection, 7 parts of 5.00 MiB",
+      "requests" : 18,
+      "retries" : 9,
+      "samples" : [
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 2.927662968635559,
+          "megabytesPerSecond" : 10.930219886243819,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 181387264,
+          "requests" : 14,
+          "retries" : 5
+        },
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 1.8671810626983643,
+          "megabytesPerSecond" : 17.138134399111284,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 218333184,
+          "requests" : 14,
+          "retries" : 5
+        },
+        {
+          "concurrency" : 7,
+          "elapsedSeconds" : 3.7378029823303223,
+          "megabytesPerSecond" : 8.561178893396274,
+          "parallel" : true,
+          "partCount" : 7,
+          "partSizeBytes" : 5242880,
+          "peakFootprintBytes" : 220692480,
+          "requests" : 18,
+          "retries" : 9
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 8,
+      "medianElapsedSeconds" : 0.7181389331817627,
+      "medianMegabytesPerSecond" : 44.55962282705082,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 8,
+      "partSizeBytes" : 4194304,
+      "peakFootprintBytes" : 223281152,
+      "profile" : "retry",
+      "reason" : "wifi, 5.1 MB\/s\/connection, 8 parts of 4.00 MiB",
+      "requests" : 10,
+      "retries" : 2,
+      "samples" : [
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.905985951423645,
+          "megabytesPerSecond" : 35.32063598747415,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 223199232,
+          "requests" : 10,
+          "retries" : 2
+        },
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.7181389331817627,
+          "megabytesPerSecond" : 44.55962282705082,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 223281152,
+          "requests" : 9,
+          "retries" : 1
+        },
+        {
+          "concurrency" : 8,
+          "elapsedSeconds" : 0.640826940536499,
+          "megabytesPerSecond" : 49.93547863828831,
+          "parallel" : true,
+          "partCount" : 8,
+          "partSizeBytes" : 4194304,
+          "peakFootprintBytes" : 223281152,
+          "requests" : 10,
+          "retries" : 2
+        }
+      ],
+      "sizeMB" : 32
+    }
+  ],
+  "schema" : "backu.benchmark.v2",
+  "sizesMB" : [
+    32
+  ],
+  "warmups" : 1
+}

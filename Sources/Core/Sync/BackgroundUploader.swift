@@ -78,7 +78,9 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 60 * 60 * 6
-        configuration.httpMaximumConnectionsPerHost = 8
+        // Multipart plans can use the full transfer budget; the old fixed 8
+        // silently throttled a 10-connection upload in the real app.
+        configuration.httpMaximumConnectionsPerHost = TransferPlanner.connectionBudget
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
