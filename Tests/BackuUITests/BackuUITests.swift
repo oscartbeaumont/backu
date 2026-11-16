@@ -8,7 +8,7 @@ final class BackuUITests: XCTestCase {
     private var bootstrap: String {
         """
         {"servers":[{"name":"Local Test","provider":"custom","endpoint":"http://127.0.0.1:9000","region":"us-east-1","bucket":"backu-test","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Backu"}],
-         "settings":{"autoBackupEnabled":true,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
+         "settings":{"autoBackupEnabled":false,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
         """
     }
 
