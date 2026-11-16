@@ -11,3 +11,4 @@ Tests/Fixtures/generated/
 Tests/Fixtures/*.jpg
 test-output/
 screenshots/
+Tests/Fixtures/library/
