@@ -44,14 +44,6 @@ struct RootView: View {
         } message: {
             Text(app.errorMessage ?? "")
         }
-        .alert("Backup", isPresented: Binding(
-            get: { app.remoteSyncMessage != nil },
-            set: { if !$0 { app.remoteSyncMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) { app.remoteSyncMessage = nil }
-        } message: {
-            Text(app.remoteSyncMessage ?? "")
-        }
     }
 
     private var tabRoot: some View {
@@ -101,6 +93,11 @@ struct SidebarView: View {
     @Binding var selection: AppTab
     @Environment(AppModel.self) private var app
 
+    private var visiblePhotoCount: Int {
+        let photos = app.catalog.photos
+        return app.settings.showRemoteOnlyPhotos ? photos.count : photos.filter(\.isLocal).count
+    }
+
     var body: some View {
         List {
             Section {
@@ -113,8 +110,8 @@ struct SidebarView: View {
                                 Text(tab.title)
                                     .foregroundStyle(.primary)
                                 Spacer()
-                                if tab == .library, app.catalog.photos.count > 0 {
-                                    Text("\(app.catalog.photos.count)")
+                                if tab == .library, visiblePhotoCount > 0 {
+                                    Text("\(visiblePhotoCount)")
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                 }

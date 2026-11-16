@@ -132,6 +132,49 @@ final class CatalogMergeTests: XCTestCase {
         XCTAssertEqual(store.photo(id: "asset:1")?.copies.count, 1)
     }
 
+    func testUploadedPhotoAbsorbsItsRemoteTwin() {
+        let store = CatalogStore(loadFromDisk: false)
+        let serverID = UUID()
+        var local = photo(id: "asset:1")
+        store.mergeScanned([local])
+        local.localIdentifier = nil
+
+        var remote = local
+        remote.id = "remote:1"
+        remote.sha256 = "hash"
+        remote.copies = [
+            PhotoCopy(
+                serverID: serverID,
+                objectKey: "Backu/a.jpg",
+                sidecarKey: "Backu/a.jpg.json",
+                thumbnailKey: "Backu/t.jpg",
+                uploadedAt: Date(),
+                byteCount: 5,
+                etag: nil,
+                sha256: "hash"
+            )
+        ]
+        XCTAssertEqual(store.importRemotePhotos([remote]), 1)
+        XCTAssertEqual(store.photos.count, 2)
+
+        // The local asset finishes uploading: the duplicate remote-only row folds in.
+        store.recordUpload(
+            copy: PhotoCopy(
+                serverID: serverID,
+                objectKey: "Backu/a.jpg",
+                sidecarKey: "Backu/a.jpg.json",
+                thumbnailKey: "Backu/t.jpg",
+                uploadedAt: Date(),
+                byteCount: 5,
+                etag: nil,
+                sha256: "hash"
+            ),
+            for: "asset:1"
+        )
+        XCTAssertEqual(store.photos.count, 1)
+        XCTAssertEqual(store.photo(id: "asset:1")?.copies.count, 1)
+    }
+
     func testCanonicalURIKeepsTrailingSlash() throws {
         let url = try XCTUnwrap(URL(string: "https://example.com/bucket/folder/"))
         XCTAssertEqual(SigV4Signer.canonicalURI(for: url), "/bucket/folder/")

@@ -519,6 +519,35 @@ final class CatalogStore {
             photo.remoteThumbnailKey = copy.thumbnailKey ?? photo.remoteThumbnailKey
             if photo.localIdentifier == nil { photo.serverID = copy.serverID }
         }
+        if let sha = copy.sha256 {
+            mergeRemoteOnlyTwins(sha: sha, into: photoID)
+        }
+    }
+
+    /// Once this device uploads a photo and learns its SHA-256, fold any
+    /// bucket-only entry for the same bytes into the local photo instead of
+    /// showing the same picture twice.
+    private func mergeRemoteOnlyTwins(sha: String, into photoID: String) {
+        guard let targetIndex = photos.firstIndex(where: { $0.id == photoID }) else { return }
+        let twins = photos.indices.filter { index in
+            photos[index].id != photoID
+                && photos[index].localIdentifier == nil
+                && photos[index].sha256 == sha
+        }
+        guard !twins.isEmpty else { return }
+        for twin in twins {
+            for twinCopy in photos[twin].copies where !photos[targetIndex].copies.contains(where: { $0.serverID == twinCopy.serverID }) {
+                photos[targetIndex].copies.append(twinCopy)
+            }
+            if photos[targetIndex].remoteThumbnailKey == nil {
+                photos[targetIndex].remoteThumbnailKey = photos[twin].remoteThumbnailKey
+            }
+        }
+        let twinIDs = Set(twins.map { photos[$0].id })
+        photos.removeAll { twinIDs.contains($0.id) }
+        rebuildLookups()
+        bump()
+        saveSoon()
     }
 
     func removeCopy(serverID: UUID, from photoID: String) {
