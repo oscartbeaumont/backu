@@ -15,3 +15,5 @@ Tests/Fixtures/library/
 default.profraw
 *.profraw
 build/
+Tests/Fixtures/marketing/raw/
+Tests/Fixtures/marketing/library/
