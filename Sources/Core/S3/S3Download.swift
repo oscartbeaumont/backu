@@ -2,43 +2,48 @@ import Foundation
 
 /// Downloads a whole object to disk without ever holding it in memory. Small
 /// objects use one streaming connection (with resume); large objects fan out
-/// into byte ranges and concatenate the parts in order.
+/// into byte ranges sized by `TransferTuning`.
 extension S3Client {
-    static let parallelDownloadThreshold: Int64 = 32 * 1024 * 1024
+    static let parallelDownloadThreshold = TransferPlanner.downloadParallelThreshold
+    /// Legacy fixed size, kept for callers that referenced it. Adaptive plans
+    /// pick the real value.
     static let downloadPartSize: Int64 = 8 * 1024 * 1024
 
     /// Downloads `key` to `destination`, replacing it atomically on success.
-    /// `sizeHint` avoids a HEAD when the caller already knows the byte count.
+    ///
+    /// `sizeHint` still saves a round trip for small objects, but a hint does
+    /// not skip the latency probe for large ones: the app viewer always knows
+    /// the byte count from the catalog, and without the probe it would stay on
+    /// one stream on every network.
     func downloadObject(
         key: String,
         to destination: URL,
         sizeHint: Int64? = nil,
-        concurrency: Int = 4,
-        minimumRoundTripForParallel: TimeInterval = 0.012,
+        concurrency: Int = 0,
+        minimumRoundTripForParallel: TimeInterval = 0.008,
+        tuning: TransferTuning = .shared,
+        onPlan: (@Sendable (TransferPlan) -> Void)? = nil,
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws {
-        var size: Int64
-        var roundTrip: TimeInterval?
-        var supportsRanges = true
+        let started = Date()
         let hint = sizeHint.flatMap { $0 > 0 ? $0 : nil }
-        if let hint {
-            size = hint
-        } else {
-            size = 0
-        }
+        var size: Int64 = hint ?? 0
+        var roundTrip: TimeInterval?
+        var etag: String?
+        var supportsRanges = true
 
-        // A large object needs its size anyway, and the HEAD doubles as a
-        // latency probe. On a loopback/LAN link fanning out into ranges costs
-        // more in extra requests and a concatenation pass than it wins, so the
-        // parallel path is reserved for links with real round-trip latency.
+        // An unknown size needs a HEAD anyway; a large object uses it as the
+        // latency probe that decides whether ranges are worth the extra
+        // requests and the concatenation pass.
         if hint == nil || size >= Self.parallelDownloadThreshold {
-            let started = Date()
+            let probeStarted = Date()
             let head = try await headObject(key: key)
-            roundTrip = Date().timeIntervalSince(started)
+            roundTrip = Date().timeIntervalSince(probeStarted)
             guard let head else {
                 throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
             }
             size = head.size
+            etag = head.etag
             supportsRanges = head.acceptRanges != false
         }
 
@@ -54,28 +59,85 @@ extension S3Client {
             return
         }
 
-        let linkIsSlowEnough = (roundTrip ?? .greatestFiniteMagnitude) >= minimumRoundTripForParallel
-        if size >= Self.parallelDownloadThreshold, concurrency > 1, linkIsSlowEnough, supportsRanges {
+        let plan = tuning.plan(
+            serverKey: connection.transferTuningKey,
+            direction: .download,
+            size: size,
+            latency: roundTrip,
+            minimumLatencyForParallel: minimumRoundTripForParallel,
+            concurrencyCap: concurrency > 0 ? concurrency : nil
+        )
+        onPlan?(plan)
+
+        if plan.parallel, plan.partCount > 1, plan.concurrency > 1, supportsRanges {
             do {
                 try await downloadParallel(
                     key: key,
                     to: destination,
                     size: size,
-                    concurrency: concurrency,
+                    plan: plan,
+                    etag: etag,
                     progress: progress
                 )
+                record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: plan)
                 return
             } catch S3DownloadError.rangeUnsupported {
-                // The service ignored Range. Fall back to one stream; any
-                // part files were already cleaned up.
+                // The service ignored Range. Fall back to one stream; any part
+                // files were already cleaned up.
             }
         }
 
-        try await downloadSingle(
-            key: key,
-            to: destination,
-            size: size,
-            progress: progress
+        var single = plan
+        single.concurrency = 1
+        single.partCount = 1
+        single.parallel = false
+        single.reason = "single stream"
+
+        // A 412 means the object changed between the HEAD and the GET (or a
+        // resumed partial file belongs to an older version). Re-probe once so
+        // the viewer gets the current bytes instead of a failure.
+        var recovered = false
+        while true {
+            do {
+                try await downloadSingle(
+                    key: key,
+                    to: destination,
+                    size: size,
+                    etag: etag,
+                    progress: progress
+                )
+                break
+            } catch let error as S3Error {
+                guard !recovered,
+                      case let .http(status, _, _, _) = error,
+                      status == 412 else { throw error }
+                recovered = true
+                try? FileManager.default.removeItem(at: destination.appendingPathExtension("part"))
+                try? FileManager.default.removeItem(at: destination)
+                let head = try await headObject(key: key)
+                guard let head else {
+                    throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
+                }
+                size = head.size
+                etag = head.etag
+            }
+        }
+        record(tuning, direction: .download, bytes: size, seconds: Date().timeIntervalSince(started), plan: single)
+    }
+
+    private func record(
+        _ tuning: TransferTuning,
+        direction: TransferDirection,
+        bytes: Int64,
+        seconds: TimeInterval,
+        plan: TransferPlan
+    ) {
+        tuning.record(
+            serverKey: connection.transferTuningKey,
+            direction: direction,
+            bytes: bytes,
+            seconds: seconds,
+            plan: plan
         )
     }
 
@@ -85,6 +147,7 @@ extension S3Client {
         key: String,
         to destination: URL,
         size: Int64,
+        etag: String?,
         progress: (@Sendable (Double) -> Void)?
     ) async throws {
         let partial = destination.appendingPathExtension("part")
@@ -106,6 +169,12 @@ extension S3Client {
                 request.setValue("bytes=\(requestOffset)-", forHTTPHeaderField: "Range")
             }
             sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
+            if let etag {
+                // Signed headers do not include If-Match; S3 accepts unsigned
+                // conditional headers and it pins every byte to the version
+                // that the HEAD described.
+                request.setValue(etag, forHTTPHeaderField: "If-Match")
+            }
             return request
         }
 
@@ -167,10 +236,12 @@ extension S3Client {
         key: String,
         to destination: URL,
         size: Int64,
-        concurrency: Int,
+        plan: TransferPlan,
+        etag: String?,
         progress: (@Sendable (Double) -> Void)?
     ) async throws {
-        let partCount = max(2, min(concurrency, Int((size + Self.downloadPartSize - 1) / Self.downloadPartSize)))
+        let partCount = max(2, plan.partCount)
+        let concurrency = max(1, min(plan.concurrency, partCount))
         let base = size / Int64(partCount)
         let tempRoot = destination.deletingLastPathComponent()
             .appendingPathComponent(".backu-download-\(UUID().uuidString)", isDirectory: true)
@@ -205,6 +276,7 @@ extension S3Client {
                                 start: range.start,
                                 end: range.end,
                                 size: size,
+                                etag: etag,
                                 tracker: tracker,
                                 index: range.index,
                                 temporaryDirectory: tempRoot
@@ -268,6 +340,7 @@ extension S3Client {
         start: Int64,
         end: Int64,
         size: Int64,
+        etag: String?,
         tracker: DownloadProgressTracker,
         index: Int,
         temporaryDirectory: URL
@@ -276,6 +349,11 @@ extension S3Client {
             var request = try makeRequest(method: "GET", key: key, query: [])
             request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
             sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
+            if let etag {
+                // Every range must describe the same object version the HEAD
+                // did; otherwise a concurrent overwrite could interleave bytes.
+                request.setValue(etag, forHTTPHeaderField: "If-Match")
+            }
             return request
         }
         let length = end - start + 1

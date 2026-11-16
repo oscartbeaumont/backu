@@ -24,10 +24,13 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
     struct UploadResult: Sendable {
         var status: Int
         var etag: String?
+        /// Server-requested pause before retrying, when the response carried one.
+        var retryAfter: TimeInterval?
     }
 
-    struct HTTPStatusError: LocalizedError, S3HTTPStatusProviding {
+    struct HTTPStatusError: LocalizedError, S3HTTPStatusProviding, S3RetryAdviceProviding {
         var status: Int
+        var retryAfter: TimeInterval?
         var errorDescription: String? {
             switch status {
             case 401, 403: return "The storage service rejected the upload (HTTP \(status)). Check the key permissions."
@@ -180,12 +183,14 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
             continuation.resume(throwing: error)
             return
         }
-        let status = (task.response as? HTTPURLResponse)?.statusCode ?? -1
-        let etag = (task.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag")
+        let http = task.response as? HTTPURLResponse
+        let status = http?.statusCode ?? -1
+        let etag = http?.value(forHTTPHeaderField: "ETag")
+        let retryAfter = http.flatMap { S3RetryHeaders.retryAfter($0) }
         if (200..<300).contains(status) {
-            continuation.resume(returning: UploadResult(status: status, etag: etag))
+            continuation.resume(returning: UploadResult(status: status, etag: etag, retryAfter: retryAfter))
         } else {
-            continuation.resume(throwing: HTTPStatusError(status: status))
+            continuation.resume(throwing: HTTPStatusError(status: status, retryAfter: retryAfter))
         }
     }
 

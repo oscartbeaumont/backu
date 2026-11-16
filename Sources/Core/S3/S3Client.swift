@@ -77,7 +77,9 @@ struct S3Client: Sendable {
             let config = URLSessionConfiguration.default
             config.timeoutIntervalForRequest = 30
             config.timeoutIntervalForResource = 300
-            config.httpMaximumConnectionsPerHost = 6
+            // Match `TransferPlanner.connectionBudget`; the old value of 6
+            // silently throttled every 8-connection transfer plan.
+            config.httpMaximumConnectionsPerHost = TransferPlanner.connectionBudget
             config.waitsForConnectivity = true
             config.requestCachePolicy = .reloadIgnoringLocalCacheData
             self.session = URLSession(configuration: config)
@@ -303,8 +305,11 @@ struct S3Client: Sendable {
         signer.sign(&request, payloadHash: payloadHash)
     }
 
-    func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        try await sendWithRetry {
+    func perform(
+        _ request: URLRequest,
+        retryTransportErrors: Bool = true
+    ) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry(retryTransportErrors: retryTransportErrors) {
             let (data, response) = try await self.session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
@@ -336,7 +341,13 @@ struct S3Client: Sendable {
     /// Runs one HTTP exchange with retries for transient statuses and transport
     /// errors. Returns the final response, including a non-2xx one, so callers
     /// validate it with the body and can surface a useful error.
+    ///
+    /// `retryTransportErrors` is false for non-idempotent requests such as
+    /// `CreateMultipartUpload`: if the response is lost, a retry would create a
+    /// second upload and orphan the first. A non-2xx status is still safe to
+    /// retry because the request provably failed.
     private func sendWithRetry(
+        retryTransportErrors: Bool = true,
         _ operation: () async throws -> (Data, HTTPURLResponse)
     ) async throws -> (Data, HTTPURLResponse) {
         let policy = S3RetryPolicy.default
@@ -365,7 +376,8 @@ struct S3Client: Sendable {
                     throw CancellationError()
                 }
                 metrics?.recordTransportFailure()
-                guard attempt + 1 < policy.maxAttempts,
+                guard retryTransportErrors,
+                      attempt + 1 < policy.maxAttempts,
                       S3RetryPolicy.isRetryable(error: error) else {
                     throw error is S3Error ? error : S3Error.transport(error)
                 }

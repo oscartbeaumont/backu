@@ -23,8 +23,12 @@ struct Options {
     var sizes = [4, 32, 128]
     var runs = 3
     var warmups = 1
-    var concurrency = 4
-    var partSizeMB = 8
+    /// 0 means "let TransferTuning decide".
+    var concurrency = 0
+    /// 0 means "let TransferTuning decide".
+    var partSizeMB = 0
+    var network = "wifi"
+    var pass = "pass2"
     var output: String?
     var prefix = "bench"
 
@@ -50,8 +54,10 @@ struct Options {
                 options.sizes = value().split(separator: ",").compactMap { Int($0) }
             case "--runs": options.runs = max(1, Int(value()) ?? 3)
             case "--warmups": options.warmups = max(0, Int(value()) ?? 1)
-            case "--concurrency": options.concurrency = max(1, Int(value()) ?? 4)
-            case "--part-size-mb": options.partSizeMB = max(5, Int(value()) ?? 8)
+            case "--concurrency": options.concurrency = max(0, Int(value()) ?? 0)
+            case "--part-size-mb": options.partSizeMB = max(0, Int(value()) ?? 0)
+            case "--network": options.network = value()
+            case "--pass": options.pass = value()
             case "--output": options.output = value()
             case "--prefix": options.prefix = value()
             case "--help", "-h":
@@ -80,8 +86,10 @@ struct Options {
       --sizes LIST          comma-separated MiB sizes (default 4,32,128)
       --runs N              measured runs (default 3)
       --warmups N           warm-up runs (default 1)
-      --concurrency N       parallel parts/ranges (default 4)
-      --part-size-mb N      multipart part size (default 8)
+      --concurrency N       0 = adaptive (default), >0 forces a cap
+      --part-size-mb N      0 = adaptive (default), >0 forces a part size
+      --network NAME        wifi, wired, cellular, expensive, constrained or unknown
+      --pass NAME           results prefix (default pass2)
       --output PATH         JSON report path
       --prefix KEY          object key prefix (default bench)
     """
@@ -92,6 +100,10 @@ struct Sample: Codable {
     var megabytesPerSecond: Double
     var requests: Int
     var retries: Int
+    var partSizeBytes: Int64?
+    var concurrency: Int?
+    var partCount: Int?
+    var parallel: Bool?
 }
 
 struct Scenario: Codable {
@@ -103,6 +115,10 @@ struct Scenario: Codable {
     var medianElapsedSeconds: Double
     var requests: Int
     var retries: Int
+    var partSizeBytes: Int64?
+    var concurrency: Int?
+    var partCount: Int?
+    var reason: String?
     var samples: [Sample]
 }
 
@@ -112,6 +128,7 @@ struct Report: Codable {
     var profile: String
     var endpoint: String
     var mode: String
+    var network: String
     var sizesMB: [Int]
     var runs: Int
     var warmups: Int
@@ -142,16 +159,67 @@ func megabytes(_ bytes: Int) -> Double {
 }
 
 func describe(_ scenario: Scenario) -> String {
-    String(
-        format: "%-9s %-9s %5d MiB  %8.2f MB/s  %7.2fs  req=%-4d retry=%d",
+    let plan: String
+    if let partSize = scenario.partSizeBytes, let concurrency = scenario.concurrency {
+        plan = String(
+            format: "  parts=%.2fMiB x%d (%d)",
+            Double(partSize) / (1024 * 1024),
+            concurrency,
+            scenario.partCount ?? 0
+        )
+    } else {
+        plan = ""
+    }
+    return String(
+        format: "%-9s %-9s %5d MiB  %8.2f MB/s  %7.2fs  req=%-4d retry=%-3d%@",
         (scenario.mode as NSString).utf8String!,
         (scenario.operation as NSString).utf8String!,
         scenario.sizeMB,
         scenario.medianMegabytesPerSecond,
         scenario.medianElapsedSeconds,
         scenario.requests,
-        scenario.retries
+        scenario.retries,
+        plan
     )
+}
+
+func snapshot(for network: String) -> NetworkSnapshot {
+    var value = NetworkSnapshot()
+    value.hasPath = true
+    switch network {
+    case "wired": value.kind = .wired
+    case "wifi": value.kind = .wifi
+    case "cellular":
+        value.kind = .cellular
+        value.isExpensive = true
+    case "expensive":
+        value.kind = .expensive
+        value.isExpensive = true
+    case "constrained":
+        value.kind = .constrained
+        value.isConstrained = true
+    default: value.kind = .unknown
+    }
+    return value
+}
+
+final class PlanBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var plan: TransferPlan?
+
+    func set(_ value: TransferPlan) {
+        lock.lock()
+        plan = value
+        lock.unlock()
+    }
+
+    func take() -> TransferPlan? {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = plan
+        plan = nil
+        return value
+    }
 }
 
 func run() async -> Int32 {
@@ -170,17 +238,25 @@ func run() async -> Int32 {
     let credentials = S3Credentials(accessKeyID: options.accessKey, secretAccessKey: options.secret)
     let metrics = S3Metrics()
     let client = S3Client(connection: connection, credentials: credentials, metrics: metrics)
+    let link = snapshot(for: options.network)
+    // In-memory history: each benchmark process starts cold, exactly like a
+    // fresh install. The warm-up run is what seeds the EWMA.
+    let tuning = TransferTuning(
+        store: TransferTuningStore(persistence: .memory),
+        networkProvider: { link }
+    )
 
     let workDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("backu-bench-\(options.profile)-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
 
     var report = Report(
-        schema: "backu.benchmark.v1",
+        schema: "backu.benchmark.v2",
         generatedAt: ISO8601DateFormatter().string(from: Date()),
         profile: options.profile,
         endpoint: options.endpoint.absoluteString,
         mode: options.mode,
+        network: options.network,
         sizesMB: options.sizes,
         runs: options.runs,
         warmups: options.warmups,
@@ -212,8 +288,10 @@ func run() async -> Int32 {
         for mode in modes {
             for operation in ["upload", "download"] {
                 var samples: [Sample] = []
+                var lastPlan: TransferPlan?
                 for runIndex in 0..<(options.warmups + options.runs) {
                     let measured = runIndex >= options.warmups
+                    let planBox = PlanBox()
                     metrics.reset()
                     let started = Date()
                     do {
@@ -221,20 +299,24 @@ func run() async -> Int32 {
                             try await upload(
                                 options: options,
                                 client: client,
+                                tuning: tuning,
                                 source: source,
                                 sizeMB: sizeMB,
                                 mode: mode,
-                                runIndex: runIndex
+                                runIndex: runIndex,
+                                planBox: planBox
                             )
                         } else {
                             try await download(
                                 options: options,
                                 client: client,
+                                tuning: tuning,
                                 key: seedKey,
                                 sizeMB: sizeMB,
                                 mode: mode,
                                 runIndex: runIndex,
-                                workDirectory: workDirectory
+                                workDirectory: workDirectory,
+                                planBox: planBox
                             )
                         }
                     } catch {
@@ -243,13 +325,19 @@ func run() async -> Int32 {
                     }
                     let elapsed = Date().timeIntervalSince(started)
                     let snapshot = metrics.snapshot()
+                    let plan = planBox.take()
+                    if let plan { lastPlan = plan }
                     if measured {
                         samples.append(
                             Sample(
                                 elapsedSeconds: elapsed,
                                 megabytesPerSecond: megabytes(bytes) / elapsed,
                                 requests: snapshot.requests,
-                                retries: snapshot.retries
+                                retries: snapshot.retries,
+                                partSizeBytes: plan?.partSize,
+                                concurrency: plan?.concurrency,
+                                partCount: plan?.partCount,
+                                parallel: plan?.parallel
                             )
                         )
                     }
@@ -263,6 +351,10 @@ func run() async -> Int32 {
                     medianElapsedSeconds: median(samples.map(\.elapsedSeconds)),
                     requests: samples.map(\.requests).max() ?? 0,
                     retries: samples.map(\.retries).max() ?? 0,
+                    partSizeBytes: lastPlan?.partSize,
+                    concurrency: lastPlan?.concurrency,
+                    partCount: lastPlan?.partCount,
+                    reason: lastPlan?.reason,
                     samples: samples
                 )
                 report.scenarios.append(scenario)
@@ -293,16 +385,18 @@ func run() async -> Int32 {
 func defaultOutputPath(options: Options) -> String {
     let stamp = ISO8601DateFormatter().string(from: Date())
         .replacingOccurrences(of: ":", with: "-")
-    return "Tools/Benchmark/results/pass1-\(options.profile)-\(stamp).json"
+    return "Tools/Benchmark/results/\(options.pass)-\(options.profile)-\(stamp).json"
 }
 
 func upload(
     options: Options,
     client: S3Client,
+    tuning: TransferTuning,
     source: URL,
     sizeMB: Int,
     mode: String,
-    runIndex: Int
+    runIndex: Int,
+    planBox: PlanBox
 ) async throws {
     let key = "\(options.prefix)/upload/\(sizeMB)/\(mode)-\(runIndex).bin"
     if mode == "baseline" {
@@ -311,9 +405,11 @@ func upload(
     }
     let uploader = MultipartUploader(
         client: client,
-        partSize: options.partSizeMB * 1024 * 1024,
-        concurrency: options.concurrency,
-        threshold: MultipartUploader.defaultThreshold
+        partSize: options.partSizeMB > 0 ? options.partSizeMB * 1024 * 1024 : nil,
+        concurrency: options.concurrency > 0 ? options.concurrency : nil,
+        threshold: MultipartUploader.defaultThreshold,
+        tuning: tuning,
+        onPlan: { plan in planBox.set(plan) }
     )
     _ = try await uploader.upload(fileURL: source, key: key, contentType: "application/octet-stream")
 }
@@ -321,11 +417,13 @@ func upload(
 func download(
     options: Options,
     client: S3Client,
+    tuning: TransferTuning,
     key: String,
     sizeMB: Int,
     mode: String,
     runIndex: Int,
-    workDirectory: URL
+    workDirectory: URL,
+    planBox: PlanBox
 ) async throws {
     let destination = workDirectory.appendingPathComponent("download-\(sizeMB)-\(mode)-\(runIndex).bin")
     try? FileManager.default.removeItem(at: destination)
@@ -341,7 +439,9 @@ func download(
         key: key,
         to: destination,
         sizeHint: Int64(sizeMB * 1024 * 1024),
-        concurrency: options.concurrency
+        concurrency: options.concurrency,
+        tuning: tuning,
+        onPlan: { plan in planBox.set(plan) }
     )
 }
 

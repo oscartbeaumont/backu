@@ -118,7 +118,8 @@ struct S3RetryPolicy: Sendable {
                     throw error
                 }
                 attempt += 1
-                try await sleepBeforeRetry(attempt: attempt, retryAfter: nil)
+                let advice = (error as? any S3RetryAdviceProviding)?.retryAfter
+                try await sleepBeforeRetry(attempt: attempt, retryAfter: advice)
             }
         }
     }
@@ -128,6 +129,12 @@ struct S3RetryPolicy: Sendable {
 /// such as `BackgroundUploader.HTTPStatusError`.
 protocol S3HTTPStatusProviding {
     var status: Int { get }
+}
+
+/// Errors that can still see a server's `Retry-After` header after the response
+/// has been consumed, such as a background URLSession part upload.
+protocol S3RetryAdviceProviding {
+    var retryAfter: TimeInterval? { get }
 }
 
 enum S3RetryHeaders {

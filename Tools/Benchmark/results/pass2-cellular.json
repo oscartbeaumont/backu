@@ -1,0 +1,322 @@
+{
+  "concurrency" : 0,
+  "endpoint" : "http:\/\/127.0.0.1:9101",
+  "generatedAt" : "2026-11-16T19:23:57Z",
+  "mode" : "both",
+  "network" : "cellular",
+  "partSizeMB" : 0,
+  "profile" : "cellular",
+  "runs" : 3,
+  "scenarios" : [
+    {
+      "medianElapsedSeconds" : 4.565219044685364,
+      "medianMegabytesPerSecond" : 7.009521270891274,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "cellular",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 4.565219044685364,
+          "megabytesPerSecond" : 7.009521270891274,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.5655059814453125,
+          "megabytesPerSecond" : 7.009080730602764,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.561115026473999,
+          "megabytesPerSecond" : 7.01582832580695,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 4.4729390144348145,
+      "medianMegabytesPerSecond" : 7.15413286358956,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "cellular",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 4.4729390144348145,
+          "megabytesPerSecond" : 7.15413286358956,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.4713170528411865,
+          "megabytesPerSecond" : 7.156728011418113,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.473989009857178,
+          "megabytesPerSecond" : 7.152453868236375,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 4,
+      "medianElapsedSeconds" : 1.2219270467758179,
+      "medianMegabytesPerSecond" : 26.18814280642641,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 4,
+      "partSizeBytes" : 8388608,
+      "profile" : "cellular",
+      "reason" : "cellular, 6.8 MB\/s\/connection, 4 parts of 8.00 MiB",
+      "requests" : 6,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.2219270467758179,
+          "megabytesPerSecond" : 26.18814280642641,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 6,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.233855962753296,
+          "megabytesPerSecond" : 25.934955915432294,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 6,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.2216240167617798,
+          "megabytesPerSecond" : 26.194638907659993,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 6,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 4,
+      "medianElapsedSeconds" : 1.161641001701355,
+      "medianMegabytesPerSecond" : 27.54723701481987,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 4,
+      "partSizeBytes" : 8388608,
+      "profile" : "cellular",
+      "reason" : "cellular, 7.2 MB\/s\/connection, 4 parts of 8.00 MiB",
+      "requests" : 5,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.161641001701355,
+          "megabytesPerSecond" : 27.54723701481987,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 5,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.1694409847259521,
+          "megabytesPerSecond" : 27.363501380532604,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 5,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 1.1515100002288818,
+          "megabytesPerSecond" : 27.789598000572695,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 8388608,
+          "requests" : 5,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 18.191951036453247,
+      "medianMegabytesPerSecond" : 7.036078744028724,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "cellular",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 18.191951036453247,
+          "megabytesPerSecond" : 7.036078744028724,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 18.172245025634766,
+          "megabytesPerSecond" : 7.043708678781085,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 18.192580938339233,
+          "megabytesPerSecond" : 7.035835126078866,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "medianElapsedSeconds" : 17.939853072166443,
+      "medianMegabytesPerSecond" : 7.1349525263721985,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "cellular",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 17.941365957260132,
+          "megabytesPerSecond" : 7.134350879688939,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 17.939853072166443,
+          "megabytesPerSecond" : 7.1349525263721985,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 17.936577916145325,
+          "megabytesPerSecond" : 7.136255343600567,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "concurrency" : 4,
+      "medianElapsedSeconds" : 4.6506431102752686,
+      "medianMegabytesPerSecond" : 27.523075188718096,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 4,
+      "partSizeBytes" : 33554432,
+      "profile" : "cellular",
+      "reason" : "cellular, 7.1 MB\/s\/connection, 4 parts of 32.00 MiB",
+      "requests" : 6,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.655521035194397,
+          "megabytesPerSecond" : 27.494237279212552,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 6,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.6506431102752686,
+          "megabytesPerSecond" : 27.523075188718096,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 6,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.647615075111389,
+          "megabytesPerSecond" : 27.54100714696822,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 6,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "concurrency" : 4,
+      "medianElapsedSeconds" : 4.543968081474304,
+      "medianMegabytesPerSecond" : 28.169211954162762,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 4,
+      "partSizeBytes" : 33554432,
+      "profile" : "cellular",
+      "reason" : "cellular, 7.4 MB\/s\/connection, 4 parts of 32.00 MiB",
+      "requests" : 5,
+      "retries" : 0,
+      "samples" : [
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.556594967842102,
+          "megabytesPerSecond" : 28.091151595292622,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 5,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.523466110229492,
+          "megabytesPerSecond" : 28.296884928691572,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 5,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 4,
+          "elapsedSeconds" : 4.543968081474304,
+          "megabytesPerSecond" : 28.169211954162762,
+          "parallel" : true,
+          "partCount" : 4,
+          "partSizeBytes" : 33554432,
+          "requests" : 5,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    }
+  ],
+  "schema" : "backu.benchmark.v2",
+  "sizesMB" : [
+    32,
+    128
+  ],
+  "warmups" : 1
+}

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - Multipart primitives
@@ -23,7 +24,12 @@ extension S3Client {
         )
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
-        let (data, response) = try await perform(request)
+        // A lost response here means the upload may exist server-side with an id
+        // we never saw. Retrying would create a second, orphaned upload, so only
+        // status-code failures (which prove nothing was created) are retried.
+        // Pass 3 should reconcile orphans with ListMultipartUploads + a bucket
+        // lifecycle rule.
+        let (data, response) = try await perform(request, retryTransportErrors: false)
         try validate(response, data: data)
         guard let uploadID = MultipartResponseParser.uploadID(from: data), !uploadID.isEmpty else {
             throw S3Error.decoding("CreateMultipartUpload returned no UploadId")
@@ -42,6 +48,27 @@ extension S3Client {
             upload: upload,
             partNumber: partNumber,
             payloadHash: hash
+        )
+        let (body, response) = try await self.upload(request, data: data)
+        try validate(response, data: body)
+        guard let etag = response.value(forHTTPHeaderField: "ETag") else {
+            throw S3Error.decoding("UploadPart returned no ETag")
+        }
+        return S3MultipartPart(number: partNumber, etag: etag, size: Int64(data.count))
+    }
+
+    /// PUT /key?partNumber=N&uploadId=… with a payload hash the caller already
+    /// computed, so a direct upload does not hash the bytes twice.
+    func uploadPart(
+        upload: S3MultipartUpload,
+        partNumber: Int,
+        data: Data,
+        payloadHash: String
+    ) async throws -> S3MultipartPart {
+        let request = try signedUploadPartRequest(
+            upload: upload,
+            partNumber: partNumber,
+            payloadHash: payloadHash
         )
         let (body, response) = try await self.upload(request, data: data)
         try validate(response, data: body)
@@ -250,25 +277,45 @@ private final class MultipartResponseParser: NSObject, XMLParserDelegate {
 /// app injects a background-URLSession transport so multipart uploads keep
 /// moving when Backu leaves the foreground.
 struct MultipartTransport: Sendable {
+    /// Background sessions can only send a file, so those parts are staged on
+    /// disk. The direct transport uploads the bytes it already has in memory,
+    /// avoiding a write + read of every part.
+    enum Payload: Sendable {
+        case file(URL)
+        case data(Data)
+    }
+
+    var fileBacked: Bool
     var uploadPart: @Sendable (
         _ upload: S3MultipartUpload,
         _ partNumber: Int,
-        _ fileURL: URL,
+        _ payload: Payload,
         _ payloadHash: String,
         _ size: Int64,
         _ progress: MultipartProgressSink
     ) async throws -> S3MultipartPart
 
     static func direct(client: S3Client) -> MultipartTransport {
-        MultipartTransport { upload, number, fileURL, hash, size, progress in
+        MultipartTransport(fileBacked: false) { upload, number, payload, hash, size, progress in
             progress.report(0)
-            let part = try await client.uploadPart(
-                upload: upload,
-                partNumber: number,
-                fileURL: fileURL,
-                payloadHash: hash,
-                size: size
-            )
+            let part: S3MultipartPart
+            switch payload {
+            case let .data(data):
+                part = try await client.uploadPart(
+                    upload: upload,
+                    partNumber: number,
+                    data: data,
+                    payloadHash: hash
+                )
+            case let .file(fileURL):
+                part = try await client.uploadPart(
+                    upload: upload,
+                    partNumber: number,
+                    fileURL: fileURL,
+                    payloadHash: hash,
+                    size: size
+                )
+            }
             progress.report(1)
             return part
         }
@@ -291,43 +338,56 @@ final class MultipartProgressSink: @unchecked Sendable {
 
 /// Splits a large file into S3 parts and uploads a bounded number at once.
 /// Parts are read with `FileHandle`, so the whole file never sits in memory.
+/// Part size and concurrency come from `TransferTuning` unless the caller
+/// passes explicit values (tests and one-off tools do).
 struct MultipartUploader: Sendable {
-    static let defaultThreshold: Int64 = 16 * 1024 * 1024
-    static let minimumPartSize: Int64 = 5 * 1024 * 1024
-    static let maximumParts = 10_000
+    static let defaultThreshold = TransferPlanner.uploadMultipartThreshold
+    static let minimumPartSize = TransferPlanner.minimumUploadPartSize
+    static let maximumParts = TransferPlanner.maximumParts
 
     var client: S3Client
-    var partSize: Int
-    var concurrency: Int
+    var partSize: Int?
+    var concurrency: Int?
     var threshold: Int64
     var temporaryDirectory: URL?
     var transport: MultipartTransport?
+    var tuning: TransferTuning
+    /// Called once per upload with the adaptive decision, for logging and the
+    /// benchmark report.
+    var onPlan: (@Sendable (TransferPlan) -> Void)?
     var progress: (@Sendable (Double) -> Void)?
 
     init(
         client: S3Client,
-        partSize: Int = 8 * 1024 * 1024,
-        concurrency: Int = 4,
+        partSize: Int? = nil,
+        concurrency: Int? = nil,
         threshold: Int64 = MultipartUploader.defaultThreshold,
         temporaryDirectory: URL? = nil,
         transport: MultipartTransport? = nil,
+        tuning: TransferTuning = .shared,
+        onPlan: (@Sendable (TransferPlan) -> Void)? = nil,
         progress: (@Sendable (Double) -> Void)? = nil
     ) {
         self.client = client
-        self.partSize = max(Int(MultipartUploader.minimumPartSize), partSize)
-        self.concurrency = max(1, min(concurrency, 16))
+        self.partSize = partSize.map { max(Int(MultipartUploader.minimumPartSize), $0) }
+        self.concurrency = concurrency.map { max(1, min($0, TransferPlanner.connectionBudget)) }
         self.threshold = max(0, threshold)
         self.temporaryDirectory = temporaryDirectory
         self.transport = transport
+        self.tuning = tuning
+        self.onPlan = onPlan
         self.progress = progress
     }
 
     /// Returns the streaming SHA-256 of the file, which the sidecar records.
     @discardableResult
     func upload(fileURL: URL, key: String, contentType: String) async throws -> String {
+        let started = Date()
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         progress?(0)
+        let plan = plan(for: size)
+        onPlan?(plan)
 
         if size < threshold || size <= Self.minimumPartSize {
             let (request, hash) = try await client.signedPutFileRequestAsync(
@@ -338,6 +398,12 @@ struct MultipartUploader: Sendable {
             let (body, response) = try await client.upload(request, fileURL: fileURL)
             try client.validate(response, data: body)
             progress?(1)
+            record(
+                direction: .upload,
+                bytes: size,
+                seconds: Date().timeIntervalSince(started),
+                plan: plan
+            )
             return hash
         }
 
@@ -347,11 +413,8 @@ struct MultipartUploader: Sendable {
             try SigV4Signer.sha256Hex(contentsOfFile: fileURL)
         }
 
-        let effectivePartSize = Self.effectivePartSize(
-            size: size,
-            requested: partSize
-        )
-        let partCount = Int((size + effectivePartSize - 1) / effectivePartSize)
+        let effectivePartSize = plan.partSize
+        let partCount = plan.partCount
 
         let tempRoot = (temporaryDirectory ?? FileManager.default.temporaryDirectory)
             .appendingPathComponent("backu-multipart-\(UUID().uuidString)", isDirectory: true)
@@ -373,15 +436,22 @@ struct MultipartUploader: Sendable {
                 size: size,
                 partSize: effectivePartSize,
                 partCount: partCount,
+                concurrency: plan.concurrency,
                 tempRoot: tempRoot
             )
             if Task.isCancelled { throw CancellationError() }
             guard parts.count == partCount else {
                 throw S3Error.decoding("Only \(parts.count) of \(partCount) parts uploaded")
             }
-            _ = try await client.completeMultipartUpload(upload: upload, parts: parts)
+            try await complete(upload: upload, parts: parts, size: size)
             let hash = try await hashTask.value
             progress?(1)
+            record(
+                direction: .upload,
+                bytes: size,
+                seconds: Date().timeIntervalSince(started),
+                plan: plan
+            )
             return hash
         } catch {
             await abort(upload)
@@ -390,12 +460,56 @@ struct MultipartUploader: Sendable {
         }
     }
 
-    private static func effectivePartSize(size: Int64, requested: Int) -> Int64 {
-        var candidate = max(Int64(requested), minimumPartSize)
-        if size > candidate * Int64(maximumParts) {
-            candidate = (size + Int64(maximumParts) - 1) / Int64(maximumParts)
+    private func plan(for size: Int64) -> TransferPlan {
+        var plan = tuning.plan(
+            serverKey: client.connection.transferTuningKey,
+            direction: .upload,
+            size: size
+        )
+        if let partSize {
+            let requested = Int64(max(Int(Self.minimumPartSize), partSize))
+            plan.partSize = requested
+            plan.partCount = Int(TransferPlanner.ceilDiv(size, requested))
+            plan.concurrency = max(1, min(concurrency ?? plan.concurrency, plan.partCount))
+            plan.reason = "explicit \(Double(requested) / (1024 * 1024)) MiB parts"
+        } else if let concurrency {
+            plan.concurrency = max(1, min(concurrency, plan.partCount))
         }
-        return candidate
+        return plan
+    }
+
+    private func record(
+        direction: TransferDirection,
+        bytes: Int64,
+        seconds: TimeInterval,
+        plan: TransferPlan
+    ) {
+        tuning.record(
+            serverKey: client.connection.transferTuningKey,
+            direction: direction,
+            bytes: bytes,
+            seconds: seconds,
+            plan: plan
+        )
+    }
+
+    /// A transport failure after the server committed leaves the upload id
+    /// invalid (CompleteMultipartUpload is single-shot). If the object is there
+    /// with the expected size, the complete actually succeeded.
+    private func complete(
+        upload: S3MultipartUpload,
+        parts: [S3MultipartPart],
+        size: Int64
+    ) async throws {
+        do {
+            _ = try await client.completeMultipartUpload(upload: upload, parts: parts)
+        } catch let error as S3Error {
+            guard case .transport = error else { throw error }
+            if let head = (try? await client.headObject(key: upload.key)) ?? nil, head.size == size {
+                return
+            }
+            throw error
+        }
     }
 
     private func uploadParts(
@@ -404,11 +518,12 @@ struct MultipartUploader: Sendable {
         size: Int64,
         partSize: Int64,
         partCount: Int,
+        concurrency: Int,
         tempRoot: URL
     ) async throws -> [S3MultipartPart] {
         let tracker = MultipartProgressTracker(total: size, callback: progress)
         let transport = transport ?? .direct(client: client)
-        let maxConcurrent = concurrency
+        let maxConcurrent = max(1, concurrency)
 
         return try await withThrowingTaskGroup(of: S3MultipartPart.self) { group in
             var nextPart = 1
@@ -463,34 +578,78 @@ struct MultipartUploader: Sendable {
             throw S3Error.decoding("Part \(number) has no bytes")
         }
 
-        let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
-        try handle.seek(toOffset: UInt64(offset))
-        guard let data = try handle.read(upToCount: length), data.count == length else {
-            throw S3Error.decoding("Could not read part \(number) from the file")
+        let payload: MultipartTransport.Payload
+        let hash: String
+        if transport.fileBacked {
+            // Background sessions need a file. Hash and write it in one pass so
+            // the source is not read twice.
+            let partURL = tempRoot.appendingPathComponent("part-\(number).bin")
+            hash = try Self.writePart(of: fileURL, offset: offset, length: length, to: partURL)
+            payload = .file(partURL)
+        } else {
+            let data = try Self.readPart(of: fileURL, offset: offset, length: length)
+            hash = SigV4Signer.sha256Hex(data)
+            payload = .data(data)
         }
-
-        let partURL = tempRoot.appendingPathComponent("part-\(number).bin")
-        try data.write(to: partURL, options: .atomic)
-        let hash = SigV4Signer.sha256Hex(data)
         tracker.started(number: number, size: Int64(length))
 
         let part = try await transport.uploadPart(
             upload,
             number,
-            partURL,
+            payload,
             hash,
             Int64(length),
             MultipartProgressSink { fraction in
                 tracker.update(number: number, fraction: fraction)
             }
         )
-        try? FileManager.default.removeItem(at: partURL)
+        if case let .file(url) = payload {
+            try? FileManager.default.removeItem(at: url)
+        }
         guard part.size == Int64(length) else {
             throw S3Error.decoding("Part \(number) reported the wrong size")
         }
         tracker.finished(number: number, size: Int64(length))
         return part
+    }
+
+    private static func readPart(of url: URL, offset: Int64, length: Int) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        guard let data = try handle.read(upToCount: length), data.count == length else {
+            throw S3Error.decoding("Could not read a multipart part from the file")
+        }
+        return data
+    }
+
+    /// One pass over the source range: SHA-256 for signing and a plain write of
+    /// the staged part. Unlike `.atomic`, this does not write the bytes twice.
+    private static func writePart(
+        of url: URL,
+        offset: Int64,
+        length: Int,
+        to partURL: URL
+    ) throws -> String {
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        try input.seek(toOffset: UInt64(offset))
+        FileManager.default.createFile(atPath: partURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: partURL)
+        defer { try? output.close() }
+        var hasher = SHA256()
+        var remaining = length
+        let chunkSize = 1024 * 1024
+        while remaining > 0 {
+            let chunk = try input.read(upToCount: min(remaining, chunkSize)) ?? Data()
+            if chunk.isEmpty {
+                throw S3Error.decoding("Could not read a multipart part from the file")
+            }
+            hasher.update(data: chunk)
+            try output.write(contentsOf: chunk)
+            remaining -= chunk.count
+        }
+        return SigV4Signer.hex(Data(hasher.finalize()))
     }
 
     private func abort(_ upload: S3MultipartUpload) async {

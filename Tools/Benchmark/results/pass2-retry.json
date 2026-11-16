@@ -1,0 +1,169 @@
+{
+  "concurrency" : 0,
+  "endpoint" : "http:\/\/127.0.0.1:9103",
+  "generatedAt" : "2026-11-16T19:28:07Z",
+  "mode" : "both",
+  "network" : "wifi",
+  "partSizeMB" : 0,
+  "profile" : "retry",
+  "runs" : 3,
+  "scenarios" : [
+    {
+      "medianElapsedSeconds" : 9.159637928009033,
+      "medianMegabytesPerSecond" : 3.493587874488792,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "retry",
+      "requests" : 4,
+      "retries" : 3,
+      "samples" : [
+        {
+          "elapsedSeconds" : 18.724685072898865,
+          "megabytesPerSecond" : 1.708974002789245,
+          "requests" : 4,
+          "retries" : 3
+        },
+        {
+          "elapsedSeconds" : 9.159637928009033,
+          "megabytesPerSecond" : 3.493587874488792,
+          "requests" : 2,
+          "retries" : 1
+        },
+        {
+          "elapsedSeconds" : 4.562927007675171,
+          "megabytesPerSecond" : 7.013042274437812,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 4.5520259141922,
+      "medianMegabytesPerSecond" : 7.02983695682205,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "retry",
+      "requests" : 2,
+      "retries" : 1,
+      "samples" : [
+        {
+          "elapsedSeconds" : 4.47287905216217,
+          "megabytesPerSecond" : 7.154228770065075,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 4.676197052001953,
+          "megabytesPerSecond" : 6.8431675663240705,
+          "requests" : 2,
+          "retries" : 1
+        },
+        {
+          "elapsedSeconds" : 4.5520259141922,
+          "megabytesPerSecond" : 7.02983695682205,
+          "requests" : 2,
+          "retries" : 1
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 6,
+      "medianElapsedSeconds" : 1.8229939937591553,
+      "medianMegabytesPerSecond" : 17.55354110301456,
+      "mode" : "new",
+      "operation" : "upload",
+      "partCount" : 6,
+      "partSizeBytes" : 5592406,
+      "profile" : "retry",
+      "reason" : "wifi, 3.5 MB\/s\/connection, 6 parts of 5.33 MiB",
+      "requests" : 13,
+      "retries" : 5,
+      "samples" : [
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 0.8410890102386475,
+          "megabytesPerSecond" : 38.045913821796866,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 8,
+          "retries" : 0
+        },
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 3.3062710762023926,
+          "megabytesPerSecond" : 9.678577243810098,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 13,
+          "retries" : 5
+        },
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 1.8229939937591553,
+          "megabytesPerSecond" : 17.55354110301456,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 11,
+          "retries" : 3
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "concurrency" : 6,
+      "medianElapsedSeconds" : 0.9544260501861572,
+      "medianMegabytesPerSecond" : 33.52800355120077,
+      "mode" : "new",
+      "operation" : "download",
+      "partCount" : 6,
+      "partSizeBytes" : 5592406,
+      "profile" : "retry",
+      "reason" : "wifi, 4.2 MB\/s\/connection, 6 parts of 5.33 MiB",
+      "requests" : 11,
+      "retries" : 4,
+      "samples" : [
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 1.4871749877929688,
+          "megabytesPerSecond" : 21.517306478835668,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 11,
+          "retries" : 4
+        },
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 0.9544260501861572,
+          "megabytesPerSecond" : 33.52800355120077,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 10,
+          "retries" : 3
+        },
+        {
+          "concurrency" : 6,
+          "elapsedSeconds" : 0.9508670568466187,
+          "megabytesPerSecond" : 33.6534952700142,
+          "parallel" : true,
+          "partCount" : 6,
+          "partSizeBytes" : 5592406,
+          "requests" : 8,
+          "retries" : 1
+        }
+      ],
+      "sizeMB" : 32
+    }
+  ],
+  "schema" : "backu.benchmark.v2",
+  "sizesMB" : [
+    32
+  ],
+  "warmups" : 1
+}

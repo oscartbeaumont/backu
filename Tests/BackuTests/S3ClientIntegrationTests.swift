@@ -9,10 +9,11 @@ final class S3ClientIntegrationTests: XCTestCase {
     private let endpoint = URL(string: "http://127.0.0.1:9000")!
     private let bucket = "backu-test"
 
-    private func makeClient() -> S3Client {
+    private func makeClient(metrics: S3Metrics? = nil) -> S3Client {
         S3Client(
             connection: S3Connection(endpoint: endpoint, region: "us-east-1", bucket: bucket, pathStyle: true),
-            credentials: S3Credentials(accessKeyID: "testkey", secretAccessKey: "testsecret")
+            credentials: S3Credentials(accessKeyID: "testkey", secretAccessKey: "testsecret"),
+            metrics: metrics
         )
     }
 
@@ -232,6 +233,38 @@ final class S3ClientIntegrationTests: XCTestCase {
         try await client.deleteObject(key: key)
     }
 
+    func testSizeHintStillProbesAndUsesRanges() async throws {
+        try await requireServer()
+        // 24 MiB is below the old 32 MiB threshold and the caller knows the
+        // size, but the HEAD probe must still run so a real network can fan out.
+        let bytes = 24 * 1024 * 1024
+        let metrics = S3Metrics()
+        let client = makeClient(metrics: metrics)
+        let key = "Backu/Tests/hinted-\(UUID().uuidString.prefix(8)).bin"
+        let source = try makeTemporaryFile(bytes: bytes, fill: 0x21)
+        defer { try? FileManager.default.removeItem(at: source) }
+        _ = try await client.putFile(key: key, fileURL: source, contentType: "application/octet-stream")
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-hinted-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        metrics.reset()
+        try await client.downloadObject(
+            key: key,
+            to: destination,
+            sizeHint: Int64(bytes),
+            concurrency: 3,
+            minimumRoundTripForParallel: 0,
+            tuning: .inMemory
+        )
+        let values = try destination.resourceValues(forKeys: [.fileSizeKey])
+        XCTAssertEqual(values.fileSize, bytes)
+        // One HEAD plus one request per range.
+        XCTAssertEqual(metrics.snapshot().requests, 4)
+        try await client.deleteObject(key: key)
+    }
+
     func testDownloadResumesFromAPartialFile() async throws {
         try await requireServer()
         let client = makeClient()
@@ -257,6 +290,65 @@ final class S3ClientIntegrationTests: XCTestCase {
         XCTAssertEqual(downloaded, body)
         XCTAssertFalse(FileManager.default.fileExists(atPath: partial.path))
         try await client.deleteObject(key: key)
+    }
+
+    func testCancellingMultipartAbortsAndCleansUp() async throws {
+        try await requireServer()
+        let client = makeClient()
+        let key = "Backu/Tests/cancel-\(UUID().uuidString.prefix(8)).bin"
+        let source = try makeTemporaryFile(bytes: 6 * 1024 * 1024, fill: 0x55)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-cancel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+
+        let uploadID = IDBox()
+        // File-backed on purpose: this exercises the staged part file that a
+        // cancelled upload must clean up.
+        let transport = MultipartTransport(fileBacked: true) { upload, _, payload, _, _, _ in
+            uploadID.set(upload.uploadId)
+            guard case let .file(url) = payload,
+                  FileManager.default.fileExists(atPath: url.path) else {
+                throw S3Error.decoding("Part file missing before the transport ran")
+            }
+            try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+            throw CancellationError()
+        }
+        let uploader = MultipartUploader(
+            client: client,
+            partSize: 5 * 1024 * 1024,
+            concurrency: 1,
+            threshold: 0,
+            temporaryDirectory: staging,
+            transport: transport,
+            tuning: .inMemory
+        )
+        let task = Task {
+            try await uploader.upload(fileURL: source, key: key, contentType: "application/octet-stream")
+        }
+        var waited = 0
+        while uploadID.value == nil && waited < 200 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        task.cancel()
+        _ = await task.result
+
+        let id = try XCTUnwrap(uploadID.value)
+        do {
+            _ = try await client.listParts(upload: S3MultipartUpload(key: key, uploadId: id))
+            XCTFail("The multipart upload was not aborted")
+        } catch let error as S3Error {
+            guard case let .http(status, code, _, _) = error else {
+                return XCTFail("Unexpected error \(error)")
+            }
+            XCTAssertEqual(status, 404)
+            XCTAssertEqual(code, "NoSuchUpload")
+        }
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: staging.path)
+        XCTAssertTrue(leftovers.isEmpty, "Temporary part files left behind: \(leftovers)")
     }
 
     func testBackgroundUploaderCarriesAPartETag() async throws {
@@ -305,6 +397,23 @@ private final class ProgressBox: @unchecked Sendable {
     func record(_ fraction: Double) {
         lock.lock()
         stored = max(stored, fraction)
+        lock.unlock()
+    }
+}
+
+private final class IDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: String?
+
+    var value: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ value: String) {
+        lock.lock()
+        stored = value
         lock.unlock()
     }
 }

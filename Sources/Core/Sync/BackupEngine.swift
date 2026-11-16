@@ -491,7 +491,9 @@ final class BackupEngine {
         photoID: String
     ) async throws -> String {
         let allowsCellular = settings.backupOnCellular
-        let transport = MultipartTransport { upload, number, partURL, payloadHash, size, progress in
+        // File-backed because the background URLSession can only send a file;
+        // the uploader then hashes and stages each part in one pass.
+        let transport = MultipartTransport(fileBacked: true) { upload, number, payload, payloadHash, size, progress in
             let request = try client.signedUploadPartRequest(
                 upload: upload,
                 partNumber: number,
@@ -499,6 +501,9 @@ final class BackupEngine {
             )
             let sink = progress
             return try await S3RetryPolicy.default.run {
+                guard case let .file(partURL) = payload else {
+                    throw S3Error.decoding("Background uploads require file-backed parts")
+                }
                 let result = try await BackgroundUploader.shared.uploadResult(
                     fileURL: partURL,
                     request: request,
@@ -512,10 +517,10 @@ final class BackupEngine {
             }
         }
 
+        // Part size and concurrency are adaptive now: `TransferTuning` uses the
+        // file size, the link type and this server's measured throughput.
         let uploader = MultipartUploader(
             client: client,
-            partSize: 8 * 1024 * 1024,
-            concurrency: 4,
             temporaryDirectory: AppPaths.stagingDirectory,
             transport: transport
         ) { [weak self] fraction in

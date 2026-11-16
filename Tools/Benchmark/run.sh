@@ -61,28 +61,35 @@ start_mock "$RETRY_PORT" --latency-ms 25 --jitter-ms 5 --bandwidth-mbps 60 \
   --fail-rate 0.30 --fail-status 503 --seed 7
 
 run_profile() {
-  local profile="$1" port="$2" sizes="$3" output="$4"
+  local profile="$1" port="$2" sizes="$3" output="$4" network="$5"
   echo
-  echo "→ $profile (port $port, sizes $sizes MiB)"
+  echo "→ $profile (port $port, sizes $sizes MiB, network $network)"
   "$BENCH_BIN" \
     --endpoint "http://127.0.0.1:$port" \
     --profile "$profile" \
     --mode both \
     --sizes "$sizes" \
     --runs "$RUNS" \
+    --network "$network" \
+    --pass pass2 \
     --output "$RESULT_DIR/$output"
 }
 
 # Shaped: per-connection 60 Mbps + 25 ms latency. This models a single-stream
-# limited high-RTT mobile link; parallel connections can add up to ~4x here.
-run_profile shaped "$SHAPED_PORT" "$SIZES" "pass1-shaped.json"
+# limited high-RTT mobile link; adaptive parts/ranges can add up to ~8x here.
+run_profile shaped "$SHAPED_PORT" "$SIZES" "pass2-shaped.json" wifi
 
-# Localhost: no shaping, so this is a correctness and no-regression guard.
-run_profile localhost "$PLAIN_PORT" "$SIZES" "pass1-localhost.json"
+# Localhost: no shaping, so this is a correctness and no-regression guard. The
+# downloader's latency probe keeps it on one stream.
+run_profile localhost "$PLAIN_PORT" "$SIZES" "pass2-localhost.json" wired
+
+# Cellular: same shaped link, but the planner treats it as a metered radio and
+# caps concurrency at 4. Shows the network-aware decision, not a different mock.
+run_profile cellular "$SHAPED_PORT" "32,128" "pass2-cellular.json" cellular
 
 # Failure injection: proves retries work and that their counts are visible.
-run_profile retry "$RETRY_PORT" "32" "pass1-retry.json"
+run_profile retry "$RETRY_PORT" "32" "pass2-retry.json" wifi
 
 echo
 echo "Reports written to $RESULT_DIR:"
-ls -1 "$RESULT_DIR"/pass1-*.json
+ls -1 "$RESULT_DIR"/pass2-*.json

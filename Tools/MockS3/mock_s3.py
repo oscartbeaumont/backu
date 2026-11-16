@@ -1203,6 +1203,7 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 f"The specified key does not exist: {key!r}.",
                 extra={"Key": key},
             )
+        self._require_if_match(item)
         path, size = found
         common_headers = [
             ("ETag", f'"{item["etag"]}"'),
@@ -1242,6 +1243,7 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 f"The specified key does not exist: {key!r}.",
                 extra={"Key": key},
             )
+        self._require_if_match(item)
         self._send(
             200,
             b"",
@@ -1257,6 +1259,21 @@ class MockS3Handler(BaseHTTPRequestHandler):
     def _delete_object(self, key: str) -> None:
         self.store.delete(key)
         self._send_empty(204)
+
+    def _require_if_match(self, item: dict) -> None:
+        """Honour `If-Match` like S3: a stale ETag is a 412, so a multi-range
+        download cannot interleave bytes from two object versions."""
+        raw = (self.headers.get("If-Match") or "").strip()
+        if not raw or raw == "*":
+            return
+        quoted = f'"{item["etag"]}"'
+        candidates = {value.strip() for value in raw.split(",")}
+        if quoted not in candidates and item["etag"] not in candidates:
+            raise S3Error(
+                412,
+                "PreconditionFailed",
+                "At least one of the preconditions you specified did not hold.",
+            )
 
     def _list_objects(self, params: dict[str, str]) -> None:
         prefix = params.get("prefix", "")

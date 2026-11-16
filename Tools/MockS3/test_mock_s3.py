@@ -876,6 +876,25 @@ class RangeTests(MockS3TestCase):
         self.assertEqual(response.error()["code"], "InvalidRange")
         self.assertEqual(response.headers["content-range"], f"bytes */{len(self.payload)}")
 
+    def test_if_match_allows_the_current_etag(self) -> None:
+        etag = self.head(self.key).headers["etag"]
+        response = call(
+            "GET",
+            f"/{BUCKET}/{self.key}",
+            extra_headers={"Range": "bytes=0-9", "If-Match": etag},
+        )
+        self.assertEqual(response.status, 206, response.body)
+        self.assertEqual(response.body, self.payload[:10])
+
+    def test_if_match_rejects_a_stale_etag(self) -> None:
+        response = call(
+            "GET",
+            f"/{BUCKET}/{self.key}",
+            extra_headers={"Range": "bytes=0-9", "If-Match": '"stale-etag"'},
+        )
+        self.assertEqual(response.status, 412)
+        self.assertEqual(response.error()["code"], "PreconditionFailed")
+
 
 # --------------------------------------------------------------------------- #
 # shaping and failure injection

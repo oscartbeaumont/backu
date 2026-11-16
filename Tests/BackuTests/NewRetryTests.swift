@@ -116,6 +116,30 @@ final class NewRetryTests: XCTestCase {
         XCTAssertLessThanOrEqual(dateDelay, 31)
     }
 
+    func testRetryAdviceDelaysTheNextAttempt() async {
+        // Background URLSession part uploads surface `Retry-After` only through
+        // the thrown status error; the retry loop must honour it.
+        let policy = S3RetryPolicy(
+            maxAttempts: 3,
+            baseDelay: 0.001,
+            multiplier: 2,
+            maxDelay: 0.001,
+            random: { _ in 0 }
+        )
+        var attempts = 0
+        let started = Date()
+        let value = try? await policy.run { () -> Int in
+            attempts += 1
+            if attempts == 1 {
+                throw BackgroundUploader.HTTPStatusError(status: 429, retryAfter: 0.05)
+            }
+            return 7
+        }
+        XCTAssertEqual(value, 7)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.045)
+    }
+
     func testCancellationStopsRetries() async {
         let policy = S3RetryPolicy(
             maxAttempts: 5,
