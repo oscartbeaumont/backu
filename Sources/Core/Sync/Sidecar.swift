@@ -176,7 +176,13 @@ struct RemoteIndexDocument: Codable, Sendable {
         serverID: UUID,
         device: String
     ) -> RemoteIndexDocument {
-        let relevant = photos.filter { photo in photo.copies.contains { $0.serverID == serverID } }
+        var seenHashes = Set<String>()
+        let relevant = photos
+            .filter { photo in photo.copies.contains { $0.serverID == serverID } }
+            .filter { photo in
+                guard let sha = photo.sha256 else { return true }
+                return seenHashes.insert(sha).inserted
+            }
         let referencedPeople = Set(relevant.flatMap { $0.faces.compactMap(\.personID) })
         return RemoteIndexDocument(
             updatedAt: Date(),
@@ -192,7 +198,7 @@ struct RemoteIndexDocument: Codable, Sendable {
                         coverThumbnail: nil
                     )
                 },
-            photos: relevant.compactMap { photo in
+            photos: relevant.compactMap { photo -> PhotoEntry? in
                 guard let copy = photo.copy(on: serverID) else { return nil }
                 return PhotoEntry(
                     id: photo.id,

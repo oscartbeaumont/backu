@@ -219,7 +219,7 @@ struct FaceClusterer {
                     coverPhotoID: ref.photoID,
                     coverFaceID: ref.face.id
                 )
-                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: person.id)
+                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: person.id, markDirty: false)
                 result.newPeople += 1
             }
             return result
@@ -258,7 +258,7 @@ struct FaceClusterer {
             }
 
             if let best {
-                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: best.personID)
+                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: best.personID, markDirty: false)
                 profiles[best.personID]?.vectors.append(ref.vector)
                 if let index = unnamedClusters.firstIndex(where: { $0.personID == best.personID }) {
                     unnamedClusters[index].vectors.append(ref.vector)
@@ -270,7 +270,7 @@ struct FaceClusterer {
                     coverPhotoID: ref.photoID,
                     coverFaceID: ref.face.id
                 )
-                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: person.id)
+                catalog.assign(faceID: ref.face.id, in: ref.photoID, to: person.id, markDirty: false)
                 profiles[person.id] = (ref.face.kind, [ref.vector])
                 unnamedClusters.append((person.id, [ref.vector], ref.face.kind))
                 result.newPeople += 1

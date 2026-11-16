@@ -98,6 +98,40 @@ final class CatalogMergeTests: XCTestCase {
         XCTAssertEqual(document.photoItems(serverID: UUID()).first?.faces.count, 1)
     }
 
+    func testImportDeduplicatesByContentHash() {
+        let store = CatalogStore(loadFromDisk: false)
+        let serverID = UUID()
+        var local = photo(id: "asset:1")
+        local.sha256 = "same-bytes"
+        store.mergeScanned([local])
+
+        func remote(id: String, key: String) -> PhotoItem {
+            PhotoItem(
+                id: id,
+                filename: "a.jpg",
+                takenAt: Date(),
+                copies: [
+                    PhotoCopy(
+                        serverID: serverID,
+                        objectKey: key,
+                        sidecarKey: key + ".json",
+                        thumbnailKey: nil,
+                        uploadedAt: Date(),
+                        byteCount: 1,
+                        etag: nil,
+                        sha256: "same-bytes"
+                    )
+                ],
+                sha256: "same-bytes"
+            )
+        }
+
+        let imported = store.importRemotePhotos([remote(id: "remote:1", key: "A"), remote(id: "remote:2", key: "B")])
+        XCTAssertEqual(imported, 0, "Identical bytes should fold into the local photo")
+        XCTAssertEqual(store.photos.count, 1)
+        XCTAssertEqual(store.photo(id: "asset:1")?.copies.count, 1)
+    }
+
     func testCanonicalURIKeepsTrailingSlash() throws {
         let url = try XCTUnwrap(URL(string: "https://example.com/bucket/folder/"))
         XCTAssertEqual(SigV4Signer.canonicalURI(for: url), "/bucket/folder/")

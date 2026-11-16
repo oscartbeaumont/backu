@@ -409,7 +409,7 @@ final class CatalogStore {
         saveSoon()
     }
 
-    func assign(faceID: UUID, in photoID: String, to personID: UUID?) {
+    func assign(faceID: UUID, in photoID: String, to personID: UUID?, markDirty: Bool = true) {
         guard let photoIndex = photos.firstIndex(where: { $0.id == photoID }),
               let faceIndex = photos[photoIndex].faces.firstIndex(where: { $0.id == faceID }) else { return }
         let previousPerson = photos[photoIndex].faces[faceIndex].personID
@@ -431,7 +431,7 @@ final class CatalogStore {
             }
             recount(personID)
         }
-        photos[photoIndex].sidecarDirtyAt = Date()
+        if markDirty { photos[photoIndex].sidecarDirtyAt = Date() }
         bump()
         saveSoon()
     }
@@ -589,10 +589,23 @@ final class CatalogStore {
                 }
                 continue
             }
+            if let sha = item.sha256, byHash[sha] != nil {
+                // The same bytes are already here (perhaps under another
+                // device's identifier); fold the new copy into that photo.
+                if let existingID = byHash[sha], var existing = photoByID[existingID] {
+                    for copy in item.copies where !existing.copies.contains(where: { $0.serverID == copy.serverID }) {
+                        existing.copies.append(copy)
+                    }
+                    existing.remoteThumbnailKey = existing.remoteThumbnailKey ?? item.remoteThumbnailKey
+                    upsertInMemory(existing)
+                }
+                continue
+            }
             if photoByID[item.id] == nil {
                 var item = item
                 item.localIdentifier = nil
                 upsertInMemory(item)
+                if let sha = item.sha256 { byHash[sha] = item.id }
                 imported += 1
             }
         }
