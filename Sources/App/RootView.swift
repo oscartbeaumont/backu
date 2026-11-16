@@ -58,9 +58,6 @@ struct RootView: View {
             Tab(AppTab.people.title, systemImage: AppTab.people.symbol, value: .people) {
                 NavigationStack { PeopleScreen() }
             }
-            Tab(AppTab.servers.title, systemImage: AppTab.servers.symbol, value: .servers) {
-                NavigationStack { ServersScreen() }
-            }
             Tab(AppTab.settings.title, systemImage: AppTab.settings.symbol, value: .settings) {
                 NavigationStack { SettingsScreen() }
             }
@@ -79,7 +76,6 @@ struct RootView: View {
                 case .library: LibraryScreen()
                 case .search: SearchScreen()
                 case .people: PeopleScreen()
-                case .servers: ServersScreen()
                 case .settings: SettingsScreen()
                 }
             }

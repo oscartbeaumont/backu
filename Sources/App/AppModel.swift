@@ -7,7 +7,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     case library
     case search
     case people
-    case servers
     case settings
 
     var id: String { rawValue }
@@ -17,7 +16,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
         case .library: return "Library"
         case .search: return "Search"
         case .people: return "People"
-        case .servers: return "Servers"
         case .settings: return "Settings"
         }
     }
@@ -27,7 +25,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
         case .library: return "photo.on.rectangle.angled"
         case .search: return "magnifyingglass"
         case .people: return "person.crop.circle"
-        case .servers: return "externaldrive.connected.to.line.below"
         case .settings: return "gearshape"
         }
     }

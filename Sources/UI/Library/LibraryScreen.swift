@@ -1,11 +1,5 @@
 import SwiftUI
 
-struct MonthGroup: Identifiable {
-    var id: String
-    var date: Date
-    var photos: [PhotoItem]
-}
-
 enum LibraryFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case favorites = "Favorites"
@@ -24,10 +18,40 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// One entry of the year rail. The first photo of a year doubles as the
+/// scroll anchor for that year.
+struct YearAnchor: Identifiable, Equatable {
+    var year: Int
+    var photoID: String
+    var id: Int { year }
+}
+
+/// Cheap lookup table for the timeline labels. Kept in sync with the visible
+/// photos so scrolling never has to filter the catalog.
+struct TimelineIndex {
+    var dates: [Date?] = []
+    var anchors: [YearAnchor] = []
+}
+
+/// A mutable box that does not invalidate the view: the grid's frame changes on
+/// every scroll tick, and only the derived labels should cause updates.
+@MainActor
+final class TimelineMetrics {
+    var frame: CGRect = .zero
+}
+
 struct LibraryScreen: View {
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var sizeClass
+
     @State private var filter: LibraryFilter = .all
+    @State private var showAddServer = false
+    @State private var scrollTop: CGFloat = 0
+    @State private var index = TimelineIndex()
+    @State private var metrics = TimelineMetrics()
+    @State private var label = TimelineLabelState()
+
+    private let calendar = Calendar(identifier: .gregorian)
 
     private var photos: [PhotoItem] {
         var photos = app.catalog.photos
@@ -43,23 +67,6 @@ struct LibraryScreen: View {
         return photos
     }
 
-    private var months: [MonthGroup] {
-        let calendar = Calendar(identifier: .gregorian)
-        var groups: [String: [PhotoItem]] = [:]
-        var dates: [String: Date] = [:]
-        for photo in photos {
-            let date = photo.takenAt ?? Date.distantPast
-            let components = calendar.dateComponents([.year, .month], from: date)
-            let key = String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
-            groups[key, default: []].append(photo)
-            dates[key] = date
-        }
-        return groups.keys.sorted(by: >).compactMap { key in
-            guard let items = groups[key], let date = dates[key] else { return nil }
-            return MonthGroup(id: key, date: date, photos: items)
-        }
-    }
-
     private var columns: Int {
         let base = app.settings.gridColumns
         #if os(macOS)
@@ -70,107 +77,106 @@ struct LibraryScreen: View {
     }
 
     var body: some View {
-        @Bindable var app = app
-        ScrollView {
-            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                header
-                filterBar
-                if app.backup.isRunning {
-                    BackupBanner()
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
-                }
-                if app.remoteSyncMessage != nil {
-                    remoteBanner
-                }
-                if photos.isEmpty {
-                    emptyState
-                } else {
-                    ForEach(months) { month in
-                        Section {
-                            grid(month.photos)
-                                .padding(.bottom, 18)
-                        } header: {
-                            monthHeader(month)
-                        }
-                    }
-                }
-            }
-            .padding(.bottom, 90)
-        }
-        .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.immediately)
-        .background(Theme.pageBackground)
         #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
+        GeometryReader { proxy in
+            timeline(topInset: proxy.safeAreaInsets.top, availableHeight: proxy.size.height)
+        }
+        #else
+        timeline(topInset: 0, availableHeight: 900)
         #endif
     }
 
-    private var header: some View {
-        ScreenTitle("Library", subtitle: subtitle) {
-            HStack(spacing: 8) {
-                Menu {
-                    Picker("Grid size", selection: Binding(
-                        get: { app.settings.gridColumns },
-                        set: { app.settings.gridColumns = $0 }
-                    )) {
-                        Label("Large", systemImage: "square.grid.2x2").tag(2)
-                        Label("Medium", systemImage: "square.grid.3x3").tag(3)
-                        Label("Small", systemImage: "square.grid.4x4").tag(4)
-                        Label("Tiny", systemImage: "square.grid.2x2.fill").tag(6)
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("Grid size")
+    private func timeline(topInset: CGFloat, availableHeight: CGFloat) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Color.clear
+                        .frame(height: 0)
+                        .id("library.top")
 
-                if app.backup.isRunning {
-                    Button {
-                        app.backup.cancel()
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            .frame(width: 44, height: 44)
+                    header(topInset: topInset)
+                    filterBar(proxy: proxy)
+
+                    if app.backup.isRunning {
+                        BackupBanner()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .tint(.red)
-                    .accessibilityLabel("Stop backup")
-                } else if app.servers.servers.isEmpty {
-                    Button {
-                        app.activeTab = .servers
-                    } label: {
-                        Label("Add storage", systemImage: "externaldrive.badge.plus")
-                            .font(.footnote.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .frame(height: 44)
+                    if app.remoteSyncMessage != nil {
+                        remoteBanner
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-                } else if pendingCount == 0 {
-                    Image(systemName: "checkmark.icloud.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Theme.mint)
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("All \(app.catalog.photos.count) photos backed up")
-                } else {
-                    Button {
-                        app.startBackup()
-                    } label: {
-                        Image(systemName: "arrow.up.to.line.compact")
-                            .font(.system(size: 17, weight: .semibold))
-                            .frame(width: 44, height: 44)
+
+                    if photos.isEmpty {
+                        emptyState
+                    } else {
+                        photoGrid
                     }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .accessibilityLabel("Back up \(pendingCount) photos to \(app.backupServer?.name ?? "storage")")
+
+                    Color.clear.frame(height: 10)
                 }
             }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.immediately)
+            .background(Theme.pageBackground)
+            #if os(iOS)
+            .ignoresSafeArea(edges: .top)
+            #endif
+            .onGeometryChange(for: CGFloat.self) { view in
+                view.frame(in: .global).minY
+            } action: { value in
+                scrollTop = value
+                updateTimeline()
+            }
+            .overlay(alignment: .top) {
+                LibraryTopBar(
+                    label: label,
+                    pendingCount: pendingCount
+                ) {
+                    showAddServer = true
+                }
+            }
+            .overlay(alignment: .trailing) {
+                YearRail(
+                    anchors: index.anchors,
+                    availableHeight: availableHeight,
+                    label: label
+                ) { year in
+                    jump(to: year, using: proxy)
+                }
+                .padding(.trailing, 6)
+            }
         }
+        .task {
+            rebuildTimeline()
+            label.touch()
+        }
+        .onChange(of: app.settings.showRemoteOnlyPhotos) { _, _ in rebuildTimeline() }
+        .onChange(of: app.catalog.photos.count) { _, _ in rebuildTimeline() }
+        .onChange(of: app.backup.lastRunAt) { _, _ in
+            if filter == .pending { rebuildTimeline() }
+        }
+        .onDisappear { label.cancel() }
+        .sheet(isPresented: $showAddServer) {
+            AddServerFlow()
+                .environment(app)
+        }
+    }
+
+    // MARK: Header
+
+    private func header(topInset: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Library")
+                .font(.largeTitle.bold())
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.trailing, 104)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, topInset + 10)
+        .padding(.bottom, 4)
     }
 
     private var subtitle: String {
@@ -187,12 +193,21 @@ struct LibraryScreen: View {
         app.catalog.photos.filter { !$0.isBackedUp || $0.sidecarDirtyAt != nil }.count
     }
 
-    private var filterBar: some View {
+    // MARK: Filters
+
+    private func filterBar(proxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(LibraryFilter.allCases) { option in
-                    FilterChip(title: option.rawValue, isSelected: filter == option) {
-                        withAnimation(.backuSnappy) { filter = option }
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 8) {
+                    ForEach(LibraryFilter.allCases) { option in
+                        FilterChip(title: option.rawValue, isSelected: filter == option) {
+                            guard filter != option else { return }
+                            withAnimation(.backuSnappy) {
+                                filter = option
+                                proxy.scrollTo("library.top", anchor: .top)
+                            }
+                            rebuildTimeline()
+                        }
                     }
                 }
             }
@@ -200,7 +215,10 @@ struct LibraryScreen: View {
             .padding(.vertical, 6)
         }
         .scrollIndicators(.hidden)
+        .padding(.bottom, 6)
     }
+
+    // MARK: Banners and empty state
 
     private var remoteBanner: some View {
         HStack(spacing: 10) {
@@ -218,9 +236,10 @@ struct LibraryScreen: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
         }
         .padding(12)
-        .glassSurface(16)
+        .contentCard(radius: 16)
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
     }
@@ -256,36 +275,80 @@ struct LibraryScreen: View {
         .padding(.top, 40)
     }
 
-    private func monthHeader(_ month: MonthGroup) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(month.date.formatted(.dateTime.month(.wide).year()))
-                .font(.headline)
-            Text("\(month.photos.count)")
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.tertiary)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background {
-            Rectangle()
-                .fill(.bar)
-                .ignoresSafeArea(edges: .horizontal)
-        }
-    }
+    // MARK: Continuous grid
 
-    private func grid(_ items: [PhotoItem]) -> some View {
+    private var photoGrid: some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: columns),
-            spacing: 2
+            columns: Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columns),
+            spacing: gridSpacing
         ) {
-            ForEach(items) { photo in
-                PhotoTile(photo: photo, columns: columns) {
+            ForEach(photos) { photo in
+                PhotoTile(photo: photo, columns: columns, cornerRadius: 0) {
                     app.viewer = app.photosForViewer(startingAt: photo.id, within: photos)
                 }
+                .id(photo.id)
             }
         }
         .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGRect.self) { view in
+            view.frame(in: .global)
+        } action: { frame in
+            metrics.frame = frame
+            updateTimeline()
+            label.touch()
+        }
+    }
+
+    private var gridSpacing: CGFloat { 2 }
+
+    // MARK: Timeline labels
+
+    private func rebuildTimeline() {
+        var dates: [Date?] = []
+        var anchors: [YearAnchor] = []
+        dates.reserveCapacity(photos.count)
+        var previousYear: Int?
+        for photo in photos {
+            let date = photo.takenAt ?? photo.addedAt
+            dates.append(date)
+            guard let date else { continue }
+            let year = calendar.component(.year, from: date)
+            if year != previousYear {
+                anchors.append(YearAnchor(year: year, photoID: photo.id))
+                previousYear = year
+            }
+        }
+        index = TimelineIndex(dates: dates, anchors: anchors)
+        updateTimeline()
+    }
+
+    private func updateTimeline() {
+        let frame = metrics.frame
+        guard frame.width > 0, !index.dates.isEmpty else {
+            label.update(month: nil, year: nil)
+            label.isCollapsed = false
+            return
+        }
+
+        let tile = (frame.width - gridSpacing * CGFloat(columns - 1)) / CGFloat(columns)
+        let rowHeight = max(tile + gridSpacing, 1)
+        let travelled = scrollTop - frame.minY
+        let row = max(0, Int(floor(travelled / rowHeight)))
+        let position = min(row * columns, index.dates.count - 1)
+
+        label.isCollapsed = travelled >= 0
+
+        guard let date = index.dates[position] else { return }
+        let parts = calendar.dateComponents([.year, .month], from: date)
+        guard let month = calendar.date(from: parts) else { return }
+        label.update(month: month, year: parts.year)
+    }
+
+    private func jump(to year: Int, using proxy: ScrollViewProxy) {
+        guard let anchor = index.anchors.first(where: { $0.year == year }) else { return }
+        withAnimation(.smooth(duration: 0.32)) {
+            proxy.scrollTo(anchor.photoID, anchor: .top)
+        }
     }
 }
 
@@ -315,7 +378,7 @@ struct BackupBanner: View {
             ProgressBar(value: app.backup.progress)
         }
         .padding(14)
-        .glassSurface(18)
+        .contentCard(radius: 16)
     }
 
     private func formattedBytes(_ bytes: Int64) -> String {

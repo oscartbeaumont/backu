@@ -8,12 +8,6 @@ struct ServersScreen: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                ScreenTitle("Servers", subtitle: subtitle) {
-                    GlassIconButton(symbol: "plus", label: "Add server") {
-                        showAdd = true
-                    }
-                }
-
                 if app.servers.servers.isEmpty {
                     EmptyStateView(
                         symbol: "externaldrive.badge.plus",
@@ -23,8 +17,13 @@ struct ServersScreen: View {
                     ) {
                         showAdd = true
                     }
-                    .padding(.top, 30)
+                    .padding(.top, 24)
                 } else {
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
                     overview
                     ForEach(app.servers.servers) { server in
                         ServerCard(server: server) {
@@ -33,14 +32,25 @@ struct ServersScreen: View {
                     }
                 }
             }
-            .padding(.bottom, 90)
+            .padding(.vertical, 12)
+            .padding(.bottom, 40)
         }
         .scrollIndicators(.hidden)
         .background(Theme.pageBackground)
-        .topScrollScrim()
+        .navigationTitle("Servers")
         #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.large)
         #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showAdd = true
+                } label: {
+                    Label("Add server", systemImage: "plus")
+                }
+                .accessibilityIdentifier("servers.add")
+            }
+        }
         .sheet(isPresented: $showAdd) {
             AddServerFlow()
                 .environment(app)

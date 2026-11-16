@@ -12,9 +12,9 @@ struct SettingsScreen: View {
                 ScreenTitle("Settings", subtitle: "Backup, library and privacy")
 
                 backupCard()
+                serversCard()
                 libraryCard()
                 peopleCard()
-                storageCard()
                 supportCard
                 aboutCard
             }
@@ -241,6 +241,16 @@ struct SettingsScreen: View {
                 .labelsHidden()
                 .tint(Theme.accent)
             }
+
+            Divider().opacity(0.4)
+            Button(role: .destructive) {
+                confirmReset = true
+            } label: {
+                Label("Reset library index", systemImage: "trash")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -299,49 +309,60 @@ struct SettingsScreen: View {
         }
     }
 
-    // MARK: Storage
+    // MARK: Servers
 
-    private func storageCard() -> some View {
-        SettingsCard(title: "Storage", symbol: "externaldrive") {
-            ForEach(app.servers.servers) { server in
+    private func serversCard() -> some View {
+        SettingsCard(title: "Servers", symbol: "externaldrive") {
+            NavigationLink {
+                ServersScreen()
+            } label: {
                 HStack(spacing: 12) {
-                    ProviderBadge(provider: server.provider, size: 26)
+                    if let server = app.backupServer {
+                        ProviderBadge(provider: server.provider, size: 30)
+                    } else {
+                        Image(systemName: "externaldrive.badge.plus")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 26)
+                    }
+
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(server.name)
+                        Text(serverCountTitle)
                             .font(.subheadline)
-                        Text(app.settings.backupServerID == server.id ? "\(server.bucket) · Auto-backup" : server.bucket)
+                        Text(serversSubtitle)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Spacer()
-                    if app.settings.backupServerID == server.id {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(Theme.accent)
-                    }
-                }
-            }
-            Button {
-                showAddServer = true
-            } label: {
-                Label("Add a server", systemImage: "plus.circle")
-                    .font(.footnote.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
 
-            Divider().opacity(0.4)
-            Button(role: .destructive) {
-                confirmReset = true
-            } label: {
-                Label("Reset library index", systemImage: "trash")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.red)
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("settings.servers")
+            .accessibilityHint("Opens storage servers and automatic backup destination")
         }
+    }
+
+    private var serverCountTitle: String {
+        switch app.servers.servers.count {
+        case 0: return "No servers connected"
+        case 1: return "1 server"
+        default: return "\(app.servers.servers.count) servers"
+        }
+    }
+
+    private var serversSubtitle: String {
+        guard let server = app.backupServer else {
+            return "Connect S3, B2, R2 or any S3-compatible storage"
+        }
+        return "Automatic backup to \(server.name)"
     }
 
     // MARK: Support

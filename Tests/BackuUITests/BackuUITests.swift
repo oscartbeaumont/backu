@@ -124,12 +124,20 @@ final class BackuUITests: XCTestCase {
             app.keyboards.buttons["return"].tap()
         }
         sleep(1)
-        select("Servers", in: app)
-        XCTAssertTrue(app.staticTexts["Local Test"].waitForExistence(timeout: 8), "Server card missing")
-        attach(app, "07-servers")
 
+        // Servers are part of Settings: the row pushes the servers screen.
         select("Settings", in: app)
         XCTAssertTrue(app.staticTexts["Backup"].waitForExistence(timeout: 8), "Settings screen missing")
+        let serversRow = app.buttons.matching(identifier: "settings.servers").firstMatch
+        XCTAssertTrue(serversRow.waitForExistence(timeout: 8), "Servers row missing from Settings")
+        serversRow.tap()
+        XCTAssertTrue(app.staticTexts["Local Test"].waitForExistence(timeout: 8), "Server card missing")
+        XCTAssertTrue(app.navigationBars["Servers"].waitForExistence(timeout: 8), "Servers screen did not push")
+        attach(app, "07-servers")
+
+        app.navigationBars["Servers"].buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.staticTexts["Backup"].waitForExistence(timeout: 8), "Did not return to Settings")
+
         let sponsor = app.buttons["Sponsor Backu on GitHub"]
         XCTAssertTrue(sponsor.waitForExistence(timeout: 8), "In-app sponsor action missing")
         for _ in 0..<5 {

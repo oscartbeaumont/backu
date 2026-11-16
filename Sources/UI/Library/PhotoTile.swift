@@ -3,6 +3,7 @@ import SwiftUI
 struct PhotoTile: View {
     let photo: PhotoItem
     var columns: Int
+    var cornerRadius: CGFloat = Theme.tileRadius
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
     @State private var image: PlatformImage?
@@ -72,7 +73,7 @@ struct PhotoTile: View {
                         }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
