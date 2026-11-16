@@ -9,14 +9,14 @@
 Backu is a native iPhone, iPad and Mac app that backs your photo library up to any S3-compatible storage, then lets you browse, search and organise it from a library that feels like the Photos app. There is no Backu account and no server in the middle: the app talks straight to the bucket you own.
 
 <p align="center">
-  <img src="Docs/library.png" width="220" alt="Library grid">
-  <img src="Docs/viewer.png" width="220" alt="Full-screen photo viewer">
-  <img src="Docs/people.png" width="220" alt="People and pets">
+  <img src="docs/library.png" width="220" alt="Library grid">
+  <img src="docs/viewer.png" width="220" alt="Full-screen photo viewer">
+  <img src="docs/people.png" width="220" alt="People and pets">
 </p>
 <p align="center">
-  <img src="Docs/search.png" width="220" alt="Instant on-device search">
-  <img src="Docs/servers.png" width="220" alt="Multiple storage servers">
-  <img src="Docs/onboarding.png" width="220" alt="Onboarding">
+  <img src="docs/search.png" width="220" alt="Instant on-device search">
+  <img src="docs/servers.png" width="220" alt="Multiple storage servers">
+  <img src="docs/onboarding.png" width="220" alt="Onboarding">
 </p>
 
 ## What it does
