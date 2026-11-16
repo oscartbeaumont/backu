@@ -15,13 +15,18 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
     static var backgroundCompletionHandler: (() -> Void)?
 
     private let lock = NSLock()
-    private var continuations: [String: CheckedContinuation<Int, Error>] = [:]
+    private var continuations: [String: CheckedContinuation<UploadResult, Error>] = [:]
     private var progressHandlers: [String: @Sendable (Double) -> Void] = [:]
     private var session: URLSession?
     private var sessionAllowsCellular = false
     private var nextJobID = 0
 
-    struct HTTPStatusError: LocalizedError {
+    struct UploadResult: Sendable {
+        var status: Int
+        var etag: String?
+    }
+
+    struct HTTPStatusError: LocalizedError, S3HTTPStatusProviding {
         var status: Int
         var errorDescription: String? {
             switch status {
@@ -70,7 +75,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 60 * 60 * 6
-        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.httpMaximumConnectionsPerHost = 8
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
@@ -90,6 +95,23 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
         allowsCellular: Bool,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> Int {
+        try await uploadResult(
+            fileURL: fileURL,
+            request: request,
+            allowsCellular: allowsCellular,
+            progress: progress
+        ).status
+    }
+
+    /// The part-aware variant: multipart uploads need the ETag the server
+    /// returned, not just the status code.
+    @discardableResult
+    func uploadResult(
+        fileURL: URL,
+        request: URLRequest,
+        allowsCellular: Bool,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws -> UploadResult {
         configure(allowsCellular: allowsCellular)
         let session = currentSession()
 
@@ -159,8 +181,9 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
             return
         }
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? -1
+        let etag = (task.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "ETag")
         if (200..<300).contains(status) {
-            continuation.resume(returning: status)
+            continuation.resume(returning: UploadResult(status: status, etag: etag))
         } else {
             continuation.resume(throwing: HTTPStatusError(status: status))
         }

@@ -1,0 +1,198 @@
+{
+  "concurrency" : 4,
+  "endpoint" : "http:\/\/127.0.0.1:9102",
+  "generatedAt" : "2026-11-16T18:09:13Z",
+  "mode" : "baseline",
+  "partSizeMB" : 8,
+  "profile" : "localhost",
+  "runs" : 3,
+  "scenarios" : [
+    {
+      "medianElapsedSeconds" : 0.01031804084777832,
+      "medianMegabytesPerSecond" : 387.67049472005914,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.010684013366699219,
+          "megabytesPerSecond" : 374.39114522895653,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.010137081146240234,
+          "megabytesPerSecond" : 394.59090267651345,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.01031804084777832,
+          "megabytesPerSecond" : 387.67049472005914,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "medianElapsedSeconds" : 0.0022699832916259766,
+      "medianMegabytesPerSecond" : 1762.1275076147463,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.0022699832916259766,
+          "megabytesPerSecond" : 1762.1275076147463,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.002196073532104492,
+          "megabytesPerSecond" : 1821.4326348930626,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.002642989158630371,
+          "megabytesPerSecond" : 1513.437914392675,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 4
+    },
+    {
+      "medianElapsedSeconds" : 0.07743096351623535,
+      "medianMegabytesPerSecond" : 413.2713651857166,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.07743096351623535,
+          "megabytesPerSecond" : 413.2713651857166,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.07507491111755371,
+          "megabytesPerSecond" : 426.24093087361496,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.07765805721282959,
+          "megabytesPerSecond" : 412.0628450992642,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 0.0107879638671875,
+      "medianMegabytesPerSecond" : 2966.2687411598304,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.011105060577392578,
+          "megabytesPerSecond" : 2881.5691528189273,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.0107879638671875,
+          "megabytesPerSecond" : 2966.2687411598304,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.010618925094604492,
+          "megabytesPerSecond" : 3013.4876849502684,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 32
+    },
+    {
+      "medianElapsedSeconds" : 0.29526400566101074,
+      "medianMegabytesPerSecond" : 433.51034174804005,
+      "mode" : "baseline",
+      "operation" : "upload",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.2914680242538452,
+          "megabytesPerSecond" : 439.1562344709288,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.29526400566101074,
+          "megabytesPerSecond" : 433.51034174804005,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.2997169494628906,
+          "megabytesPerSecond" : 427.0696076060533,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    },
+    {
+      "medianElapsedSeconds" : 0.037348031997680664,
+      "medianMegabytesPerSecond" : 3427.2220824901533,
+      "mode" : "baseline",
+      "operation" : "download",
+      "profile" : "localhost",
+      "requests" : 1,
+      "retries" : 0,
+      "samples" : [
+        {
+          "elapsedSeconds" : 0.039363980293273926,
+          "megabytesPerSecond" : 3251.7036906928643,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.037348031997680664,
+          "megabytesPerSecond" : 3427.2220824901533,
+          "requests" : 1,
+          "retries" : 0
+        },
+        {
+          "elapsedSeconds" : 0.03714108467102051,
+          "megabytesPerSecond" : 3446.3183058267696,
+          "requests" : 1,
+          "retries" : 0
+        }
+      ],
+      "sizeMB" : 128
+    }
+  ],
+  "schema" : "backu.benchmark.v1",
+  "sizesMB" : [
+    4,
+    32,
+    128
+  ],
+  "warmups" : 1
+}

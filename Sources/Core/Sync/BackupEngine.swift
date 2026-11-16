@@ -379,33 +379,45 @@ final class BackupEngine {
             updateItem(photo.id) { $0.phase = .uploading }
             let key = Self.objectKey(for: photo, in: server)
             objectKey = key
-            let (request, hash) = try await client.signedPutFileRequestAsync(
-                key: key,
-                fileURL: exported.url,
-                contentType: Self.contentType(for: photo)
-            )
-            sha = hash
             let size = (try? FileManager.default.attributesOfItem(atPath: exported.url.path)[.size] as? Int64) ?? 0
             byteCount = size
 
-            try await upload(
-                fileURL: exported.url,
-                request: request,
-                settings: settings,
-                photoID: photo.id
-            )
+            if size >= Self.multipartThreshold {
+                sha = try await uploadMultipart(
+                    fileURL: exported.url,
+                    key: key,
+                    contentType: Self.contentType(for: photo),
+                    client: client,
+                    settings: settings,
+                    photoID: photo.id
+                )
+            } else {
+                let (request, hash) = try await client.signedPutFileRequestAsync(
+                    key: key,
+                    fileURL: exported.url,
+                    contentType: Self.contentType(for: photo)
+                )
+                sha = hash
+                try await upload(
+                    fileURL: exported.url,
+                    request: request,
+                    settings: settings,
+                    photoID: photo.id
+                )
+            }
 
             if let thumb = await Self.makeThumbnail(url: exported.url) {
-                let thumbName = String(hash.prefix(20)) + ".jpg"
+                let digest = sha ?? ""
+                let thumbName = String(digest.prefix(20)) + ".jpg"
                 let thumbKey = S3Client.join(server.normalizedPrefix, ".backu/thumbs/\(thumbName)")
                 try? await client.putObject(key: thumbKey, data: thumb, contentType: "image/jpeg")
                 photo.remoteThumbnailKey = thumbKey
             }
 
-            photo.sha256 = hash
+            photo.sha256 = sha
             catalog.mutatePhoto(photo.id) {
                 $0.metadata = photo.metadata
-                $0.sha256 = hash
+                $0.sha256 = sha
                 $0.analyzedAt = photo.analyzedAt ?? Date()
                 $0.remoteThumbnailKey = photo.remoteThumbnailKey
             }
@@ -454,18 +466,68 @@ final class BackupEngine {
     ) async throws {
         let allowsCellular = settings.backupOnCellular
         do {
-            try await BackgroundUploader.shared.upload(
-                fileURL: fileURL,
-                request: request,
-                allowsCellular: allowsCellular
-            ) { [weak self] fraction in
-                Task { @MainActor in
-                    self?.updateItem(photoID) { $0.progress = fraction }
+            try await S3RetryPolicy.default.run {
+                try await BackgroundUploader.shared.upload(
+                    fileURL: fileURL,
+                    request: request,
+                    allowsCellular: allowsCellular
+                ) { [weak self] fraction in
+                    Task { @MainActor in
+                        self?.updateItem(photoID) { $0.progress = fraction }
+                    }
                 }
             }
         } catch is CancellationError {
             throw CancellationError()
         }
+    }
+
+    private func uploadMultipart(
+        fileURL: URL,
+        key: String,
+        contentType: String,
+        client: S3Client,
+        settings: AppSettings,
+        photoID: String
+    ) async throws -> String {
+        let allowsCellular = settings.backupOnCellular
+        let transport = MultipartTransport { upload, number, partURL, payloadHash, size, progress in
+            let request = try client.signedUploadPartRequest(
+                upload: upload,
+                partNumber: number,
+                payloadHash: payloadHash
+            )
+            let sink = progress
+            return try await S3RetryPolicy.default.run {
+                let result = try await BackgroundUploader.shared.uploadResult(
+                    fileURL: partURL,
+                    request: request,
+                    allowsCellular: allowsCellular,
+                    progress: { fraction in sink.report(fraction) }
+                )
+                guard let etag = result.etag else {
+                    throw S3Error.decoding("UploadPart returned no ETag")
+                }
+                return S3MultipartPart(number: number, etag: etag, size: size)
+            }
+        }
+
+        let uploader = MultipartUploader(
+            client: client,
+            partSize: 8 * 1024 * 1024,
+            concurrency: 4,
+            temporaryDirectory: AppPaths.stagingDirectory,
+            transport: transport
+        ) { [weak self] fraction in
+            Task { @MainActor in
+                self?.updateItem(photoID) { $0.progress = fraction }
+            }
+        }
+        return try await uploader.upload(
+            fileURL: fileURL,
+            key: key,
+            contentType: contentType
+        )
     }
 
     private func uploadIndex(client: S3Client, catalog: CatalogStore, server: ServerConfig, device: String) async {
@@ -490,6 +552,17 @@ final class BackupEngine {
     }
 
     // MARK: Heavy work, off the main actor
+
+    /// UI tests lower this to exercise multipart with the small photo fixtures.
+    nonisolated static var multipartThreshold: Int64 {
+        #if DEBUG
+        if let raw = ProcessInfo.processInfo.environment["BACKU_MULTIPART_THRESHOLD_BYTES"],
+           let value = Int64(raw), value > 0 {
+            return value
+        }
+        #endif
+        return MultipartUploader.defaultThreshold
+    }
 
     nonisolated static func readMetadata(url: URL) async -> PhotoMetadata {
         await Task.detached(priority: .utility) {

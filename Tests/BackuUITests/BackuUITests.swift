@@ -35,6 +35,9 @@ final class BackuUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["BACKU_RESET"] = "1"
         app.launchEnvironment["BACKU_BOOTSTRAP"] = bootstrap
+        // Force the 25 MB high-entropy fixture through multipart while small
+        // photos keep the single-PUT fast path.
+        app.launchEnvironment["BACKU_MULTIPART_THRESHOLD_BYTES"] = "1000"
         app.launch()
 
         // Photo library permission is presented by the app on first launch.

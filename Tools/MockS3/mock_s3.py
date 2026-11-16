@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
 """A tiny, dependency-free mock of the S3 subset Backu uses.
 
-Implements GET (object), GET ?list-type=2 (ListObjectsV2), PUT, DELETE and HEAD,
-with real AWS Signature V4 verification, path-style and virtual-host addressing,
-and a plain directory on disk for the stored objects.
+Implements GET (object, with byte ranges), GET ?list-type=2 (ListObjectsV2),
+PUT, DELETE, HEAD and the multipart upload lifecycle:
 
-Run it:
+    POST /key?uploads                  CreateMultipartUpload
+    PUT  /key?partNumber=N&uploadId=…  UploadPart
+    POST /key?uploadId=…               CompleteMultipartUpload
+    DELETE /key?uploadId=…             AbortMultipartUpload
+    GET  /key?uploadId=…               ListParts
 
-    python3 Tools/MockS3/mock_s3.py --data-dir /tmp/backu-s3
+Every request is checked with a real AWS Signature V4 verifier, query
+parameters included. It can also shape the network per connection and inject
+deterministic retryable failures so the transfer layer can be benchmarked:
+
+    python3 Tools/MockS3/mock_s3.py --latency-ms 25 --bandwidth-mbps 60 \
+        --jitter-ms 5 --fail-rate 0.02 --fail-status 503 --seed 42
+
+`--bandwidth-mbps` is a per-connection token bucket. Four parallel connections
+therefore get four times that rate, which models a single-stream-limited
+mobile/high-RTT link. It does not model a shared bottleneck, bufferbloat,
+packet loss, or every real network.
 
 It is a development tool, not a production service: one bucket, no ACLs, no
-multipart uploads, no versioning.
+versioning, and multipart state lives in memory for the life of the process.
 """
 
 from __future__ import annotations
@@ -21,12 +34,16 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
+import shutil
 import signal
 import sys
 import tempfile
 import threading
 import time
+import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
@@ -43,6 +60,9 @@ _STREAMING_PAYLOADS = (
     "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
 )
 _INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_MULTIPART_MIN_PART = 5 * 1024 * 1024
+_CHUNK = 64 * 1024
+_RETRYABLE_FAIL_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 
 _AUTH_RE = re.compile(
     r"^AWS4-HMAC-SHA256\s+"
@@ -69,11 +89,57 @@ class Config:
     require_auth: bool = True
     quiet: bool = False
     max_skew_seconds: int = 900
+    # Network shaping. Zero disables each knob.
+    latency_ms: float = 0.0
+    jitter_ms: float = 0.0
+    bandwidth_mbps: float = 0.0
+    # Deterministic retryable-failure injection.
+    fail_rate: float = 0.0
+    fail_status: int = 503
+    seed: int = 0
 
     def __post_init__(self) -> None:
         if not self.data_dir:
             self.data_dir = tempfile.mkdtemp(prefix="mock-s3-")
         os.makedirs(self.data_dir, exist_ok=True)
+        if not 0.0 <= self.fail_rate <= 1.0:
+            raise ValueError("--fail-rate must be between 0 and 1")
+        if self.fail_rate > 0 and self.fail_status not in _RETRYABLE_FAIL_STATUSES:
+            raise ValueError(
+                f"--fail-status must be one of {sorted(_RETRYABLE_FAIL_STATUSES)}"
+            )
+        if self.bandwidth_mbps < 0 or self.latency_ms < 0 or self.jitter_ms < 0:
+            raise ValueError("latency, jitter and bandwidth must not be negative")
+
+
+# --------------------------------------------------------------------------- #
+# shaping
+# --------------------------------------------------------------------------- #
+
+
+class TokenBucket:
+    """Per-connection byte bucket. Negative tokens are paid for with sleep."""
+
+    def __init__(self, megabytes_per_second: float) -> None:
+        self.rate = max(0.0, megabytes_per_second) * 1_000_000 / 8
+        self.capacity = max(16 * 1024, int(self.rate * 0.05)) if self.rate else 0
+        self._tokens = float(self.capacity)
+        self._updated = time.monotonic()
+        self._lock = threading.Lock()
+
+    def throttle(self, amount: int) -> None:
+        if self.rate <= 0 or amount <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            self._tokens = min(
+                self.capacity, self._tokens + (now - self._updated) * self.rate
+            )
+            self._updated = now
+            self._tokens -= amount
+            deficit = -self._tokens
+        if deficit > 0:
+            time.sleep(deficit / self.rate)
 
 
 # --------------------------------------------------------------------------- #
@@ -91,6 +157,7 @@ class S3Error(Exception):
         message: str,
         extra: dict[str, str] | None = None,
         debug: list[str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(f"{code}: {message}")
         self.status = status
@@ -98,6 +165,7 @@ class S3Error(Exception):
         self.message = message
         self.extra = extra or {}
         self.debug = debug or []
+        self.headers = headers or {}
 
     def to_xml(self, request_id: str) -> bytes:
         parts = [f"<Code>{_xml_text(self.code)}</Code>", f"<Message>{_xml_text(self.message)}</Message>"]
@@ -389,17 +457,26 @@ class SigV4Verifier:
 class ObjectStore:
     """Objects on disk, keyed by key. Files are named by the SHA-256 of the key
     so that any key is safe on any filesystem (macOS is case-insensitive), and
-    a JSON sidecar records the human-readable key and metadata."""
+    a JSON sidecar records the human-readable key and metadata.
+
+    Multipart uploads keep their parts in a per-upload directory until the
+    client completes or aborts them. That state is deliberately in memory: the
+    mock has no orphan-cleanup lifecycle.
+    """
 
     def __init__(self, data_dir: str, bucket: str) -> None:
         self.bucket_dir = os.path.join(data_dir, bucket)
         self.objects_dir = os.path.join(self.bucket_dir, "objects")
         self.meta_dir = os.path.join(self.bucket_dir, "meta")
+        self.uploads_dir = os.path.join(self.bucket_dir, "uploads")
         os.makedirs(self.objects_dir, exist_ok=True)
         os.makedirs(self.meta_dir, exist_ok=True)
+        os.makedirs(self.uploads_dir, exist_ok=True)
         self.index_path = os.path.join(self.bucket_dir, "index.json")
         self._lock = threading.Lock()
+        self._uploads_lock = threading.Lock()
         self._items: dict[str, dict] = {}
+        self._uploads: dict[str, dict] = {}
         self._load()
 
     # -- disk layout ------------------------------------------------------- #
@@ -456,21 +533,15 @@ class ObjectStore:
                 continue
             self._items[key] = item
 
-    # -- operations -------------------------------------------------------- #
-
-    def put(self, key: str, body: bytes, content_type: str) -> dict:
-        etag = hashlib.md5(body).hexdigest()  # noqa: S324 - S3 ETags are MD5
-        last_modified = time.time()
+    def _commit(self, key: str, size: int, etag: str, content_type: str) -> dict:
         item = {
             "key": key,
-            "size": len(body),
+            "size": size,
             "etag": etag,
             "contentType": content_type,
-            "lastModified": last_modified,
+            "lastModified": time.time(),
         }
         with self._lock:
-            with open(self._object_path(key), "wb") as handle:
-                handle.write(body)
             temporary = self._meta_path(key) + ".tmp"
             with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump(item, handle, indent=2, sort_keys=True, ensure_ascii=False)
@@ -480,10 +551,44 @@ class ObjectStore:
             self._write_index()
         return item
 
+    # -- operations -------------------------------------------------------- #
+
+    def put(self, key: str, body: bytes, content_type: str) -> dict:
+        etag = hashlib.md5(body).hexdigest()  # noqa: S324 - S3 ETags are MD5
+        with self._lock:
+            with open(self._object_path(key), "wb") as handle:
+                handle.write(body)
+        return self._commit(key, len(body), etag, content_type)
+
     def head(self, key: str) -> dict | None:
         with self._lock:
             item = self._items.get(key)
             return dict(item) if item else None
+
+    def object_file(self, key: str) -> tuple[str, int] | None:
+        """Path and size, for streaming a whole object without buffering it."""
+        with self._lock:
+            item = self._items.get(key)
+            if item is None:
+                return None
+            path = self._object_path(key)
+            size = int(item["size"])
+        if not os.path.exists(path):
+            return None
+        return path, size
+
+    def read_range(self, key: str, start: int, end: int) -> bytes | None:
+        found = self.object_file(key)
+        if found is None:
+            return None
+        path, _ = found
+        length = end - start + 1
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                return handle.read(length)
+        except FileNotFoundError:
+            return None
 
     def get(self, key: str) -> tuple[dict, bytes] | None:
         with self._lock:
@@ -512,6 +617,144 @@ class ObjectStore:
     def keys(self) -> list[str]:
         with self._lock:
             return sorted(self._items)
+
+    # -- multipart --------------------------------------------------------- #
+
+    def _upload_dir(self, upload_id: str) -> str:
+        return os.path.join(self.uploads_dir, upload_id)
+
+    def _part_path(self, upload_id: str, part_number: int) -> str:
+        return os.path.join(self._upload_dir(upload_id), f"{part_number}.part")
+
+    def create_upload(self, key: str, content_type: str) -> str:
+        upload_id = uuid.uuid4().hex
+        os.makedirs(self._upload_dir(upload_id), exist_ok=True)
+        with self._uploads_lock:
+            self._uploads[upload_id] = {
+                "key": key,
+                "contentType": content_type,
+                "created": time.time(),
+                "parts": {},
+            }
+        return upload_id
+
+    def _upload(self, upload_id: str, key: str) -> dict:
+        with self._uploads_lock:
+            upload = self._uploads.get(upload_id)
+        if upload is None or upload["key"] != key:
+            raise S3Error(
+                404,
+                "NoSuchUpload",
+                f"The specified multipart upload does not exist: {upload_id!r}.",
+                extra={"UploadId": upload_id},
+            )
+        return upload
+
+    def put_part(self, upload_id: str, key: str, part_number: int, body: bytes) -> dict:
+        upload = self._upload(upload_id, key)
+        if not 1 <= part_number <= 10_000:
+            raise S3Error(400, "InvalidArgument", "Part number must be between 1 and 10000.")
+        etag = hashlib.md5(body).hexdigest()  # noqa: S324 - S3 part ETags are MD5
+        path = self._part_path(upload_id, part_number)
+        temporary = f"{path}.tmp-{threading.get_ident()}-{uuid.uuid4().hex[:6]}"
+        with open(temporary, "wb") as handle:
+            handle.write(body)
+        os.replace(temporary, path)
+        record = {
+            "number": part_number,
+            "path": path,
+            "size": len(body),
+            "etag": etag,
+            "lastModified": time.time(),
+        }
+        with self._uploads_lock:
+            upload["parts"][part_number] = record
+        return record
+
+    def list_parts(self, upload_id: str, key: str) -> list[dict]:
+        upload = self._upload(upload_id, key)
+        with self._uploads_lock:
+            return [dict(part) for _, part in sorted(upload["parts"].items())]
+
+    def abort_upload(self, upload_id: str, key: str) -> None:
+        self._upload(upload_id, key)
+        with self._uploads_lock:
+            self._uploads.pop(upload_id, None)
+        shutil.rmtree(self._upload_dir(upload_id), ignore_errors=True)
+
+    def complete_upload(
+        self, upload_id: str, key: str, requested: list[tuple[int, str]]
+    ) -> dict:
+        upload = self._upload(upload_id, key)
+        if not requested:
+            raise S3Error(400, "MalformedXML", "A complete request needs at least one part.")
+        if len(requested) > 10_000:
+            raise S3Error(400, "InvalidArgument", "A multipart upload can have at most 10000 parts.")
+        numbers = [number for number, _ in requested]
+        if numbers != sorted(set(numbers)):
+            raise S3Error(
+                400,
+                "InvalidPartOrder",
+                "The list of parts must be in ascending order and must not repeat.",
+            )
+        with self._uploads_lock:
+            parts = {number: dict(part) for number, part in upload["parts"].items()}
+        resolved: list[dict] = []
+        for number, etag in requested:
+            part = parts.get(number)
+            if part is None:
+                raise S3Error(
+                    400,
+                    "InvalidPart",
+                    f"Part {number} has not been uploaded.",
+                    extra={"PartNumber": str(number)},
+                )
+            if etag.strip('"').lower() != part["etag"].lower():
+                raise S3Error(
+                    400,
+                    "InvalidPart",
+                    f"The ETag for part {number} does not match the uploaded part.",
+                    extra={"PartNumber": str(number), "ETag": f'"{part["etag"]}"'},
+                )
+            resolved.append(part)
+
+        for part in resolved[:-1]:
+            if part["size"] < _MULTIPART_MIN_PART:
+                raise S3Error(
+                    400,
+                    "EntityTooSmall",
+                    f"Part {part['number']} is smaller than the 5 MiB minimum.",
+                    extra={"PartNumber": str(part["number"]), "MinSizeAllowed": str(_MULTIPART_MIN_PART)},
+                )
+
+        digest = hashlib.md5()  # noqa: S324 - S3 multipart ETags are MD5 based
+        total = 0
+        path = self._object_path(key)
+        temporary = f"{path}.tmp-multipart-{uuid.uuid4().hex[:8]}"
+        try:
+            with open(temporary, "wb") as destination:
+                for part in resolved:
+                    digest.update(bytes.fromhex(part["etag"]))
+                    total += int(part["size"])
+                    with open(part["path"], "rb") as source:
+                        while True:
+                            chunk = source.read(1 << 20)
+                            if not chunk:
+                                break
+                            destination.write(chunk)
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.remove(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        etag = f"{digest.hexdigest()}-{len(resolved)}"
+        item = self._commit(key, total, etag, upload["contentType"])
+        with self._uploads_lock:
+            self._uploads.pop(upload_id, None)
+        shutil.rmtree(self._upload_dir(upload_id), ignore_errors=True)
+        return item
 
 
 # --------------------------------------------------------------------------- #
@@ -570,9 +813,10 @@ class MockS3Handler(BaseHTTPRequestHandler):
         chunks = []
         remaining = length
         while remaining > 0:
-            chunk = self.rfile.read(min(remaining, 1 << 20))
+            chunk = self.rfile.read(min(remaining, _CHUNK))
             if not chunk:
                 break
+            self._bucket.throttle(len(chunk))
             chunks.append(chunk)
             remaining -= len(chunk)
         return b"".join(chunks)
@@ -594,9 +838,20 @@ class MockS3Handler(BaseHTTPRequestHandler):
                     if trailer in (b"\r\n", b"\n", b""):
                         break
                 break
-            chunks.append(self.rfile.read(size))
+            chunk = self.rfile.read(size)
+            self._bucket.throttle(len(chunk))
+            chunks.append(chunk)
             self.rfile.read(2)  # trailing CRLF
         return b"".join(chunks)
+
+    def _write_body(self, body: bytes) -> None:
+        view = memoryview(body)
+        offset = 0
+        while offset < len(view):
+            chunk = view[offset : offset + _CHUNK]
+            self._bucket.throttle(len(chunk))
+            self.wfile.write(chunk)
+            offset += len(chunk)
 
     def _send(
         self,
@@ -612,18 +867,57 @@ class MockS3Handler(BaseHTTPRequestHandler):
         self.send_header("x-amz-request-id", self._request_id)
         for name, value in headers or ():
             self.send_header(name, value)
+        length = len(body) if content_length is None else content_length
         if status != 204:
-            self.send_header("Content-Length", str(len(body) if content_length is None else content_length))
+            self.send_header("Content-Length", str(length))
         self.end_headers()
         self._status = status
-        self._bytes = len(body) if content_length is None else content_length
+        self._bytes = length
         if self.command == "HEAD":
             return
         if body:
             try:
-                self.wfile.write(body)
+                self._write_body(body)
             except (BrokenPipeError, ConnectionResetError):  # pragma: no cover
                 pass
+
+    def _send_file(
+        self,
+        status: int,
+        path: str,
+        size: int,
+        content_type: str | None = None,
+        headers: Iterable[tuple[str, str]] | None = None,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> None:
+        """Stream a file (or a byte range of one) with shaping, never buffering it."""
+        length = size - offset if length is None else length
+        self.send_response(status)
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        self.send_header("x-amz-request-id", self._request_id)
+        for name, value in headers or ():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(length))
+        self.end_headers()
+        self._status = status
+        self._bytes = length
+        if self.command == "HEAD":
+            return
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(offset)
+                remaining = length
+                while remaining > 0:
+                    chunk = handle.read(min(remaining, _CHUNK))
+                    if not chunk:
+                        break
+                    self._bucket.throttle(len(chunk))
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):  # pragma: no cover
+            pass
 
     def _send_error_body(self, error: S3Error) -> None:
         body = error.to_xml(self._request_id)
@@ -631,6 +925,7 @@ class MockS3Handler(BaseHTTPRequestHandler):
             error.status,
             body,
             content_type="application/xml",
+            headers=error.headers.items(),
             content_length=0 if self.command == "HEAD" else None,
         )
 
@@ -645,7 +940,10 @@ class MockS3Handler(BaseHTTPRequestHandler):
         self._status = 500
         self._bytes = 0
         self._signature = "skip"
+        if not hasattr(self, "_bucket"):
+            self._bucket = TokenBucket(self.config.bandwidth_mbps)
         try:
+            self._apply_request_delay()
             body = self._read_body()
             raw_path, _, raw_query = self.path.partition("?")
             if self.config.require_auth:
@@ -658,6 +956,8 @@ class MockS3Handler(BaseHTTPRequestHandler):
                     self._signature = "fail"
                     self._log_debug(error)
                     raise
+            self.server.record_request()  # type: ignore[attr-defined]
+            self._maybe_inject_failure()
             bucket, key = self._resolve_target()
             if bucket != self.config.bucket:
                 raise S3Error(
@@ -690,6 +990,39 @@ class MockS3Handler(BaseHTTPRequestHandler):
                     f"sig={self._signature} {elapsed_ms:.1f}ms",
                     flush=True,
                 )
+
+    def _apply_request_delay(self) -> None:
+        delay = self.config.latency_ms
+        if self.config.jitter_ms > 0:
+            delay += self.server.next_jitter()  # type: ignore[attr-defined]
+        if delay > 0:
+            time.sleep(delay / 1000.0)
+
+    def _maybe_inject_failure(self) -> None:
+        """Deterministic retryable failure, decided only after the signature and
+        body are verified so a retry sees the same request, not a corrupt one."""
+        if self.config.fail_rate <= 0:
+            return
+        if self.server.next_failure_roll() >= self.config.fail_rate:  # type: ignore[attr-defined]
+            return
+        self.server.record_injected_failure()  # type: ignore[attr-defined]
+        status = self.config.fail_status
+        code = {
+            429: "SlowDown",
+            503: "ServiceUnavailable",
+            500: "InternalError",
+            502: "BadGateway",
+            504: "GatewayTimeout",
+            408: "RequestTimeout",
+            425: "TooEarly",
+        }.get(status, "InternalError")
+        headers = {"Retry-After": "1"} if status == 429 else {}
+        raise S3Error(
+            status,
+            code,
+            f"Injected retryable failure ({status}) from the Backu mock S3.",
+            headers=headers,
+        )
 
     def _log_debug(self, error: S3Error) -> None:
         if self.config.quiet or not error.debug:
@@ -740,7 +1073,15 @@ class MockS3Handler(BaseHTTPRequestHandler):
         params = dict(parse_qsl(raw_query, keep_blank_values=True))
 
         if method == "POST":
-            raise S3Error(405, "MethodNotAllowed", "This mock does not implement POST.")
+            if not key:
+                raise S3Error(400, "InvalidRequest", "A multipart upload needs an object key.")
+            if "uploads" in params:
+                self._create_multipart(key)
+                return
+            if "uploadId" in params:
+                self._complete_multipart(key, params["uploadId"], body)
+                return
+            raise S3Error(405, "MethodNotAllowed", "This mock only implements the multipart POSTs.")
 
         if not key:
             if method in ("GET", "HEAD"):
@@ -752,15 +1093,91 @@ class MockS3Handler(BaseHTTPRequestHandler):
             raise S3Error(400, "InvalidRequest", f"{method} on a bucket is not supported; include an object key.")
 
         if method == "PUT":
-            self._put_object(key, body)
+            if "uploadId" in params and "partNumber" in params:
+                self._upload_part(key, params["uploadId"], params["partNumber"], body)
+            else:
+                self._put_object(key, body)
         elif method == "GET":
-            self._get_object(key)
+            if "uploadId" in params:
+                self._list_parts(key, params["uploadId"])
+            else:
+                self._get_object(key)
         elif method == "HEAD":
             self._head_object(key)
         elif method == "DELETE":
-            self._delete_object(key)
+            if "uploadId" in params:
+                self._abort_multipart(key, params["uploadId"])
+            else:
+                self._delete_object(key)
         else:  # pragma: no cover - do_* only routes the five above
             raise S3Error(405, "MethodNotAllowed", f"{method} is not supported.")
+
+    # -- multipart --------------------------------------------------------- #
+
+    def _create_multipart(self, key: str) -> None:
+        content_type = self.headers.get("Content-Type") or "application/octet-stream"
+        upload_id = self.store.create_upload(key, content_type)
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<InitiateMultipartUploadResult xmlns="{XMLNS}">'
+            f"<Bucket>{_xml_text(self.config.bucket)}</Bucket>"
+            f"<Key>{_xml_text(key)}</Key>"
+            f"<UploadId>{_xml_text(upload_id)}</UploadId>"
+            "</InitiateMultipartUploadResult>\n"
+        ).encode("utf-8")
+        self._send(200, body, content_type="application/xml")
+
+    def _upload_part(self, key: str, upload_id: str, raw_number: str, body: bytes) -> None:
+        try:
+            number = int(raw_number)
+        except ValueError as error:
+            raise S3Error(400, "InvalidArgument", f"partNumber must be an integer: {raw_number!r}.") from error
+        part = self.store.put_part(upload_id, key, number, body)
+        self._send_empty(200, headers=[("ETag", f'"{part["etag"]}"')])
+        self._bytes = len(body)
+
+    def _complete_multipart(self, key: str, upload_id: str, body: bytes) -> None:
+        requested = _parse_complete_body(body)
+        item = self.store.complete_upload(upload_id, key, requested)
+        response = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<CompleteMultipartUploadResult xmlns="{XMLNS}">'
+            f"<Location>/{_xml_text(self.config.bucket)}/{_xml_text(key)}</Location>"
+            f"<Bucket>{_xml_text(self.config.bucket)}</Bucket>"
+            f"<Key>{_xml_text(key)}</Key>"
+            f'<ETag>"{_xml_text(item["etag"])}"</ETag>'
+            "</CompleteMultipartUploadResult>\n"
+        ).encode("utf-8")
+        self._send(200, response, content_type="application/xml")
+
+    def _abort_multipart(self, key: str, upload_id: str) -> None:
+        self.store.abort_upload(upload_id, key)
+        self._send_empty(204)
+
+    def _list_parts(self, key: str, upload_id: str) -> None:
+        parts = self.store.list_parts(upload_id, key)
+        pieces = [
+            '<?xml version="1.0" encoding="UTF-8"?>\n',
+            f'<ListPartsResult xmlns="{XMLNS}">',
+            f"<Bucket>{_xml_text(self.config.bucket)}</Bucket>",
+            f"<Key>{_xml_text(key)}</Key>",
+            f"<UploadId>{_xml_text(upload_id)}</UploadId>",
+            "<PartNumberMarker>0</PartNumberMarker>",
+            f"<NextPartNumberMarker>{parts[-1]['number'] if parts else 0}</NextPartNumberMarker>",
+            "<MaxParts>1000</MaxParts>",
+            "<IsTruncated>false</IsTruncated>",
+        ]
+        for part in parts:
+            pieces.append(
+                "<Part>"
+                f"<PartNumber>{part['number']}</PartNumber>"
+                f"<LastModified>{_iso8601_millis(part['lastModified'])}</LastModified>"
+                f'<ETag>"{_xml_text(part["etag"])}"</ETag>'
+                f"<Size>{part['size']}</Size>"
+                "</Part>"
+            )
+        pieces.append("</ListPartsResult>\n")
+        self._send(200, "".join(pieces).encode("utf-8"), content_type="application/xml")
 
     def _put_object(self, key: str, body: bytes) -> None:
         content_type = self.headers.get("Content-Type") or "application/octet-stream"
@@ -777,24 +1194,43 @@ class MockS3Handler(BaseHTTPRequestHandler):
         self._bytes = len(body)
 
     def _get_object(self, key: str) -> None:
-        found = self.store.get(key)
-        if found is None:
+        item = self.store.head(key)
+        found = self.store.object_file(key)
+        if item is None or found is None:
             raise S3Error(
                 404,
                 "NoSuchKey",
                 f"The specified key does not exist: {key!r}.",
                 extra={"Key": key},
             )
-        item, body = found
-        self._send(
+        path, size = found
+        common_headers = [
+            ("ETag", f'"{item["etag"]}"'),
+            ("Last-Modified", _http_date(item["lastModified"])),
+            ("Accept-Ranges", "bytes"),
+        ]
+        raw_range = self.headers.get("Range")
+        if raw_range:
+            start, end = _parse_range(raw_range, size)
+            self._send_file(
+                206,
+                path,
+                size,
+                content_type=item["contentType"],
+                headers=[
+                    ("Content-Range", f"bytes {start}-{end}/{size}"),
+                    *common_headers,
+                ],
+                offset=start,
+                length=end - start + 1,
+            )
+            return
+        self._send_file(
             200,
-            body,
+            path,
+            size,
             content_type=item["contentType"],
-            headers=[
-                ("ETag", f'"{item["etag"]}"'),
-                ("Last-Modified", _http_date(item["lastModified"])),
-                ("Accept-Ranges", "bytes"),
-            ],
+            headers=common_headers,
         )
 
     def _head_object(self, key: str) -> None:
@@ -900,6 +1336,75 @@ class MockS3Handler(BaseHTTPRequestHandler):
         self._send(200, "".join(parts).encode("utf-8"), content_type="application/xml")
 
 
+def _parse_range(raw: str, size: int) -> tuple[int, int]:
+    """Parse a single `bytes=` range. Raises a 416 with Content-Range on failure."""
+    value = raw.strip()
+    if not value.lower().startswith("bytes="):
+        raise _range_error(size)
+    spec = value[6:].strip()
+    if "," in spec or "-" not in spec:
+        raise _range_error(size)
+    raw_start, _, raw_end = spec.partition("-")
+    if not raw_start and not raw_end:
+        raise _range_error(size)
+    try:
+        if not raw_start:
+            # suffix range: the last N bytes
+            length = int(raw_end)
+            if length <= 0:
+                raise _range_error(size)
+            start = max(0, size - length)
+            end = size - 1
+        else:
+            start = int(raw_start)
+            end = int(raw_end) if raw_end else size - 1
+    except ValueError:
+        raise _range_error(size) from None
+    if start < 0 or start >= size or end < start:
+        raise _range_error(size)
+    return start, min(end, size - 1)
+
+
+def _range_error(size: int) -> S3Error:
+    return S3Error(
+        416,
+        "InvalidRange",
+        "The requested range is not satisfiable.",
+        headers={"Content-Range": f"bytes */{size}"},
+    )
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_complete_body(body: bytes) -> list[tuple[int, str]]:
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as error:
+        raise S3Error(400, "MalformedXML", f"The complete request is not valid XML: {error}.") from error
+    requested: list[tuple[int, str]] = []
+    for element in root.iter():
+        if _local_name(element.tag) != "Part":
+            continue
+        number_text = None
+        etag = None
+        for child in element:
+            name = _local_name(child.tag)
+            if name == "PartNumber":
+                number_text = (child.text or "").strip()
+            elif name == "ETag":
+                etag = (child.text or "").strip()
+        if number_text is None or etag is None:
+            raise S3Error(400, "MalformedXML", "Every Part needs a PartNumber and an ETag.")
+        try:
+            number = int(number_text)
+        except ValueError as error:
+            raise S3Error(400, "MalformedXML", f"PartNumber is not an integer: {number_text!r}.") from error
+        requested.append((number, etag))
+    return requested
+
+
 def _iso8601_millis(timestamp: float) -> str:
     moment = datetime.fromtimestamp(timestamp, timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
@@ -924,6 +1429,15 @@ class MockS3Server(ThreadingHTTPServer):
         self.verifier = SigV4Verifier(config)
         self._request_counter = 0
         self._request_lock = threading.Lock()
+        self._random = random.Random(config.seed)
+        self._random_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        self.stats = {
+            "requests": 0,
+            "injected_failures": 0,
+            "bytes_in": 0,
+            "bytes_out": 0,
+        }
         super().__init__((config.host, config.port), MockS3Handler)
         self.config.port = self.server_address[1]
 
@@ -931,6 +1445,22 @@ class MockS3Server(ThreadingHTTPServer):
         with self._request_lock:
             self._request_counter += 1
             return f"REQ-{self._request_counter:08d}"
+
+    def next_jitter(self) -> float:
+        with self._random_lock:
+            return self._random.uniform(0.0, self.config.jitter_ms)
+
+    def next_failure_roll(self) -> float:
+        with self._random_lock:
+            return self._random.random()
+
+    def record_request(self) -> None:
+        with self._stats_lock:
+            self.stats["requests"] += 1
+
+    def record_injected_failure(self) -> None:
+        with self._stats_lock:
+            self.stats["injected_failures"] += 1
 
 
 def make_server(config: Config) -> MockS3Server:
@@ -987,6 +1517,43 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="reject requests further than this from now (default: 900)",
     )
+    parser.add_argument(
+        "--latency-ms",
+        type=float,
+        default=0.0,
+        help="added request latency in milliseconds (0 disables)",
+    )
+    parser.add_argument(
+        "--jitter-ms",
+        type=float,
+        default=0.0,
+        help="seeded extra latency, uniform in [0, JITTER_MS]",
+    )
+    parser.add_argument(
+        "--bandwidth-mbps",
+        type=float,
+        default=0.0,
+        metavar="MBPS",
+        help="per-connection token bucket for request body reads and response writes (0 disables)",
+    )
+    parser.add_argument(
+        "--fail-rate",
+        type=float,
+        default=0.0,
+        help="fraction of authenticated requests answered with a retryable failure (0 disables)",
+    )
+    parser.add_argument(
+        "--fail-status",
+        type=int,
+        default=503,
+        help="status used by --fail-rate: 408, 425, 429, 500, 502, 503 or 504",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="seed for deterministic jitter and failure injection",
+    )
     return parser
 
 
@@ -1003,6 +1570,12 @@ def config_from_args(argv: list[str] | None = None) -> Config:
         require_auth=not args.no_auth,
         quiet=args.quiet,
         max_skew_seconds=args.clock_skew,
+        latency_ms=args.latency_ms,
+        jitter_ms=args.jitter_ms,
+        bandwidth_mbps=args.bandwidth_mbps,
+        fail_rate=args.fail_rate,
+        fail_status=args.fail_status,
+        seed=args.seed,
     )
 
 
@@ -1023,6 +1596,18 @@ def main(argv: list[str] | None = None) -> int:
     if config.require_auth:
         print(f"  access key={config.access_key}", flush=True)
     print(f"  data dir={config.data_dir}", flush=True)
+    if config.latency_ms or config.jitter_ms or config.bandwidth_mbps:
+        print(
+            f"  shaping: latency={config.latency_ms}ms jitter={config.jitter_ms}ms "
+            f"bandwidth={config.bandwidth_mbps}Mbps/connection",
+            flush=True,
+        )
+    if config.fail_rate:
+        print(
+            f"  failure injection: {config.fail_rate:.1%} of requests -> {config.fail_status} "
+            f"(seed {config.seed})",
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

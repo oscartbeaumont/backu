@@ -114,4 +114,76 @@ for fixture in fixtures {
         print("failed \(fixture.output)")
     }
 }
+// One deliberately large, high-entropy photo so the multipart upload path is
+// exercised by the UI test (small fixtures stay on the single-PUT fast path).
+func writeNoiseFixture() {
+    let width = 5000
+    let height = 4000
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ), let buffer = context.data else {
+        print("skip large fixture: no context")
+        return
+    }
+    let pixels = buffer.bindMemory(to: UInt8.self, capacity: width * height * 4)
+    var seed: UInt64 = 0x9E3779B97F4A7C15
+    for index in 0..<(width * height) {
+        seed = seed &* 6364136223846793005 &+ 1442695040888963407
+        let value = UInt8((seed >> 33) & 0xFF)
+        let offset = index * 4
+        pixels[offset] = value
+        pixels[offset + 1] = value &+ 37
+        pixels[offset + 2] = value &+ 91
+        pixels[offset + 3] = 255
+    }
+    guard let image = context.makeImage() else { return }
+    let outputURL = outputDirectory.appendingPathComponent("IMG_9001.JPG")
+    let exif: [CFString: Any] = [
+        kCGImagePropertyExifDateTimeOriginal: "2021:04:02 12:00:00",
+        kCGImagePropertyExifFNumber: 1.6,
+        kCGImagePropertyExifExposureTime: 1.0 / 60,
+        kCGImagePropertyExifISOSpeedRatings: [125],
+        kCGImagePropertyExifFocalLength: 26,
+        kCGImagePropertyExifLensModel: "iPhone 12 Pro back triple camera 4.2mm f/1.6",
+        kCGImagePropertyExifPixelXDimension: width,
+        kCGImagePropertyExifPixelYDimension: height
+    ]
+    let tiff: [CFString: Any] = [
+        kCGImagePropertyTIFFMake: "Apple",
+        kCGImagePropertyTIFFModel: "iPhone 12 Pro",
+        kCGImagePropertyTIFFSoftware: "16.4"
+    ]
+    let gps: [CFString: Any] = [
+        kCGImagePropertyGPSLatitude: 64.1466,
+        kCGImagePropertyGPSLatitudeRef: "N",
+        kCGImagePropertyGPSLongitude: 21.9426,
+        kCGImagePropertyGPSLongitudeRef: "W"
+    ]
+    let properties: [CFString: Any] = [
+        kCGImagePropertyExifDictionary: exif,
+        kCGImagePropertyTIFFDictionary: tiff,
+        kCGImagePropertyGPSDictionary: gps,
+        kCGImageDestinationLossyCompressionQuality: 0.95
+    ]
+    guard let destination = CGImageDestinationCreateWithURL(
+        outputURL as CFURL,
+        UTType.jpeg.identifier as CFString,
+        1,
+        nil
+    ) else { return }
+    CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+    if CGImageDestinationFinalize(destination) {
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
+        print("wrote IMG_9001.JPG \(width)x\(height) · \(bytes) bytes")
+    }
+}
+writeNoiseFixture()
+
 print("\(written) fixtures written to \(outputDirectory.path)")

@@ -103,6 +103,8 @@ extension ImageUtilities {
 
 enum RemoteAssetLoader {
     /// Downloads an object and caches it on disk keyed by ETag-ish path.
+    /// Thumbnails stay in memory (they are tiny); originals stream to disk so a
+    /// 4K video or a 48 MP photo never has to fit in RAM.
     static func load(photo: PhotoItem, server: ServerConfig, client: S3Client, thumbnail: Bool) async -> PlatformImage? {
         let key = thumbnail
             ? (photo.remoteThumbnailKey ?? photo.copy(on: server.id)?.thumbnailKey)
@@ -112,19 +114,40 @@ enum RemoteAssetLoader {
         let safeName = SigV4Signer.sha256Hex(Data((server.id.uuidString + key).utf8))
         let extensionName = thumbnail ? "jpg" : BackupEngine.fileExtension(for: photo)
         let cacheURL = AppPaths.imageCache.appendingPathComponent("\(safeName).\(extensionName)")
-        if let data = try? Data(contentsOf: cacheURL), let image = ImageUtilities.image(from: data) {
+
+        if let image = ImageUtilities.image(from: cacheURL) {
             return image
         }
 
-        guard let data = try? await client.getObject(key: key) else { return nil }
-        try? data.write(to: cacheURL)
-        return ImageUtilities.image(from: data)
+        if thumbnail {
+            guard let data = try? await client.getObject(key: key) else { return nil }
+            try? data.write(to: cacheURL)
+            return ImageUtilities.image(from: data)
+        }
+
+        let sizeHint = photo.copy(on: server.id)?.byteCount
+        do {
+            try await client.downloadObject(
+                key: key,
+                to: cacheURL,
+                sizeHint: sizeHint
+            )
+        } catch {
+            return nil
+        }
+        return ImageUtilities.image(from: cacheURL)
     }
 }
 
 extension ImageUtilities {
     static func image(from data: Data) -> PlatformImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return platformImage(from: cgImage)
+    }
+
+    static func image(from url: URL) -> PlatformImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         return platformImage(from: cgImage)
     }

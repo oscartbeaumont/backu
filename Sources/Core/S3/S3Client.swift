@@ -18,6 +18,7 @@ struct S3ObjectHead: Sendable {
     var size: Int64
     var etag: String?
     var contentType: String?
+    var acceptRanges: Bool?
 }
 
 enum S3Error: LocalizedError {
@@ -64,10 +65,12 @@ struct S3Client: Sendable {
     let connection: S3Connection
     let credentials: S3Credentials
     let session: URLSession
+    let metrics: S3Metrics?
 
-    init(connection: S3Connection, credentials: S3Credentials, session: URLSession? = nil) {
+    init(connection: S3Connection, credentials: S3Credentials, session: URLSession? = nil, metrics: S3Metrics? = nil) {
         self.connection = connection
         self.credentials = credentials
+        self.metrics = metrics
         if let session {
             self.session = session
         } else {
@@ -181,7 +184,10 @@ struct S3Client: Sendable {
             key: key,
             size: response.expectedContentLength > 0 ? response.expectedContentLength : 0,
             etag: response.value(forHTTPHeaderField: "ETag"),
-            contentType: response.value(forHTTPHeaderField: "Content-Type")
+            contentType: response.value(forHTTPHeaderField: "Content-Type"),
+            acceptRanges: (response.value(forHTTPHeaderField: "Accept-Ranges")).map {
+                $0.lowercased().contains("bytes")
+            }
         )
     }
 
@@ -293,53 +299,84 @@ struct S3Client: Sendable {
         return request
     }
 
-    private func sign(_ request: inout URLRequest, payloadHash: String) {
+    func sign(_ request: inout URLRequest, payloadHash: String) {
         signer.sign(&request, payloadHash: payloadHash)
     }
 
-    private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        do {
-            let (data, response) = try await session.data(for: request)
+    func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry {
+            let (data, response) = try await self.session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
             return (data, http)
-        } catch let error as S3Error {
-            throw error
-        } catch {
-            throw S3Error.transport(error)
         }
     }
 
-    private func upload(_ request: URLRequest, data: Data) async throws -> (Data, HTTPURLResponse) {
-        do {
-            let (body, response) = try await session.upload(for: request, from: data)
+    func upload(_ request: URLRequest, data: Data) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry {
+            let (body, response) = try await self.session.upload(for: request, from: data)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
             return (body, http)
-        } catch let error as S3Error {
-            throw error
-        } catch {
-            throw S3Error.transport(error)
         }
     }
 
-    private func upload(_ request: URLRequest, fileURL: URL) async throws -> (Data, HTTPURLResponse) {
-        do {
-            let (body, response) = try await session.upload(for: request, fromFile: fileURL)
+    func upload(_ request: URLRequest, fileURL: URL) async throws -> (Data, HTTPURLResponse) {
+        try await sendWithRetry {
+            let (body, response) = try await self.session.upload(for: request, fromFile: fileURL)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
             return (body, http)
-        } catch let error as S3Error {
-            throw error
-        } catch {
-            throw S3Error.transport(error)
         }
     }
 
-    private func validate(_ response: HTTPURLResponse, data: Data) throws {
+    /// Runs one HTTP exchange with retries for transient statuses and transport
+    /// errors. Returns the final response, including a non-2xx one, so callers
+    /// validate it with the body and can surface a useful error.
+    private func sendWithRetry(
+        _ operation: () async throws -> (Data, HTTPURLResponse)
+    ) async throws -> (Data, HTTPURLResponse) {
+        let policy = S3RetryPolicy.default
+        var attempt = 0
+        while true {
+            metrics?.recordRequest()
+            do {
+                let (data, response) = try await operation()
+                if S3RetryPolicy.isRetryable(status: response.statusCode),
+                   attempt + 1 < policy.maxAttempts {
+                    attempt += 1
+                    metrics?.recordRetryableResponse()
+                    metrics?.recordRetry()
+                    try await policy.sleepBeforeRetry(
+                        attempt: attempt,
+                        retryAfter: S3RetryHeaders.retryAfter(response)
+                    )
+                    continue
+                }
+                return (data, response)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let nsError = error as NSError
+                if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+                    throw CancellationError()
+                }
+                metrics?.recordTransportFailure()
+                guard attempt + 1 < policy.maxAttempts,
+                      S3RetryPolicy.isRetryable(error: error) else {
+                    throw error is S3Error ? error : S3Error.transport(error)
+                }
+                attempt += 1
+                metrics?.recordRetry()
+                try await policy.sleepBeforeRetry(attempt: attempt, retryAfter: nil)
+            }
+        }
+    }
+
+    func validate(_ response: HTTPURLResponse, data: Data) throws {
         guard (200..<300).contains(response.statusCode) else {
             let parsed = S3ErrorParser.parse(data)
             throw S3Error.http(

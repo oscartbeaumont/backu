@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -662,6 +663,278 @@ class StorageLayoutTests(MockS3TestCase):
             with open(os.path.join(meta_dir, name), "r", encoding="utf-8") as handle:
                 sidecars.append(json.load(handle))
         self.assertTrue(any(item["key"] == key for item in sidecars))
+
+
+# --------------------------------------------------------------------------- #
+# multipart
+# --------------------------------------------------------------------------- #
+
+
+def _upload_id(response: Response) -> str:
+    root = response.xml()
+    return root.findtext("s3:UploadId", namespaces=NS) or ""
+
+
+def _complete_body(parts: list[tuple[int, str]]) -> bytes:
+    items = "".join(
+        f"<Part><PartNumber>{number}</PartNumber><ETag>{etag}</ETag></Part>"
+        for number, etag in parts
+    )
+    return f"<CompleteMultipartUpload>{items}</CompleteMultipartUpload>".encode("utf-8")
+
+
+class MultipartTests(MockS3TestCase):
+    def create(self, key: str) -> str:
+        response = call("POST", f"/{BUCKET}/{key}", [("uploads", "")])
+        self.assertEqual(response.status, 200, response.body)
+        upload_id = _upload_id(response)
+        self.assertTrue(upload_id)
+        return upload_id
+
+    def upload_part(self, key: str, upload_id: str, number: int, body: bytes, **kwargs) -> Response:
+        return call(
+            "PUT",
+            f"/{BUCKET}/{key}",
+            [("partNumber", str(number)), ("uploadId", upload_id)],
+            body=body,
+            **kwargs,
+        )
+
+    def test_multipart_round_trip(self) -> None:
+        key = f"{self.prefix}large.bin"
+        first = b"A" * (5 * 1024 * 1024)
+        second = b"B" * 1234
+
+        upload_id = self.create(key)
+        part_one = self.upload_part(key, upload_id, 1, first)
+        part_two = self.upload_part(key, upload_id, 2, second)
+        self.assertEqual(part_one.status, 200, part_one.body)
+        self.assertEqual(part_two.status, 200, part_two.body)
+        etag_one = part_one.headers["etag"]
+        etag_two = part_two.headers["etag"]
+        self.assertEqual(etag_one, '"' + hashlib.md5(first).hexdigest() + '"')
+        self.assertEqual(etag_two, '"' + hashlib.md5(second).hexdigest() + '"')
+
+        listed = call("GET", f"/{BUCKET}/{key}", [("uploadId", upload_id)])
+        self.assertEqual(listed.status, 200, listed.body)
+        root = listed.xml()
+        parts = [
+            {
+                "number": int(element.findtext("s3:PartNumber", namespaces=NS)),
+                "etag": element.findtext("s3:ETag", namespaces=NS),
+                "size": int(element.findtext("s3:Size", namespaces=NS)),
+            }
+            for element in root.findall("s3:Part", NS)
+        ]
+        self.assertEqual(parts, [
+            {"number": 1, "etag": etag_one, "size": len(first)},
+            {"number": 2, "etag": etag_two, "size": len(second)},
+        ])
+
+        completed = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", upload_id)],
+            body=_complete_body([(1, etag_one), (2, etag_two)]),
+            content_type="application/xml",
+        )
+        self.assertEqual(completed.status, 200, completed.body)
+        completed_root = completed.xml()
+        self.assertEqual(completed_root.findtext("s3:Key", namespaces=NS), key)
+        final_etag = completed_root.findtext("s3:ETag", namespaces=NS)
+        self.assertRegex(final_etag, r'^"[0-9a-f]{32}-2"$')
+
+        got = self.get(key)
+        self.assertEqual(got.status, 200)
+        self.assertEqual(got.body, first + second)
+        self.assertEqual(got.headers["content-length"], str(len(first) + len(second)))
+        self.assertEqual(got.headers["etag"], final_etag)
+
+        # The upload is gone after completion.
+        self.assertEqual(call("GET", f"/{BUCKET}/{key}", [("uploadId", upload_id)]).status, 404)
+
+    def test_multipart_query_parameters_are_signed(self) -> None:
+        key = f"{self.prefix}signed-multipart.bin"
+        upload_id = self.create(key)
+        body = b"x" * 1024
+        bad = self.upload_part(key, upload_id, 1, body, secret="wrong-secret")
+        self.assertEqual(bad.status, 403)
+        self.assertEqual(bad.error()["code"], "SignatureDoesNotMatch")
+        tampered = self.upload_part(key, upload_id, 1, body, tamper_signature=True)
+        self.assertEqual(tampered.status, 403)
+        # A valid request still works after the rejected ones.
+        good = self.upload_part(key, upload_id, 1, body)
+        self.assertEqual(good.status, 200, good.body)
+
+        unknown = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", "not-a-real-upload")],
+            body=_complete_body([(1, good.headers["etag"])]),
+            content_type="application/xml",
+        )
+        self.assertEqual(unknown.status, 404)
+        self.assertEqual(unknown.error()["code"], "NoSuchUpload")
+
+    def test_abort_removes_parts(self) -> None:
+        key = f"{self.prefix}aborted.bin"
+        upload_id = self.create(key)
+        self.assertEqual(self.upload_part(key, upload_id, 1, b"part").status, 200)
+        aborted = call("DELETE", f"/{BUCKET}/{key}", [("uploadId", upload_id)])
+        self.assertEqual(aborted.status, 204)
+        self.assertEqual(call("GET", f"/{BUCKET}/{key}", [("uploadId", upload_id)]).status, 404)
+        self.assertEqual(self.head(key).status, 404)
+        # Aborting again is not idempotent in S3, and not in the mock.
+        self.assertEqual(call("DELETE", f"/{BUCKET}/{key}", [("uploadId", upload_id)]).status, 404)
+
+    def test_complete_requires_valid_parts(self) -> None:
+        key = f"{self.prefix}invalid.bin"
+        upload_id = self.create(key)
+        etag = self.upload_part(key, upload_id, 1, b"part").headers["etag"]
+        missing = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", upload_id)],
+            body=_complete_body([(2, etag)]),
+            content_type="application/xml",
+        )
+        self.assertEqual(missing.status, 400)
+        self.assertEqual(missing.error()["code"], "InvalidPart")
+
+        wrong_etag = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", upload_id)],
+            body=_complete_body([(1, '"00000000000000000000000000000000"')]),
+            content_type="application/xml",
+        )
+        self.assertEqual(wrong_etag.status, 400)
+        self.assertEqual(wrong_etag.error()["code"], "InvalidPart")
+
+        out_of_order = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", upload_id)],
+            body=_complete_body([(2, etag), (1, etag)]),
+            content_type="application/xml",
+        )
+        self.assertEqual(out_of_order.status, 400)
+        self.assertEqual(out_of_order.error()["code"], "InvalidPartOrder")
+
+    def test_non_final_part_below_five_mib_is_rejected(self) -> None:
+        key = f"{self.prefix}small-first.bin"
+        upload_id = self.create(key)
+        first = self.upload_part(key, upload_id, 1, b"tiny").headers["etag"]
+        second = self.upload_part(key, upload_id, 2, b"tiny too").headers["etag"]
+        response = call(
+            "POST",
+            f"/{BUCKET}/{key}",
+            [("uploadId", upload_id)],
+            body=_complete_body([(1, first), (2, second)]),
+            content_type="application/xml",
+        )
+        self.assertEqual(response.status, 400)
+        self.assertEqual(response.error()["code"], "EntityTooSmall")
+
+
+class RangeTests(MockS3TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.key = f"{self.prefix}range.bin"
+        self.payload = bytes(range(256)) * 4  # 1024 deterministic bytes
+        self.assertEqual(self.put(self.key, self.payload).status, 200)
+
+    def test_range_returns_206_and_headers(self) -> None:
+        response = call("GET", f"/{BUCKET}/{self.key}", extra_headers={"Range": "bytes=10-19"})
+        self.assertEqual(response.status, 206, response.body)
+        self.assertEqual(response.headers["content-range"], f"bytes 10-19/{len(self.payload)}")
+        self.assertEqual(response.headers["content-length"], "10")
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
+        self.assertEqual(response.body, self.payload[10:20])
+
+    def test_open_ended_range(self) -> None:
+        response = call("GET", f"/{BUCKET}/{self.key}", extra_headers={"Range": "bytes=1000-"})
+        self.assertEqual(response.status, 206)
+        self.assertEqual(response.body, self.payload[1000:])
+        self.assertEqual(response.headers["content-range"], f"bytes 1000-1023/{len(self.payload)}")
+
+    def test_suffix_range(self) -> None:
+        response = call("GET", f"/{BUCKET}/{self.key}", extra_headers={"Range": "bytes=-24"})
+        self.assertEqual(response.status, 206)
+        self.assertEqual(response.body, self.payload[-24:])
+        self.assertEqual(response.headers["content-range"], f"bytes 1000-1023/{len(self.payload)}")
+
+    def test_head_advertises_ranges(self) -> None:
+        response = self.head(self.key)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["accept-ranges"], "bytes")
+        self.assertEqual(response.headers["content-length"], str(len(self.payload)))
+
+    def test_unsatisfiable_range_is_416(self) -> None:
+        response = call("GET", f"/{BUCKET}/{self.key}", extra_headers={"Range": "bytes=5000-6000"})
+        self.assertEqual(response.status, 416)
+        self.assertEqual(response.error()["code"], "InvalidRange")
+        self.assertEqual(response.headers["content-range"], f"bytes */{len(self.payload)}")
+
+
+# --------------------------------------------------------------------------- #
+# shaping and failure injection
+# --------------------------------------------------------------------------- #
+
+
+class ShapingAndFailureTests(unittest.TestCase):
+    def _start(self, **overrides):
+        data_dir = tempfile.mkdtemp(prefix="mock-s3-shaping-")
+        config = mock_s3.Config(port=0, data_dir=data_dir, quiet=True, **overrides)
+        server, thread = mock_s3.start_in_thread(config)
+        self.addCleanup(shutil.rmtree, data_dir, True)
+        self.addCleanup(mock_s3.stop_server, server, thread)
+        return server, server.server_address[1]
+
+    def test_injected_failures_are_counted_and_retryable(self) -> None:
+        server, port = self._start(fail_rate=1.0, fail_status=503, seed=7)
+        response = call("GET", f"/{BUCKET}/tests/fail/x.bin", port=port)
+        self.assertEqual(response.status, 503)
+        self.assertEqual(response.error()["code"], "ServiceUnavailable")
+        self.assertEqual(server.stats["requests"], 1)
+        self.assertEqual(server.stats["injected_failures"], 1)
+
+    def test_failure_injection_is_seeded_and_deterministic(self) -> None:
+        first_server, first_port = self._start(fail_rate=0.5, fail_status=429, seed=99)
+        second_server, second_port = self._start(fail_rate=0.5, fail_status=429, seed=99)
+        first = [call("GET", f"/{BUCKET}/tests/seed/{index}.bin", port=first_port).status for index in range(8)]
+        second = [call("GET", f"/{BUCKET}/tests/seed/{index}.bin", port=second_port).status for index in range(8)]
+        self.assertEqual(first, second)
+        self.assertTrue(any(status == 429 for status in first), first)
+        self.assertTrue(any(status == 404 for status in first), first)
+        self.assertEqual(first_server.stats["injected_failures"], first.count(429))
+        self.assertEqual(second_server.stats["injected_failures"], second.count(429))
+
+    def test_retry_after_header_on_429(self) -> None:
+        server, port = self._start(fail_rate=1.0, fail_status=429, seed=3)
+        response = call("GET", f"/{BUCKET}/tests/retry/x.bin", port=port)
+        self.assertEqual(response.status, 429)
+        self.assertEqual(response.headers.get("retry-after"), "1")
+        self.assertEqual(server.stats["injected_failures"], 1)
+
+    def test_latency_is_applied_per_request(self) -> None:
+        server, port = self._start(latency_ms=60)
+        started = time.monotonic()
+        call("GET", f"/{BUCKET}/tests/latency/x.bin", port=port)
+        elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.05)
+
+    def test_bandwidth_bucket_throttles_a_response(self) -> None:
+        server, port = self._start(bandwidth_mbps=4.0, require_auth=False)
+        payload = b"z" * (256 * 1024)
+        put = call("PUT", f"/{BUCKET}/tests/bandwidth/x.bin", body=payload, sign_it=False, port=port)
+        self.assertEqual(put.status, 200, put.body)
+        started = time.monotonic()
+        response = call("GET", f"/{BUCKET}/tests/bandwidth/x.bin", sign_it=False, port=port)
+        elapsed = time.monotonic() - started
+        self.assertEqual(response.body, payload)
+        # 256 KiB at 4 Mbps is about 0.52s; allow generous CI slack.
+        self.assertGreaterEqual(elapsed, 0.25)
 
 
 if __name__ == "__main__":
