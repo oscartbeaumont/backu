@@ -1,5 +1,27 @@
 # Release and TestFlight checklist
 
+## Current status (17 Nov 2026)
+
+- The iOS Release archive builds and signs successfully with the existing Apple
+  Development identity for team **68994Z5PT3**, and the privacy manifest and
+  orientations validate. The archive is at `/tmp/backu-release/Backu.xcarchive`
+  during local work (not committed).
+- Exporting an **App Store** IPA currently fails with `No Accounts` and
+  `No profiles for 'dev.oscartbeaumont.backu' were found`: xcodebuild has no
+  App Store Connect session, and the account has no Apple Distribution
+  certificate or App Store profile yet. `xcodebuild` in this environment cannot
+  create them without an API key.
+- No App Store Connect app record exists yet, so an upload would be rejected by
+  bundle ID anyway.
+- The listing assets, privacy manifest, screenshots, privacy/support pages and
+  the manual TestFlight workflow are ready.
+
+**To finish, the account owner needs to do two things:** create the app record,
+and provide an App Store Connect API key (App Manager) so the archive can be
+signed for distribution and uploaded. The key is also what lets the workflow
+create the distribution certificate and profile automatically. No `.p12` or
+`.mobileprovision` secrets are needed.
+
 Everything that can be prepared in the repository is already here: the bundle
 identifier, icon, privacy manifest, metadata, screenshots, pages, archive script
 and the manual TestFlight workflow. The items marked **owner** need the Apple
