@@ -37,6 +37,7 @@ struct ServersScreen: View {
         }
         .scrollIndicators(.hidden)
         .background(Theme.pageBackground)
+        .topScrollScrim()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif

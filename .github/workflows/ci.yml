@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mock-s3:
+    name: S3 mock + signature tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the stdlib S3 server suite
+        run: python3 Tools/MockS3/test_mock_s3.py
+
+  build:
+    name: Build iOS + macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate the project
+        run: xcodegen generate
+      - name: Build for iOS
+        run: |
+          xcodebuild -project Backu.xcodeproj -scheme Backu \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO build
+      - name: Build for macOS
+        run: |
+          xcodebuild -project Backu.xcodeproj -scheme Backu \
+            -destination 'platform=macOS' \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO build

@@ -124,7 +124,13 @@ final class BackuUITests: XCTestCase {
 
         select("Settings", in: app)
         XCTAssertTrue(app.staticTexts["Backup"].waitForExistence(timeout: 8), "Settings screen missing")
-        attach(app, "08-settings")
+        let sponsor = app.buttons["Sponsor Backu on GitHub"]
+        XCTAssertTrue(sponsor.waitForExistence(timeout: 8), "In-app sponsor action missing")
+        for _ in 0..<5 {
+            if sponsor.isHittable { break }
+            app.swipeUp()
+        }
+        attach(app, "08-settings-support")
     }
 
     func testOnboardingAndCustomServerConnection() throws {

@@ -103,6 +103,21 @@ extension View {
         )
     }
 
+    /// Keeps scrolled content from colliding with the status bar on the
+    /// custom large-title screens, which hide the navigation bar.
+    func topScrollScrim() -> some View {
+        overlay(alignment: .top) {
+            LinearGradient(
+                colors: [Theme.systemBackground, Theme.systemBackground.opacity(0.92), Theme.systemBackground.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 78)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+        }
+    }
+
     func cardShadow() -> some View {
         shadow(color: .black.opacity(0.06), radius: 18, y: 6)
     }

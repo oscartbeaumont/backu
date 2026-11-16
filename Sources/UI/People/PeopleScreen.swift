@@ -14,7 +14,7 @@ struct PeopleScreen: View {
     }
 
     private var people: [Person] {
-        let all = app.catalog.people.filter { !$0.isHidden }
+        let all = app.catalog.people.filter { !$0.isHidden && $0.faceCount > 0 }
         switch filter {
         case .all:
             return all.sorted { lhs, rhs in
@@ -74,6 +74,7 @@ struct PeopleScreen: View {
         }
         .scrollIndicators(.hidden)
         .background(Theme.pageBackground)
+        .topScrollScrim()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif

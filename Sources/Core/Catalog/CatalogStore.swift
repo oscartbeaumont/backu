@@ -542,10 +542,18 @@ final class CatalogStore {
             if photos[targetIndex].remoteThumbnailKey == nil {
                 photos[targetIndex].remoteThumbnailKey = photos[twin].remoteThumbnailKey
             }
+            // Keep people discovered on the other device attached to the local
+            // photo so naming them still means something.
+            for twinFace in photos[twin].faces {
+                guard let personID = twinFace.personID,
+                      !photos[targetIndex].faces.contains(where: { $0.personID == personID }) else { continue }
+                photos[targetIndex].faces.append(twinFace)
+            }
         }
         let twinIDs = Set(twins.map { photos[$0].id })
         photos.removeAll { twinIDs.contains($0.id) }
         rebuildLookups()
+        recomputePeopleCounts()
         bump()
         saveSoon()
     }

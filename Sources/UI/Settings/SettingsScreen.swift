@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsScreen: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openURL) private var openURL
     @State private var showAddServer = false
     @State private var confirmReset = false
 
@@ -14,12 +15,14 @@ struct SettingsScreen: View {
                 libraryCard()
                 peopleCard()
                 storageCard()
+                supportCard
                 aboutCard
             }
             .padding(.bottom, 90)
         }
         .scrollIndicators(.hidden)
         .background(Theme.pageBackground)
+        .topScrollScrim()
         #if os(iOS)
         .toolbar(.hidden, for: .navigationBar)
         #endif
@@ -234,8 +237,9 @@ struct SettingsScreen: View {
                     Text("Small").tag(4)
                     Text("Tiny").tag(6)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 220)
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .tint(Theme.accent)
             }
         }
     }
@@ -340,6 +344,82 @@ struct SettingsScreen: View {
         }
     }
 
+    // MARK: Support
+
+    private var supportCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.pink)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(.pink.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Support Backu")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Free, open source, no subscription.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("MIT")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(.quaternary))
+            }
+
+            Text("If Backu earns a place in your workflow, sponsoring keeps the App Store fee paid and the project moving. Every contribution goes straight to development.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    openURL(ProjectLinks.sponsors)
+                } label: {
+                    Label("Sponsor on GitHub", systemImage: "heart.fill")
+                        .font(.footnote.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                }
+                .buttonStyle(.glassProminent)
+                .tint(Theme.accent)
+                .accessibilityLabel("Sponsor Backu on GitHub")
+
+                Button {
+                    openURL(ProjectLinks.repository)
+                } label: {
+                    Label("Star", systemImage: "star")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 11)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Star Backu on GitHub")
+            }
+
+            HStack(spacing: 6) {
+                Button("View source") {
+                    openURL(ProjectLinks.repository)
+                }
+                Text("·")
+                Button("Report an issue") {
+                    openURL(ProjectLinks.issues)
+                }
+                Spacer()
+                Text("No ads, no tracking")
+            }
+            .font(.caption2)
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .contentCard()
+        .padding(.horizontal, 16)
+    }
+
     // MARK: About
 
     private var aboutCard: some View {
@@ -348,7 +428,7 @@ struct SettingsScreen: View {
             VStack(spacing: 3) {
                 Text("Backu")
                     .font(.headline)
-                Text("Version 1.0")
+                Text("Version 1.0 · MIT licensed")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

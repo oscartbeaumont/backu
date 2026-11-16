@@ -1,5 +1,9 @@
 # Backu
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa.svg)](https://github.com/sponsors/oscartbeaumont)
+[![CI](https://github.com/oscartbeaumont/backu/actions/workflows/ci.yml/badge.svg)](https://github.com/oscartbeaumont/backu/actions/workflows/ci.yml)
+
 **Your photos. Your bucket.**
 
 Backu is a native iPhone, iPad and Mac app that backs your photo library up to any S3-compatible storage, then lets you browse, search and organise it from a library that feels like the Photos app. There is no Backu account and no server in the middle: the app talks straight to the bucket you own.
@@ -131,6 +135,19 @@ Tools/Icon              the icon generator (CoreGraphics) and preview sheet
 
 The icon is generated, not hand-exported: `swift Tools/Icon/generate-icon.swift` rewrites the asset catalog for iOS, iPadOS and macOS.
 
+## Support the project
+
+Backu is free, MIT-licensed and has no subscription. If it earns a place in
+your workflow you can support development on
+[GitHub Sponsors](https://github.com/sponsors/oscartbeaumont), or from inside the
+app under **Settings → Support Backu**. Starring the repo and filing good issues
+helps too.
+
 ## Licence
 
-MIT. Sample photos in `Tests/Fixtures` are public-domain US government portraits plus CC BY-SA dog photos; see `Tests/Fixtures/ATTRIBUTION.md`.
+[MIT](LICENSE). The licence text is GitHub's MIT template with the copyright
+line filled in; the repository is public and the source is the whole product.
+
+Sample photos in `Tests/Fixtures` are public-domain US government portraits plus
+CC BY-SA dog photos; see `Tests/Fixtures/ATTRIBUTION.md`. The fixtures are
+downloaded on demand and are not part of the MIT-licensed source tree.
