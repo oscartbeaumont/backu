@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+Backu.xcodeproj/
+.superx/
+Tests/Fixtures/raw/
+Tests/Fixtures/generated/
+Tests/Fixtures/*.jpg
+test-output/
+screenshots/

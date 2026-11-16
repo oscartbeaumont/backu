@@ -1,0 +1,76 @@
+name: Backu
+options:
+  bundleIdPrefix: dev.oscartbeaumont
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+  xcodeVersion: "27.0"
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CLANG_ENABLE_MODULE_VERIFIER: YES
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Backu:
+    type: application
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Sources
+        excludes:
+          - "Resources/Info.plist"
+          - "Resources/Backu.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu
+        PRODUCT_NAME: Backu
+        INFOPLIST_FILE: Sources/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Sources/Resources/Backu.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SUPPORTS_MACCATALYST: NO
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    scheme:
+      testTargets:
+        - BackuTests
+        - BackuUITests
+      gatherCoverageData: true
+
+  BackuTests:
+    type: bundle.unit-test
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: Tests/BackuTests
+      - path: Sources/Core
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  BackuUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS]
+    sources:
+      - path: Tests/BackuUITests
+    dependencies:
+      - target: Backu
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu.uitests
+        GENERATE_INFOPLIST_FILE: YES
