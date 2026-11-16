@@ -24,6 +24,7 @@ Backu is a native iPhone, iPad and Mac app that backs your photo library up to a
 - **Any S3 bucket.** Amazon S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology, or anything else that speaks the S3 API. Add as many servers as you like and choose which one automatic backup uses.
 - **Photos-style library.** Square grid with month sections, pinch-free zoom levels, a native full-screen viewer with double-tap zoom, favourite, details, and a Liquid Glass chrome layer.
 - **Real backup, not a sync.** Originals are uploaded with a stable key layout, a SHA-256 of the bytes, and a readable JSON sidecar. Videos, Live Photos' stills, and screenshots are included (videos/screenshots can be turned off).
+- **Fast, stable transfers.** S3 multipart uploads and parallel range downloads, adaptive part sizes and connection counts from the link and measured throughput, exponential backoff with jitter, and a crash journal for interrupted multipart uploads.
 - **Background uploads.** Large files go through a background `URLSession` so a backup keeps moving when the app leaves the foreground. A `BGProcessingTask` wakes the app for automatic runs. Cellular is opt-in.
 - **People and pets, on-device.** Vision finds faces and animals, feature prints group them into people, and you give each one a name. Biometric vectors never leave the device; names and face boxes sync inside the sidecars.
 - **Instant search.** A local index covers names, tags, places, cameras, lenses, years, favourites, videos and which server holds a photo. Keystrokes never touch the network.
@@ -55,6 +56,29 @@ The sidecar is deliberately human-readable:
   "sha256": "…"
 }
 ```
+
+## Transfer performance
+
+The S3 layer is built for real networks, not just localhost:
+
+- Every request goes through **exponential backoff with full jitter** (150 ms base, 10 s cap, 5–7 attempts), honours `Retry-After`, and only retries transient statuses and transport failures. Access-denied and missing-key errors fail immediately.
+- Files **over 16 MiB use S3 multipart** with 5–64 MiB parts and 4–10 concurrent streams. Part size and concurrency come from file size, direction, `NWPath` (Wi-Fi/wired/cellular/expensive/constrained), a per-server throughput EWMA, and evidence that the link scales with more connections. Cellular stays at four streams.
+- **Downloads over 8 MiB fan out into byte ranges** when the link has meaningful RTT, stream to disk, pin every range with `If-Match`, and `pwrite` each completed range into its slot while the rest are still on the wire. Small objects and fast local links stay on one stream. A 60-second HEAD cache removes a round trip on repeated viewer opens.
+- **One streaming SHA-256 pass**, `FileHandle` reads, bounded part payloads and disk staging above a memory budget keep multi-gigabyte videos out of RAM.
+- Interrupted multipart uploads are journalled and aborted on the next run. The documented backstop for a lost create response is a bucket lifecycle rule (`AbortIncompleteMultipartUpload`).
+
+Measured with `Tools/Benchmark/run.sh` (1 warm-up + 3 runs, medians). "Shaped" is 60 Mbps **per connection** and 25 ms RTT, modelling a single-stream-limited mobile link; the mock's token bucket is not a shared-bottleneck or packet-loss simulator.
+
+| Scenario | Before (single PUT/GET) | Final |
+| --- | ---: | ---: |
+| Upload 32 MiB, shaped | 7.0 MB/s | **40.1 MB/s** |
+| Upload 128 MiB, shaped | 7.0 MB/s | **66.6 MB/s** |
+| Download 32 MiB, shaped | 7.2 MB/s | **56.8 MB/s** |
+| Download 128 MiB, shaped | 7.2 MB/s | **70.3 MB/s** |
+| Upload 32 MiB, localhost | 397 MB/s | **1346 MB/s** |
+| Download 128 MiB, localhost | 4184 MB/s | **6239 MB/s** |
+
+Under 30 % injected 503s the transfer keeps going with bounded retries; one benchmark pass lost an entire download before the longer retry budget and parallel ranges. The one scenario that misses a 15 % step improvement is 32 MiB upload: S3 requires every part except the last to be at least 5 MiB, so 32 MiB can feed at most 6.4 lanes. The details and raw JSON are in [`Tools/Benchmark`](Tools/Benchmark).
 
 ## Connecting a provider
 
@@ -115,7 +139,8 @@ Vision's image feature print is unavailable in the iOS Simulator on some hosts (
 ## Limitations / next
 
 - Grouping quality comes from Vision image feature prints, not a dedicated face-recognition model. Same-session photos group well; a purpose-built embedding model would improve cross-year matching.
-- Uploads are single PUTs (fine for photos and most videos, up to S3's 5 GB limit); multipart upload would be the next step for very large videos.
+- Multipart uploads resume across parts within a run but not across app launches; a crash journal aborts the incomplete upload instead of resuming it.
+- Very large files are still limited by S3's 5 GB single-PUT / 10,000-part rules; a bucket lifecycle rule is recommended to clean up uploads whose create response was lost.
 - Sidecar edits upload on the next backup pass, which happens automatically after a rename or tag change.
 - No album sharing or end-to-end encryption layer yet.
 
