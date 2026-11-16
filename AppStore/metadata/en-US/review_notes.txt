@@ -1,0 +1,17 @@
+NO SIGN-IN
+Backu has no account or login. All features except backup work with just the system photo library: browse the grid, open the viewer, add tags/favourites, search, and use the People tab after the on-device face index runs.
+
+TESTING BACKUP
+Backup requires an S3-compatible bucket (AWS S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology or a custom endpoint) because the app uploads only to storage the person owns. Open Servers → add a server, choose a provider preset, and enter a bucket and access key. "Test Connection" writes and reads a small probe object before saving. Without a bucket, the app clearly explains that backup is unavailable and does not block the rest of the library.
+
+PRIVACY
+No developer server is involved. Photos, tags and face boxes go only to the bucket the user configures; face feature vectors stay on-device. There is no analytics, advertising or tracking SDK. The in-app Support card opens GitHub Sponsors in the browser; it is a donation link for an open-source project, not a purchase of digital content.
+
+BACKGROUND MODES
+"fetch" and "processing" are used only to continue an automatic photo backup (BGProcessingTask) and to keep background URLSession uploads moving.
+
+ENCRYPTION
+The app uses HTTPS through the system stack. Its Info.plist declares no non-exempt encryption.
+
+SAMPLE CONTENT
+All photos shown in the app and on the App Store are public-domain or CC0 sample images used for demonstration; no third-party content is bundled with the app itself.

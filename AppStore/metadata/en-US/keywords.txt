@@ -1,0 +1,1 @@
+photo backup,S3,cloud storage,private photos,backblaze,r2,self hosted,album,offline,photos

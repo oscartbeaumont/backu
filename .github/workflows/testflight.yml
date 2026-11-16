@@ -1,0 +1,68 @@
+name: TestFlight
+
+# Manual only. Requires the App Store Connect app record to exist, plus these
+# repository secrets:
+#   APPLE_TEAM_ID       Apple Developer team ID
+#   ASC_KEY_ID          App Store Connect API key ID (App Manager role)
+#   ASC_ISSUER_ID       App Store Connect issuer ID
+#   ASC_PRIVATE_KEY     the AuthKey_<id>.p8 contents
+#
+# The API key is used both for automatic signing (xcodebuild) and for the upload
+# (altool). No certificate or profile secrets are required.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Build number (must be unique in App Store Connect)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Archive and upload
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          missing=0
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then echo "missing secret $name"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Write App Store Connect key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive, export and upload
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+        run: ./scripts/testflight.sh

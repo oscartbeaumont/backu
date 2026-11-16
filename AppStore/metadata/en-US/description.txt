@@ -1,0 +1,33 @@
+Backu is a private, native photo backup and library app for iPhone, iPad and Mac. It stores your photos in your own Amazon S3, Backblaze B2, Cloudflare R2, MinIO or other S3-compatible bucket. There is no Backu account, no subscription and no developer server in the middle: the app talks straight to storage you control.
+
+BACK UP WITHOUT A SUBSCRIPTION
+• Upload originals, videos and screenshots with a stable folder layout.
+• Automatic backup in the background, with optional Wi-Fi-only transfers.
+• Choose different servers and folders for different backups.
+• Every upload is verified with a SHA-256 hash and a readable JSON sidecar that carries tags, people, camera details and location.
+• S3 multipart uploads, parallel transfers, retries and adaptive part sizing keep large videos moving.
+
+A LIBRARY THAT FEELS NATIVE
+• A Photos-style grid with month sections and adjustable density.
+• Full-screen viewer with double-tap zoom, favourites and details.
+• See capture date, camera, lens, exposure, dimensions, location and storage path for every photo.
+• Browse photos uploaded from your other devices by opening the same bucket.
+
+PEOPLE, PETS AND TAGS
+• Vision finds faces and animals entirely on-device.
+• Group them into people and pets, then give them names.
+• Names and tags are written beside the photo so they travel with your library.
+• Face feature vectors never leave your device.
+
+SEARCH THAT DOESN'T WAIT
+• An on-device index searches names, tags, places, cameras, lenses, years, favourites and videos.
+• Results appear as you type, without a request to your bucket.
+• Filter by person, pet, tag, camera or server.
+
+BUILT FOR PRIVACY
+• No account, no analytics, no advertising and no tracking.
+• Access keys are stored in the Keychain and only sent to the endpoint you enter.
+• Your photos are only uploaded to the bucket you configure.
+• Open source under the MIT licence.
+
+Note: Backu needs an S3-compatible bucket to back up. You can browse and search your photo library without configuring one. Provider setup is guided in the app, with links to the exact page where you create an access key.

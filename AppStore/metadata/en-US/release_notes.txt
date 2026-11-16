@@ -1,0 +1,5 @@
+First release.
+
+Backu backs up your photos and videos to any S3-compatible bucket, then gives you a Photos-style library, on-device people and pet grouping, and instant search. Add AWS S3, Backblaze B2, Cloudflare R2, MinIO or a custom endpoint. Photos and tags live in your bucket; face vectors stay on your device.
+
+Also included: automatic background backup, Wi-Fi-only or cellular, multiple servers, readable JSON sidecars next to each photo, and a macOS app built from the same code.

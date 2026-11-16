@@ -8,7 +8,7 @@ final class BackuUITests: XCTestCase {
     private var bootstrap: String {
         """
         {"servers":[{"name":"Local Test","provider":"custom","endpoint":"http://127.0.0.1:9000","region":"us-east-1","bucket":"backu-test","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Backu"}],
-         "settings":{"autoBackupEnabled":false,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
+         "settings":{"autoBackupEnabled":true,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
         """
     }
 
@@ -18,7 +18,10 @@ final class BackuUITests: XCTestCase {
             tab.tap()
             return
         }
-        let sidebar = app.buttons[name].firstMatch
+        // Sidebar rows include counts ("Library, 14"), so match by prefix.
+        let sidebar = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", name)
+        ).firstMatch
         if sidebar.waitForExistence(timeout: 5) {
             sidebar.tap()
         }
@@ -184,5 +187,90 @@ final class BackuUITests: XCTestCase {
         app.buttons["Save"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 15), "Did not land in the library")
         attach(app, "14-library-connected")
+    }
+
+    /// Captures the five listing screenshots from a marketing-only library.
+    /// Run with the mock bucket on :9001 (bucket photo-archive) and a clean
+    /// simulator photo library; see Tools/Screenshots/README.md.
+    func testAppStoreScreenshots() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["BACKU_RESET"] = "1"
+        app.launchEnvironment["BACKU_BOOTSTRAP"] = """
+        {"servers":[{"name":"Home Backup","provider":"aws","endpoint":"http://127.0.0.1:9001","region":"eu-west-1","bucket":"photo-archive","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Photos"}],
+         "settings":{"autoBackupEnabled":true,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
+        """
+        app.launch()
+
+        let allow = app.buttons["Allow Full Access"]
+        if allow.waitForExistence(timeout: 10) { allow.tap() }
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let springboardAllow = springboard.buttons["Allow Full Access"]
+        if springboardAllow.waitForExistence(timeout: 3) { springboardAllow.tap() }
+
+        XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 15))
+        let tiles = app.buttons.matching(identifier: "library.tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 25), "No photos in the simulator library")
+
+        // First backup: all originals, sidecars, thumbs and the index.
+        let backup = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Back up'")).firstMatch
+        if backup.waitForExistence(timeout: 5) { backup.tap() }
+        let backedUp = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'backed up' AND NOT (label CONTAINS '0 backed up')")
+        ).firstMatch
+        XCTAssertTrue(backedUp.waitForExistence(timeout: 90), "Backup did not complete")
+        sleep(2)
+
+        // Name a pet so People and Search have real content.
+        select("People", in: app)
+        XCTAssertTrue(app.staticTexts["People & Pets"].waitForExistence(timeout: 10))
+        let unnamed = app.buttons.matching(identifier: "people.name").firstMatch
+        if unnamed.waitForExistence(timeout: 20) {
+            unnamed.tap()
+            let alert = app.alerts.firstMatch
+            if alert.waitForExistence(timeout: 5) {
+                alert.textFields.firstMatch.tap()
+                alert.textFields.firstMatch.typeText("Maple")
+                alert.buttons["Save"].tap()
+                _ = app.staticTexts["Maple"].waitForExistence(timeout: 8)
+            }
+        }
+
+        // Push the rename's sidecar so no tile shows a pending badge.
+        select("Library", in: app)
+        let sync = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Back up'")).firstMatch
+        if sync.waitForExistence(timeout: 8) {
+            sync.tap()
+            sleep(8)
+        }
+        sleep(1)
+        attach(app, "01-library")
+
+        tiles.firstMatch.tap()
+        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 10))
+        sleep(1)
+        attach(app, "02-viewer")
+        app.buttons["Close"].tap()
+
+        select("People", in: app)
+        XCTAssertTrue(app.staticTexts["People & Pets"].waitForExistence(timeout: 10))
+        sleep(1)
+        attach(app, "03-people")
+
+        select("Search", in: app)
+        let field = app.textFields["search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        field.tap()
+        field.typeText("maple")
+        sleep(2)
+        if app.keyboards.buttons["return"].exists {
+            app.keyboards.buttons["return"].tap()
+        }
+        sleep(1)
+        attach(app, "04-search")
+
+        select("Settings", in: app)
+        XCTAssertTrue(app.staticTexts["Backup"].waitForExistence(timeout: 8))
+        sleep(1)
+        attach(app, "05-settings")
     }
 }

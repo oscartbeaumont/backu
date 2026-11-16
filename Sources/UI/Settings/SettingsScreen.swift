@@ -309,7 +309,7 @@ struct SettingsScreen: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(server.name)
                             .font(.subheadline)
-                        Text(server.subtitle)
+                        Text(app.settings.backupServerID == server.id ? "\(server.bucket) · Auto-backup" : server.bucket)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
