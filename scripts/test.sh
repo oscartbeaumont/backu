@@ -11,6 +11,7 @@ RESULT_DIR="${BACKU_RESULTS:-/private/tmp/backu-results}"
 command -v xcodegen >/dev/null || { echo "install xcodegen: brew install xcodegen"; exit 1; }
 xcodegen generate >/dev/null
 
+./Tools/Fixtures/download-fixtures.sh
 swift Tools/Fixtures/prepare-fixtures.swift >/dev/null
 
 pkill -f "mock_s3.py.*--data-dir $DATA_DIR" 2>/dev/null || true

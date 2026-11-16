@@ -16,6 +16,7 @@ echo "→ Generating the Xcode project"
 xcodegen generate >/dev/null
 
 echo "→ Preparing a sample library with EXIF"
+./Tools/Fixtures/download-fixtures.sh
 swift Tools/Fixtures/prepare-fixtures.swift >/dev/null
 
 echo "→ Starting the mock bucket on :$PORT"

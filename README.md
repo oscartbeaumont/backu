@@ -100,7 +100,7 @@ xcodebuild -project Backu.xcodeproj -scheme Backu \
   -only-testing:BackuUITests test
 ```
 
-`Tools/MockS3` is a stdlib-only S3 server with a real SigV4 verifier, so the integration tests fail if the signature implementation drifts. `scripts/dev.sh` sets up a simulator with sample photos and a live mock bucket for hands-on work.
+`Tools/MockS3` is a stdlib-only S3 server with a real SigV4 verifier, so the integration tests fail if the signature implementation drifts. `scripts/dev.sh` downloads the public-domain sample photos, sets up a simulator with them, and starts a live mock bucket for hands-on work. The photos are not committed; see `Tests/Fixtures/ATTRIBUTION.md`.
 
 ## Testing notes
 
