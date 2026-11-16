@@ -12,3 +12,5 @@ Tests/Fixtures/*.jpg
 test-output/
 screenshots/
 Tests/Fixtures/library/
+default.profraw
+*.profraw
