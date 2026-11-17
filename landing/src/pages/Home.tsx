@@ -1,7 +1,7 @@
 import { Link, Meta, Title } from "@solidjs/meta";
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { revealOnScroll, tiltOnPointer } from "../components/motion";
-import { absoluteURL, SITE_URL } from "../site";
+import { absoluteURL, SITE_URL, TESTFLIGHT_URL } from "../site";
 import {
   ArrowIcon,
   BucketIcon,
@@ -113,13 +113,28 @@ export default function Home() {
               fee, an account, or a catch.
             </p>
             <div class="hero-actions rise rise-4">
-              <a class="button" href="#how">
-                See how it works
-                <ArrowIcon class="button-arrow" />
-              </a>
-              <a class="button button-quiet" href="#get">
-                Get Backu
-              </a>
+              <Show
+                when={TESTFLIGHT_URL}
+                fallback={
+                  <>
+                    <a class="button" href="#how">
+                      See how it works
+                      <ArrowIcon class="button-arrow" />
+                    </a>
+                    <a class="button button-quiet" href="#get">
+                      Get Backu
+                    </a>
+                  </>
+                }
+              >
+                <a class="button" href={TESTFLIGHT_URL}>
+                  Join the TestFlight
+                  <ArrowIcon class="button-arrow" />
+                </a>
+                <a class="button button-quiet" href="#how">
+                  See how it works
+                </a>
+              </Show>
             </div>
             <ul class="hero-trust rise rise-5">
               <li>
@@ -321,16 +336,27 @@ export default function Home() {
           <div class="get-glow get-glow-blue" aria-hidden="true" />
           <div class="get-glow get-glow-coral" aria-hidden="true" />
           <img class="get-icon" src="/apple-touch-icon.png" alt="" width="88" height="88" loading="lazy" />
-          <p class="eyebrow">Coming soon</p>
+          <p class="eyebrow">{TESTFLIGHT_URL ? "Public beta" : "Coming soon"}</p>
           <h2 id="get-title">Your photos deserve a safer home.</h2>
           <p>
-            Backu is being polished for the App Store on iPhone, iPad and Mac. Follow along, or help
-            test the next build.
+            {TESTFLIGHT_URL
+              ? "Backu is in public beta on TestFlight for iPhone and iPad. Install it, try it with your own storage, and tell us what needs work."
+              : "Backu is being polished for the App Store on iPhone, iPad and Mac. Follow along, or help test the next build."}
           </p>
           <div class="get-actions">
-            <a class="button" href="https://github.com/oscartbeaumont/backu" target="_blank" rel="noreferrer">
-              <GitHubIcon class="button-icon" /> Follow the build
-            </a>
+            <Show
+              when={TESTFLIGHT_URL}
+              fallback={
+                <a class="button" href="https://github.com/oscartbeaumont/backu" target="_blank" rel="noreferrer">
+                  <GitHubIcon class="button-icon" /> Follow the build
+                </a>
+              }
+            >
+              <a class="button" href={TESTFLIGHT_URL}>
+                Join the TestFlight
+                <ArrowIcon class="button-arrow" />
+              </a>
+            </Show>
             <a class="button button-quiet" href="/support">
               Ask a question
             </a>

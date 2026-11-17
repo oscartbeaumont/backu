@@ -43,6 +43,8 @@ jobs:
       - name: Type-check
         run: npm run typecheck
       - name: Build
+        env:
+          VITE_TESTFLIGHT_URL: ${{ vars.VITE_TESTFLIGHT_URL }}
         run: npm run build
       - name: Upload preview version
         id: preview
@@ -94,6 +96,8 @@ jobs:
       - name: Type-check
         run: npm run typecheck
       - name: Build
+        env:
+          VITE_TESTFLIGHT_URL: ${{ vars.VITE_TESTFLIGHT_URL }}
         run: npm run build
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''

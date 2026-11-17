@@ -81,6 +81,38 @@ To move the site again, update the route in `wrangler.jsonc`, set
 `public/sitemap.xml`, and update the App Store URLs in
 `AppStore/metadata/en-US/{marketing,privacy,support}_url.txt`.
 
+## Public TestFlight button
+
+The landing shows **Join the TestFlight** in the hero and the Get Backu card
+when `VITE_TESTFLIGHT_URL` is set. With it unset, the page keeps the normal
+"See how it works" / "Follow the build" buttons.
+
+To make a public TestFlight link that anyone can use:
+
+1. App Store Connect → Backu → TestFlight → **External Testing**.
+2. Create a group (for example `Public Beta`) and add the build.
+3. Submit the build for **Beta App Review**. External testers cannot install
+   until Apple approves it.
+4. Enable **Public Link** for the group and copy the
+   `https://testflight.apple.com/join/...` URL.
+5. Set the repository variable and deploy the landing:
+
+```sh
+gh variable set VITE_TESTFLIGHT_URL --repo oscartbeaumont/backu   --body "https://testflight.apple.com/join/XXXXXXXX"
+gh workflow run deploy-landing.yml
+```
+
+For local builds:
+
+```sh
+VITE_TESTFLIGHT_URL="https://testflight.apple.com/join/XXXXXXXX" npm run build
+```
+
+The link enrolls anyone who opens it into that external testing group, subject
+to Apple's public-link tester limit and the build's 90-day TestFlight
+availability. It is separate for iOS/iPadOS and macOS: each platform needs its
+own external group/public link.
+
 ## Routes
 
 - `/` — landing

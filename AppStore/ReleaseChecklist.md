@@ -142,7 +142,27 @@ In App Store Connect → App Store tab, paste from `AppStore/metadata/en-US/`:
 - [ ] Build: select the uploaded TestFlight build.
 - [ ] Submit for review.
 
-## 5. China mainland distribution
+## 5. Public TestFlight link
+
+A public link lets anyone enroll without an email invitation:
+
+1. TestFlight → **External Testing** → create a group.
+2. Add the processed build.
+3. Submit it for **Beta App Review**.
+4. Enable **Public Link** and copy the `testflight.apple.com/join/...` URL.
+5. Put it on the landing:
+
+```sh
+gh variable set VITE_TESTFLIGHT_URL --repo oscartbeaumont/backu \
+  --body "https://testflight.apple.com/join/XXXXXXXX"
+gh workflow run deploy-landing.yml
+```
+
+The landing shows its TestFlight buttons only when this variable is set. The
+public link has Apple's external-tester limit and the build expires after 90
+days. iOS and macOS each need their own external group/link.
+
+## 6. China mainland distribution
 
 The two App Store Connect notices only apply if Backu is available in China
 mainland.
@@ -166,7 +186,7 @@ Assessment report are needed unless those features are added later. If they
 are, the filing and report must be obtained by the account owner; they cannot
 be generated from this repository.
 
-## 6. Things that cannot be automated
+## 7. Things that cannot be automated
 
 - Creating the app record and accepting agreements.
 - API key creation and the `.p8` download.
@@ -175,7 +195,7 @@ be generated from this repository.
 - The first upload must be made after the app record exists; App Store Connect
   rejects a bundle ID that has no app record.
 
-## 7. macOS publishing
+## 8. macOS publishing
 
 The same codebase builds a native Mac app. It uses the same App ID and bundle
 identifier (`me.otbeaumont.backu`) but macOS is a separate platform on the app
