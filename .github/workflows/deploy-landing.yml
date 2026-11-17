@@ -52,14 +52,10 @@ jobs:
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          npx wrangler versions upload \
-            --preview-alias "pr-$PR_NUMBER" \
-            --message "PR #$PR_NUMBER" \
-            | tee "$RUNNER_TEMP/preview.log"
-          url="$(sed -n 's/^Version Preview Alias URL: //p' "$RUNNER_TEMP/preview.log" | head -1 | tr -d '\r')"
-          if [ -z "$url" ]; then
-            url="$(sed -n 's/^Version Preview URL: //p' "$RUNNER_TEMP/preview.log" | head -1 | tr -d '\r')"
-          fi
+          set -euo pipefail
+          output="$(npx cf previews deploy --preview-name "pr-$PR_NUMBER")"
+          printf '%s\n' "$output"
+          url="$(printf '%s' "$output" | jq -er '.preview_urls[0]')"
           echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Comment preview URL
         if: steps.preview.outputs.url != ''
@@ -101,7 +97,7 @@ jobs:
         run: npm run build
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
-        run: npx wrangler deploy
+        run: npx cf deploy --message "Deploy ${GITHUB_SHA:0:12}"
       - name: Cloudflare token missing
         if: env.CLOUDFLARE_API_TOKEN == ''
         run: |

@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node dist/server/node.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "cf deploy"
   },
   "engines": {
     "node": ">=24"
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@solidjs/vite-plugin": "3.0.0-next.57",
+    "cf": "1.0.0-rc.0",
     "typescript": "^5.9.3",
     "vite": "^8.3.8",
     "wrangler": "^4.163.0"
