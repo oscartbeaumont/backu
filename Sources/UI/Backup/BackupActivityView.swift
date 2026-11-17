@@ -11,7 +11,10 @@ struct BackupActivityView: View {
 
     private var title: String {
         if backup.isRunning {
-            return backup.totalCount == 0 ? "Checking uploads" : "Backing up"
+            if backup.totalCount == 0 { return "Checking uploads" }
+            return app.backupDestinationCount > 1
+                ? "Backing up to \(app.backupDestinationCount) buckets"
+                : "Backing up"
         }
         if backup.failedCount > 0 { return "Needs attention" }
         if app.photosPendingBackup > 0 { return "Waiting for background" }
@@ -35,12 +38,15 @@ struct BackupActivityView: View {
     }
 
     private var serverName: String {
-        app.servers.server(id: backup.serverID)?.name ?? app.backupServer?.name ?? "No server"
+        if let id = backup.activeServerID, let server = app.servers.server(id: id) {
+            return server.name
+        }
+        return app.backupDestinationSummary
     }
 
     private var subtitle: String {
         if backup.totalCount > 0, backup.isRunning {
-            return "\(backup.completedCount + backup.failedCount) of \(backup.totalCount) · \(serverName)"
+            return "\(backup.completedCount + backup.failedCount) of \(backup.totalCount) copies · \(serverName)"
         }
         if let summary = backup.lastSummary, !backup.isRunning {
             return "\(summary) · \(serverName)"
@@ -53,6 +59,7 @@ struct BackupActivityView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     statusCard
+                    if backup.destinationStatuses.count > 1 { destinationsCard }
                     if !backup.failedItems.isEmpty { failuresCard }
                     if !queueItems.isEmpty { queueCard }
                     backgroundCard
@@ -157,8 +164,8 @@ struct BackupActivityView: View {
                             label: "Speed"
                         )
                     }
-                    if app.photosPendingBackup > 0 {
-                        stat("\(app.photosPendingBackup)", label: "Waiting")
+                    if app.copiesPendingBackup > 0 {
+                        stat("\(app.copiesPendingBackup)", label: "Copies due")
                     }
                     if backup.reclaimedCount > 0 {
                         stat("\(backup.reclaimedCount)", label: "Recovered")
@@ -189,6 +196,72 @@ struct BackupActivityView: View {
         }
     }
 
+    // MARK: Destinations
+
+    private var destinationsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Destinations", systemImage: "externaldrive.connected.to.line.below")
+                .font(.subheadline.weight(.semibold))
+            ForEach(backup.destinationStatuses) { status in
+                VStack(spacing: 6) {
+                    HStack(spacing: 10) {
+                        Image(systemName: destinationSymbol(status))
+                            .font(.caption)
+                            .foregroundStyle(destinationTint(status))
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(status.name)
+                                .font(.caption.weight(.medium))
+                                .lineLimit(1)
+                            Text(status.bucket)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 6)
+                        Text(destinationDetail(status))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(status.failed > 0 ? .orange : .secondary)
+                    }
+                    if status.isActive, status.total > 0 {
+                        ProgressBar(value: max(0.02, status.progress))
+                    }
+                }
+            }
+            Text("The same photo is uploaded once to each bucket, so one bucket can fail without losing the backup.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .contentCard()
+    }
+
+    private func destinationSymbol(_ status: BackupEngine.DestinationStatus) -> String {
+        if status.failed > 0 { return "exclamationmark.circle.fill" }
+        if status.isActive { return "arrow.up.circle.fill" }
+        if status.isFinished { return "checkmark.circle.fill" }
+        return "clock"
+    }
+
+    private func destinationTint(_ status: BackupEngine.DestinationStatus) -> Color {
+        if status.failed > 0 { return .orange }
+        if status.isActive { return Theme.accent }
+        if status.isFinished { return Theme.mint }
+        return .secondary
+    }
+
+    private func destinationDetail(_ status: BackupEngine.DestinationStatus) -> String {
+        if status.failed > 0 {
+            return "\(status.completed) of \(status.total) · \(status.failed) failed"
+        }
+        if status.total == 0 {
+            if status.isFinished { return "Up to date" }
+            return backup.isRunning ? "Checking" : "Ready"
+        }
+        return "\(status.completed) of \(status.total)"
+    }
+
     // MARK: Failures and queue
 
     private var failuresCard: some View {
@@ -201,6 +274,12 @@ struct BackupActivityView: View {
                     Text(item.filename)
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
+                    if !item.destinationName.isEmpty, backup.destinationStatuses.count > 1 {
+                        Text(item.destinationName)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                     if let error = item.error {
                         Text(error)
                             .font(.caption2)
@@ -234,7 +313,7 @@ struct BackupActivityView: View {
                 Label(backup.isRunning ? "Queue" : "Last run", systemImage: "list.bullet")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(backup.items.count) item\(backup.items.count == 1 ? "" : "s")")
+                Text("\(backup.items.count) cop\(backup.items.count == 1 ? "y" : "ies")")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -269,6 +348,12 @@ struct BackupActivityView: View {
                 Text(item.filename)
                     .font(.caption)
                     .lineLimit(1)
+                if !item.destinationName.isEmpty, backup.destinationStatuses.count > 1 {
+                    Text(item.destinationName)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
                 if item.phase == .uploading {
                     ProgressBar(value: max(0.02, item.progress), tint: Theme.accent)
                         .frame(height: 3)
@@ -351,7 +436,12 @@ struct BackupActivityView: View {
                 .fixedSize(horizontal: false, vertical: true)
             #endif
             if app.photosPendingBackup > 0 {
-                Text("\(app.photosPendingBackup) photo\(app.photosPendingBackup == 1 ? "" : "s") waiting for the next window.")
+                Text("\(app.photosPendingBackup) photo\(app.photosPendingBackup == 1 ? "" : "s") waiting for the next window\(app.copiesPendingBackup > 0 ? " · \(app.copiesPendingBackup) copies due" : "").")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if app.backupDestinationCount > 1 {
+                Text("Each selected bucket gets its own copy of every photo.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

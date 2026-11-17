@@ -364,7 +364,9 @@ struct LibraryTopBar: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
-            .accessibilityLabel("Back up \(pendingCount) photos to \(app.backupServer?.name ?? "storage")")
+            .accessibilityLabel(app.backupDestinationCount > 1
+                ? "Back up \(pendingCount) photos to \(app.backupDestinationCount) buckets"
+                : "Back up \(pendingCount) photos to \(app.backupServer?.name ?? "storage")")
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         }
     }

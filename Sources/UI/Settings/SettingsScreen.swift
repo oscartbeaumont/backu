@@ -56,43 +56,7 @@ struct SettingsScreen: View {
                 isOn: $settings.autoBackupEnabled
             )
             Divider().opacity(0.4)
-            HStack(spacing: 12) {
-                Image(systemName: "externaldrive")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 26)
-                Text("Destination")
-                    .font(.subheadline)
-                Spacer()
-                Menu {
-                    ForEach(app.servers.servers) { server in
-                        Button(server.name) {
-                            app.settings.backupServerID = server.id
-                        }
-                    }
-                    Divider()
-                    Button("Add a server…") { showAddServer = true }
-                } label: {
-                    Text(app.backupServer?.name ?? "None")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Theme.accent)
-                }
-            }
-            HStack(spacing: 12) {
-                Image(systemName: "folder")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Folder in bucket")
-                        .font(.subheadline)
-                    Text(app.backupServer.map { "\($0.bucket)/\($0.folderDescription)" } ?? "Not configured")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
+            destinationsSection
             Divider().opacity(0.4)
             SettingsToggle(
                 title: "Use mobile data",
@@ -115,6 +79,96 @@ struct SettingsScreen: View {
             Divider().opacity(0.4)
             backupActions
         }
+    }
+
+    private var destinationsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "externaldrive.connected.to.line.below")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Destinations")
+                        .font(.subheadline)
+                    Text(app.backupDestinationCount > 1
+                         ? "Every photo is copied to \(app.backupDestinationCount) buckets"
+                         : "Every photo gets one copy")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if app.backupDestinationCount > 1 {
+                    Image(systemName: "checkmark.shield.fill")
+                        .foregroundStyle(Theme.mint)
+                        .accessibilityLabel("Redundant backup")
+                }
+            }
+
+            if app.servers.servers.isEmpty {
+                Button {
+                    showAddServer = true
+                } label: {
+                    Label("Add a server", systemImage: "plus.circle")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(app.servers.servers) { server in
+                        destinationRow(server)
+                    }
+                }
+                Button {
+                    showAddServer = true
+                } label: {
+                    Label("Add another server", systemImage: "plus.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 2)
+            }
+        }
+    }
+
+    private func destinationRow(_ server: ServerConfig) -> some View {
+        let selected = app.isBackupDestination(server)
+        return Button {
+            app.toggleBackupDestination(server)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(selected ? Theme.accent : Color.secondary.opacity(0.45))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(server.name)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text("\(server.bucket)/\(server.folderDescription)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if selected, app.backupDestinationCount == 1 {
+                    Text("Primary")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(selected ? Theme.accent.opacity(0.10) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.destination")
+        .accessibilityLabel("\(server.name), \(selected ? "included in backup" : "not included in backup")")
     }
 
     private var backupStatusRow: some View {
@@ -157,7 +211,10 @@ struct SettingsScreen: View {
 
     private var statusTitle: String {
         if app.backup.isRunning {
-            return app.backup.totalCount == 0 ? "Checking uploads" : "Backing up"
+            if app.backup.totalCount == 0 { return "Checking uploads" }
+            return app.backupDestinationCount > 1
+                ? "Backing up to \(app.backupDestinationCount) buckets"
+                : "Backing up"
         }
         if app.backup.failedCount > 0 { return "Uploads need attention" }
         if app.photosPendingBackup > 0 { return "Photos waiting to upload" }
@@ -167,7 +224,7 @@ struct SettingsScreen: View {
 
     private var statusSubtitle: String {
         if app.backup.isRunning {
-            return "\(app.backup.completedCount) of \(app.backup.totalCount) · \(app.backupServer?.name ?? "storage")"
+            return "\(app.backup.completedCount) of \(app.backup.totalCount) copies · \(app.backupDestinationSummary)"
         }
         if app.backup.failedCount > 0 {
             return "\(app.backup.failedCount) failed · tap for details"
@@ -430,7 +487,7 @@ struct SettingsScreen: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("settings.servers")
-            .accessibilityHint("Opens storage servers and automatic backup destination")
+            .accessibilityHint("Opens storage servers and automatic backup destinations")
         }
     }
 
@@ -446,7 +503,9 @@ struct SettingsScreen: View {
         guard let server = app.backupServer else {
             return "Connect S3, B2, R2 or any S3-compatible storage"
         }
-        return "Automatic backup to \(server.name)"
+        return app.backupDestinationCount > 1
+            ? "Automatic backup to \(app.backupDestinationCount) buckets"
+            : "Automatic backup to \(server.name)"
     }
 
     // MARK: Support

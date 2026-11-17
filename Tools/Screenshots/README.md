@@ -2,8 +2,9 @@
 
 The screenshots in `AppStore/screenshots/` are captured from the real app with
 the `testAppStoreScreenshots` UI test, using a dedicated simulator library of CC0 photos (landscapes and pets, plus
-the simulator’s built-in sample images) and a local mock bucket named
-`photo-archive` shown as “Home Backup”.
+the simulator’s built-in sample images) and two local mock buckets shown as
+“Home Backup” and “Offsite Vault”. The second destination exercises redundant
+backup in the Settings screenshot.
 
 ## Regenerate
 
@@ -11,6 +12,8 @@ the simulator’s built-in sample images) and a local mock bucket named
 ./Tools/Fixtures/download-marketing.sh
 python3 Tools/MockS3/mock_s3.py --port 9001 --bucket photo-archive --region eu-west-1 \
   --data-dir /private/tmp/backu-shots --quiet &
+python3 Tools/MockS3/mock_s3.py --port 9002 --bucket photo-archive-offsite --region eu-west-1 \
+  --data-dir /private/tmp/backu-shots-offsite --quiet &
 
 # iPhone 6.9" and iPad 13"
 xcrun simctl erase "iPhone 17 Pro Max"        # or the current 6.9" device

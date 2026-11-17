@@ -4,6 +4,7 @@ BACK UP WITHOUT A SUBSCRIPTION
 • Upload originals, videos and screenshots with a stable folder layout.
 • Automatic backup in the background, with optional Wi-Fi-only transfers.
 • Choose different servers and folders for different backups.
+• Select several buckets at once and every photo is copied to each one for redundancy.
 • Every upload is verified with a SHA-256 hash and a readable JSON sidecar that carries tags, people, camera details and location.
 • S3 multipart uploads, parallel transfers, retries and adaptive part sizing keep large videos moving.
 
@@ -27,7 +28,7 @@ SEARCH THAT DOESN'T WAIT
 BUILT FOR PRIVACY
 • No account, no analytics, no advertising and no tracking.
 • Access keys are stored in the Keychain and only sent to the endpoint you enter.
-• Your photos are only uploaded to the bucket you configure.
+• Your photos are only uploaded to the buckets you configure.
 • Open source under the MIT licence.
 
 Note: Backu needs an S3-compatible bucket to back up. You can browse and search your photo library without configuring one. Provider setup is guided in the app, with links to the exact page where you create an access key.

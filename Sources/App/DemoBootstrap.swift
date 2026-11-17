@@ -26,6 +26,8 @@ enum DemoBootstrap {
             var gridColumns: Int?
             var hasCompletedOnboarding: Bool?
             var showRemoteOnlyPhotos: Bool?
+            /// Test-only: mark every bootstrapped server as a backup destination.
+            var backupAllServers: Bool?
         }
 
         var servers: [Server]?
@@ -67,9 +69,13 @@ enum DemoBootstrap {
                 secretAccessKey: server.secretAccessKey
             )
             app.servers.add(config, credentials: credentials)
-            if app.settings.backupServerID == nil {
-                app.settings.backupServerID = config.id
+            if app.settings.backupServerIDs.isEmpty {
+                app.settings.backupServerIDs = [config.id]
             }
+        }
+
+        if payload.settings?.backupAllServers == true {
+            app.settings.backupServerIDs = app.servers.servers.map(\.id)
         }
 
         if !app.servers.servers.isEmpty {

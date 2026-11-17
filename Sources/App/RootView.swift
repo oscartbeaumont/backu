@@ -29,7 +29,7 @@ struct RootView: View {
         .background(Theme.pageBackground)
         .animation(.backuSnappy, value: app.showOnboarding)
         .onChange(of: app.settings.autoBackupEnabled) { _, _ in app.scheduleBackgroundBackup() }
-        .onChange(of: app.settings.backupServerID) { _, _ in app.scheduleBackgroundBackup() }
+        .onChange(of: app.settings.backupServerIDs) { _, _ in app.scheduleBackgroundBackup() }
         #if os(macOS)
         .sheet(item: $app.viewer) { presentation in
             ViewerScreen(presentation: presentation)
@@ -191,10 +191,14 @@ struct SidebarView: View {
                 HStack(spacing: 8) {
                     ProviderBadge(provider: server.provider, size: 24)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(server.name)
+                        Text(app.backupDestinationCount > 1
+                             ? "\(server.name) + \(app.backupDestinationCount - 1) more"
+                             : server.name)
                             .font(.caption.weight(.medium))
                             .lineLimit(1)
-                        Text(server.folderDescription)
+                        Text(app.backupDestinationCount > 1
+                             ? "\(app.backupDestinationCount) backup destinations"
+                             : server.folderDescription)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

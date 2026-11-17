@@ -206,14 +206,16 @@ final class BackuUITests: XCTestCase {
     }
 
     /// Captures the five listing screenshots from a marketing-only library.
-    /// Run with the mock bucket on :9001 (bucket photo-archive) and a clean
-    /// simulator photo library; see Tools/Screenshots/README.md.
+    /// Run with two mock buckets — :9001 (`photo-archive`) and :9002
+    /// (`photo-archive-offsite`) — and a clean simulator photo library; see
+    /// Tools/Screenshots/README.md. Two destinations exercise redundancy.
     func testAppStoreScreenshots() throws {
         let app = XCUIApplication()
         app.launchEnvironment["BACKU_RESET"] = "1"
         app.launchEnvironment["BACKU_BOOTSTRAP"] = """
-        {"servers":[{"name":"Home Backup","provider":"aws","endpoint":"http://127.0.0.1:9001","region":"eu-west-1","bucket":"photo-archive","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Photos"}],
-         "settings":{"autoBackupEnabled":true,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true}}
+        {"servers":[{"name":"Home Backup","provider":"aws","endpoint":"http://127.0.0.1:9001","region":"eu-west-1","bucket":"photo-archive","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Photos"},
+                    {"name":"Offsite Vault","provider":"custom","endpoint":"http://127.0.0.1:9002","region":"eu-west-1","bucket":"photo-archive-offsite","accessKeyID":"testkey","secretAccessKey":"testsecret","pathStyle":true,"prefix":"Photos"}],
+         "settings":{"autoBackupEnabled":true,"backupOnCellular":true,"faceRecognitionEnabled":true,"gridColumns":3,"hasCompletedOnboarding":true,"backupAllServers":true}}
         """
         app.launch()
 
@@ -258,6 +260,18 @@ final class BackuUITests: XCTestCase {
             sync.tap()
             sleep(8)
         }
+
+        // Redundancy means two buckets have to finish before the library is
+        // really up to date. Wait in Upload Activity rather than guessing.
+        select("Settings", in: app)
+        let activityRow = app.buttons.matching(identifier: "settings.backupActivity").firstMatch
+        if activityRow.waitForExistence(timeout: 8) {
+            activityRow.tap()
+            XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 120), "Both buckets did not finish")
+            attach(app, "06-upload-activity")
+            app.buttons["Done"].firstMatch.tap()
+        }
+        select("Library", in: app)
         sleep(1)
         attach(app, "01-library")
 

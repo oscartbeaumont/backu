@@ -257,6 +257,7 @@ struct LibraryScreen: View {
         .onChange(of: app.catalog.version) { _, _ in rebuildContent() }
         .onChange(of: filter) { _, _ in rebuildContent() }
         .onChange(of: app.settings.showRemoteOnlyPhotos) { _, _ in rebuildContent() }
+        .onChange(of: app.settings.backupServerIDs) { _, _ in rebuildContent() }
         .onChange(of: app.settings.gridColumns) { _, _ in
             window.invalidate()
             requestWindow(immediate: true)
@@ -481,7 +482,7 @@ struct LibraryScreen: View {
         case .all: break
         case .favorites: filtered.removeAll { !$0.isFavorite }
         case .videos: filtered.removeAll { !$0.isVideo }
-        case .pending: filtered.removeAll { $0.isBackedUp && $0.sidecarDirtyAt == nil }
+        case .pending: filtered.removeAll { app.photoBackupState($0) == .backedUp }
         }
 
         photos = filtered
@@ -501,8 +502,8 @@ struct LibraryScreen: View {
         built.reserveCapacity(photos.count)
         for photo in photos {
             let state = app.photoBackupState(photo)
-            if photo.isBackedUp { backedUp += 1 }
-            if !photo.isBackedUp || photo.sidecarDirtyAt != nil { pending += 1 }
+            if state == .backedUp { backedUp += 1 }
+            if state != .backedUp { pending += 1 }
             built.append(LibraryItem(
                 photo: photo,
                 backupState: state,
@@ -510,7 +511,7 @@ struct LibraryScreen: View {
             ))
         }
         var pendingTotal = 0
-        for photo in app.catalog.photos where !photo.isBackedUp || photo.sidecarDirtyAt != nil {
+        for photo in app.catalog.photos where app.photoBackupState(photo) != .backedUp {
             pendingTotal += 1
         }
         items = built

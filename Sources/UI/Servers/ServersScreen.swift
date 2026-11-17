@@ -126,9 +126,10 @@ struct ServerCard: View {
                          : "Verified \(server.lastVerifiedAt!.relativeShort)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    if app.settings.backupServerID == server.id {
+                    if app.isBackupDestination(server) {
                         Spacer()
-                        Label("Auto-backup destination", systemImage: "checkmark.circle.fill")
+                        Label(app.backupDestinationCount > 1 ? "Backup destination" : "Auto-backup destination",
+                              systemImage: "checkmark.circle.fill")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -146,17 +147,19 @@ struct ServerCard: View {
                 Label("Open", systemImage: "arrow.up.right")
             }
             Button {
-                settings_useAsBackup()
+                app.toggleBackupDestination(server)
             } label: {
-                Label("Use for automatic backup", systemImage: "arrow.triangle.2.circlepath")
+                Label(
+                    app.isBackupDestination(server)
+                        ? "Remove from automatic backup"
+                        : "Add to automatic backup",
+                    systemImage: app.isBackupDestination(server) ? "minus.circle" : "plus.circle"
+                )
             }
         }
         .padding(.horizontal, 16)
     }
 
-    private func settings_useAsBackup() {
-        app.settings.backupServerID = server.id
-    }
 }
 
 struct ServerDetailScreen: View {
@@ -279,7 +282,8 @@ struct ServerDetailScreen: View {
                 StatTile(value: "\(photos.count)", label: "Photos", symbol: "photo", tint: Theme.accent)
                 StatTile(value: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file), label: "Uploaded", symbol: "arrow.up.circle", tint: Theme.mint)
             }
-            if let last = app.backup.lastRunAt, app.backup.serverID == server.id {
+            if let last = app.backup.lastRunAt,
+               app.backup.destinationStatuses.contains(where: { $0.id == server.id }) {
                 Text("Last backup \(last.relativeShort)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -292,12 +296,17 @@ struct ServerDetailScreen: View {
     private func actionsCard(_ server: ServerConfig) -> some View {
         VStack(spacing: 10) {
             Button {
-                app.settings.backupServerID = server.id
+                app.toggleBackupDestination(server)
             } label: {
                 HStack {
-                    Label("Use for automatic backup", systemImage: "arrow.triangle.2.circlepath")
+                    Label(
+                        app.isBackupDestination(server)
+                            ? "Included in automatic backup"
+                            : "Use for automatic backup",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
                     Spacer()
-                    if app.settings.backupServerID == server.id {
+                    if app.isBackupDestination(server) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(Theme.accent)
                     }
@@ -309,7 +318,7 @@ struct ServerDetailScreen: View {
             .buttonStyle(.glass)
 
             Button {
-                app.settings.backupServerID = server.id
+                app.addBackupDestination(server)
                 app.startBackup()
                 dismiss()
             } label: {

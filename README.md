@@ -21,7 +21,7 @@ Backu is a native iPhone, iPad and Mac app that backs your photo library up to a
 
 ## What it does
 
-- **Any S3 bucket.** Amazon S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology, or anything else that speaks the S3 API. Add as many servers as you like and choose which one automatic backup uses.
+- **Any S3 bucket, one or many.** Amazon S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology, or anything else that speaks the S3 API. Select one backup destination or several; every selected bucket gets its own copy of every photo.
 - **Photos-style library.** Square grid with month sections, pinch-free zoom levels, a native full-screen viewer with double-tap zoom, favourite, details, and a Liquid Glass chrome layer.
 - **Real backup, not a sync.** Originals are uploaded with a stable key layout, a SHA-256 of the bytes, and a readable JSON sidecar. Videos, Live Photos' stills, and screenshots are included (videos/screenshots can be turned off).
 - **Fast, stable transfers.** S3 multipart uploads and parallel range downloads, adaptive part sizes and connection counts from the link and measured throughput, exponential backoff with jitter, and a crash journal for interrupted multipart uploads.
@@ -71,6 +71,16 @@ suspended. Every object is journalled before its first byte is sent; if the app
 is killed after an upload reaches the bucket, the next launch re-reads the
 sidecar and records the copy instead of uploading it again. Force-quitting the
 app intentionally stops iOS background work until you reopen it.
+
+## Redundant backups
+
+Settings → Backup lists every server with a checkbox. Select two or more and each
+photo is uploaded independently to every selected bucket, with its own sidecar,
+thumbnail and index. Losing one provider therefore still leaves a complete
+library. A photo only counts as backed up when every selected destination has it,
+and Upload Activity shows progress per bucket. Uploads are sequential per bucket
+so a slow or failing provider does not corrupt or block the other copies; the
+next background window resumes whichever destinations still owe work.
 
 ## Transfer performance
 

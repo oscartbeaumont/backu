@@ -283,25 +283,79 @@ final class AppModel {
 
     // MARK: - Backup
 
-    var backupServer: ServerConfig? {
-        if let id = settings.backupServerID, let server = servers.server(id: id) {
-            return server
+    /// Every bucket that should hold a copy. Selection order is preserved and
+    /// disabled servers are skipped; if nothing was ever selected, fall back to
+    /// the primary server so upgrades keep backing up.
+    var backupServers: [ServerConfig] {
+        let selected = settings.backupServerIDs.compactMap { servers.server(id: $0) }
+            .filter(\.isEnabled)
+        if !selected.isEmpty { return selected }
+        return servers.primaryServer.map { [$0] } ?? []
+    }
+
+    /// First destination, kept for UI that needs one representative server.
+    var backupServer: ServerConfig? { backupServers.first }
+
+    var backupDestinations: [BackupEngine.Destination] {
+        backupServers.compactMap { server in
+            servers.client(for: server).map {
+                BackupEngine.Destination(server: server, client: $0)
+            }
         }
-        return servers.primaryServer
+    }
+
+    var backupDestinationCount: Int { backupServers.count }
+
+    var backupDestinationSummary: String {
+        let names = backupServers.map(\.name)
+        switch names.count {
+        case 0: return "No destination"
+        case 1: return names[0]
+        default: return "\(names.count) buckets · \(names.joined(separator: " + "))"
+        }
+    }
+
+    func isBackupDestination(_ server: ServerConfig) -> Bool {
+        backupServers.contains { $0.id == server.id }
+    }
+
+    func addBackupDestination(_ server: ServerConfig) {
+        guard !settings.backupServerIDs.contains(server.id) else { return }
+        settings.backupServerIDs.append(server.id)
+        scheduleBackgroundBackup()
+    }
+
+    func removeBackupDestination(_ server: ServerConfig) {
+        // Keep one destination so a stray tap cannot silently turn backup off.
+        guard settings.backupServerIDs.count > 1 else { return }
+        settings.backupServerIDs.removeAll { $0 == server.id }
+        scheduleBackgroundBackup()
+    }
+
+    func toggleBackupDestination(_ server: ServerConfig) {
+        if isBackupDestination(server) {
+            removeBackupDestination(server)
+        } else {
+            addBackupDestination(server)
+        }
     }
 
     func startBackup(force: Bool = false) {
-        guard let server = backupServer else {
+        guard !backupServers.isEmpty else {
             errorMessage = "Add a storage server first."
             return
         }
-        guard let client = servers.client(for: server) else {
+        let missing = backupServers.filter { servers.client(for: $0) == nil }
+        if !missing.isEmpty {
+            errorMessage = "\(missing.map(\.name).joined(separator: ", ")) missing an access key. Open Servers to fix it."
+        }
+        let destinations = backupDestinations
+        guard !destinations.isEmpty else {
             errorMessage = "This server is missing its access key. Open Servers to fix it."
             return
         }
         backup.start(
-            server: server,
-            client: client,
+            destinations: destinations,
             catalog: catalog,
             settings: settings,
             faceStore: faceStore,
@@ -311,29 +365,47 @@ final class AppModel {
         scheduleBackgroundBackup()
     }
 
-    /// Finalizes uploads that already reached the bucket while the app was
+    /// Finalizes uploads that already reached a bucket while the app was
     /// closed, without starting a new transfer.
     @discardableResult
     func resumePendingUploads() async -> Int {
-        guard let server = backupServer, let client = servers.client(for: server) else { return 0 }
+        let destinations = backupDestinations
+        guard !destinations.isEmpty else { return 0 }
         return await backup.resumePendingUploads(
-            server: server,
-            client: client,
+            destinations: destinations,
             catalog: catalog
         )
     }
 
+    /// Photos that are missing a copy in at least one selected bucket, or whose
+    /// sidecar edit still has to reach every bucket.
     var photosPendingBackup: Int {
-        guard let server = backupServer else { return 0 }
+        let targets = backupServers
+        guard !targets.isEmpty else { return 0 }
         return catalog.photos.filter { photo in
-            photo.isLocal && (photo.copy(on: server.id) == nil || photo.sidecarDirtyAt != nil)
+            guard photo.isLocal else { return false }
+            return targets.contains { target in
+                photo.copy(on: target.id) == nil || photo.sidecarDirtyAt != nil
+            }
         }.count
+    }
+
+    /// Number of individual object copies still owed across all destinations.
+    var copiesPendingBackup: Int {
+        let targets = backupServers
+        guard !targets.isEmpty else { return 0 }
+        return catalog.photos.reduce(into: 0) { count, photo in
+            guard photo.isLocal else { return }
+            for target in targets where photo.copy(on: target.id) == nil || photo.sidecarDirtyAt != nil {
+                count += 1
+            }
+        }
     }
 
     /// Ask iOS for a background processing window. Short delay while photos are
     /// waiting; a slow periodic check when everything is up to date.
     func scheduleBackgroundBackup() {
-        guard settings.autoBackupEnabled, backupServer != nil else {
+        guard settings.autoBackupEnabled, !backupServers.isEmpty else {
             BackupScheduler.cancel()
             #if os(iOS)
             backgroundBackupRequestedAt = nil
@@ -358,20 +430,23 @@ final class AppModel {
             if let last = lastAutoBackupCheck, Date().timeIntervalSince(last) < 60 * 3 { return }
         }
         lastAutoBackupCheck = Date()
-        guard let server = backupServer, let client = servers.client(for: server) else { return }
+        let destinations = backupDestinations
+        guard !destinations.isEmpty else {
+            scheduleBackgroundBackup()
+            return
+        }
         guard !backup.isRunning else {
             scheduleBackgroundBackup()
             return
         }
         backup.start(
-            server: server,
-            client: client,
+            destinations: destinations,
             catalog: catalog,
             settings: settings,
             faceStore: faceStore,
             trigger: isBackground ? .background : .automatic,
             // A background window is short and can be terminated; do a bounded
-            // chunk and let the next window continue.
+            // chunk split across destinations and let the next window continue.
             limit: isBackground ? 25 : nil
         )
         scheduleBackgroundBackup()
@@ -398,8 +473,8 @@ final class AppModel {
 
     func addServer(_ config: ServerConfig, credentials: S3Credentials) async -> Bool {
         servers.add(config, credentials: credentials)
-        if settings.backupServerID == nil {
-            settings.backupServerID = config.id
+        if settings.backupServerIDs.isEmpty {
+            settings.backupServerIDs = [config.id]
         }
         let report = await verify(server: config)
         if report?.canWrite == true {
@@ -425,7 +500,7 @@ final class AppModel {
         catalog.clearLoadFailure()
         catalog.removeAll()
         for server in servers.servers { servers.remove(server) }
-        settings.backupServerID = nil
+        settings.backupServerIDs = []
         images.clearMemory()
         Task { await faceStore.deleteAll() }
         try? FileManager.default.removeItem(at: AppPaths.imageCache)
@@ -435,9 +510,7 @@ final class AppModel {
 
     func removeServer(_ server: ServerConfig) {
         servers.remove(server)
-        if settings.backupServerID == server.id {
-            settings.backupServerID = servers.primaryServer?.id
-        }
+        settings.backupServerIDs.removeAll { $0 == server.id }
         catalog.removeServerCopies(server.id)
     }
 
@@ -528,6 +601,14 @@ final class AppModel {
     func photoBackupState(_ photo: PhotoItem) -> BackupState {
         if photo.copies.isEmpty { return .notBackedUp }
         if photo.sidecarDirtyAt != nil { return .needsUpdate }
+        let targets = backupServers
+        if photo.isLocal,
+           !targets.isEmpty,
+           targets.contains(where: { photo.copy(on: $0.id) == nil }) {
+            // One bucket is missing this photo, so the redundant copy is not
+            // complete yet even though a copy already exists elsewhere.
+            return .needsUpdate
+        }
         return .backedUp
     }
 

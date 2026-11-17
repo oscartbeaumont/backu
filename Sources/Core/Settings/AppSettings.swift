@@ -10,8 +10,10 @@ final class AppSettings {
     var backupOnCellular: Bool {
         didSet { defaults.set(backupOnCellular, forKey: Keys.cellular) }
     }
-    var backupServerID: UUID? {
-        didSet { defaults.set(backupServerID?.uuidString, forKey: Keys.server) }
+    /// Buckets that receive a copy of every photo. Empty falls back to the
+    /// first enabled server, matching installs created before redundancy.
+    var backupServerIDs: [UUID] {
+        didSet { defaults.set(backupServerIDs.map(\.uuidString), forKey: Keys.servers) }
     }
     var includeVideos: Bool {
         didSet { defaults.set(includeVideos, forKey: Keys.videos) }
@@ -38,6 +40,7 @@ final class AppSettings {
         static let autoBackup = "autoBackupEnabled"
         static let cellular = "backupOnCellular"
         static let server = "backupServerID"
+        static let servers = "backupServerIDs"
         static let videos = "includeVideos"
         static let screenshots = "includeScreenshots"
         static let faces = "faceRecognitionEnabled"
@@ -50,10 +53,19 @@ final class AppSettings {
         self.defaults = defaults
         autoBackupEnabled = defaults.object(forKey: Keys.autoBackup) as? Bool ?? false
         backupOnCellular = defaults.object(forKey: Keys.cellular) as? Bool ?? false
-        if let raw = defaults.string(forKey: Keys.server) {
-            backupServerID = UUID(uuidString: raw)
+        let migratedIDs: [UUID]
+        if let raw = defaults.array(forKey: Keys.servers) as? [String] {
+            migratedIDs = raw.compactMap(UUID.init(uuidString:))
+        } else if let raw = defaults.string(forKey: Keys.server),
+                  let id = UUID(uuidString: raw) {
+            migratedIDs = [id]
         } else {
-            backupServerID = nil
+            migratedIDs = []
+        }
+        backupServerIDs = migratedIDs
+        // Persist the migrated form so later launches read one representation.
+        if defaults.array(forKey: Keys.servers) == nil {
+            defaults.set(migratedIDs.map(\.uuidString), forKey: Keys.servers)
         }
         includeVideos = defaults.object(forKey: Keys.videos) as? Bool ?? true
         includeScreenshots = defaults.object(forKey: Keys.screenshots) as? Bool ?? false
