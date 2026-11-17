@@ -132,7 +132,31 @@ In App Store Connect → App Store tab, paste from `AppStore/metadata/en-US/`:
 - [ ] Build: select the uploaded TestFlight build.
 - [ ] Submit for review.
 
-## 5. Things that cannot be automated
+## 5. China mainland distribution
+
+The two App Store Connect notices only apply if Backu is available in China
+mainland.
+
+**Recommended: exclude China mainland.** In App Store Connect → Pricing and
+Availability, remove China mainland from the selected countries. No AIGC
+declaration, filing number or Security Assessment is then required.
+
+**If you do want China mainland distribution**, complete App Store Connect →
+App Compliance. Both answers can be **No** for this app:
+
+- **AIGC services:** No. Backu does not generate or synthesise images, video,
+  speech or altered faces. On-device face detection and grouping only creates
+  local metadata; it does not generate or alter media.
+- **Security Assessment:** No. Backu does not distribute AI-generated or
+  synthetic content and has no end-to-end encrypted messaging.
+
+The declaration itself is mandatory for any app available in China mainland,
+even when the answer is No. No LLM/algorithm filing details or Security
+Assessment report are needed unless those features are added later. If they
+are, the filing and report must be obtained by the account owner; they cannot
+be generated from this repository.
+
+## 6. Things that cannot be automated
 
 - Creating the app record and accepting agreements.
 - API key creation and the `.p8` download.
@@ -141,7 +165,7 @@ In App Store Connect → App Store tab, paste from `AppStore/metadata/en-US/`:
 - The first upload must be made after the app record exists; App Store Connect
   rejects a bundle ID that has no app record.
 
-## 6. macOS
+## 7. macOS
 
 The same codebase builds a native Mac app, but TestFlight/App Store for Mac is a
 separate platform in App Store Connect. Add the Mac platform to the app record
