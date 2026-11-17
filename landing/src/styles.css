@@ -1199,14 +1199,24 @@ h3 {
 
 .footer-author {
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration-color: transparent;
   text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  transition:
+    color 160ms ease,
+    text-decoration-color 160ms ease;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .footer-author:hover {
-    color: var(--blue-dark);
+    color: var(--ink-soft);
+    text-decoration-color: currentColor;
   }
+}
+
+.footer-author:focus-visible {
+  color: var(--ink-soft);
+  text-decoration-color: currentColor;
 }
 
 /* ------------------------------------------------------------------ */
