@@ -58,14 +58,29 @@ Add these to GitHub → Settings → Secrets and variables → Actions:
 | `ASC_ISSUER_ID` | Issuer UUID |
 | `ASC_PRIVATE_KEY` | full contents of `AuthKey_<id>.p8` |
 
-Then run **Actions → TestFlight → Run workflow**, or locally:
+Set all four at once from the downloaded key:
+
+```sh
+export APPLE_TEAM_ID=68994Z5PT3
+export ASC_KEY_ID=XXXXXXXXXX
+export ASC_ISSUER_ID=00000000-0000-0000-0000-000000000000
+./scripts/set-testflight-secrets.sh ~/Downloads/AuthKey_XXXXXXXXXX.p8
+```
+
+The helper validates the key filename and contents, then calls `gh secret set`
+for each value. It never prints the private key.
+
+Then run **Actions → TestFlight → Run workflow** (choose the marketing version
+and build number), or locally:
 
 ```sh
 APPLE_TEAM_ID=68994Z5PT3 \
 ASC_KEY_ID=XXXXXXXXXX \
 ASC_ISSUER_ID=00000000-0000-0000-0000-000000000000 \
 ASC_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_XXXXXXXXXX.p8" \
-BUILD_NUMBER=2 ./scripts/testflight.sh
+BUILD_NUMBER=2 \
+MARKETING_VERSION=1.0 \
+./scripts/testflight.sh
 ```
 
 `scripts/testflight.sh` archives with automatic signing, exports an App Store

@@ -17,6 +17,10 @@ on:
         description: Build number (must be unique in App Store Connect)
         required: false
         default: ""
+      marketing_version:
+        description: Marketing version shown on the App Store
+        required: false
+        default: "1.0"
 
 permissions:
   contents: read
@@ -65,4 +69,5 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
           BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+          MARKETING_VERSION: ${{ inputs.marketing_version || '1.0' }}
         run: ./scripts/testflight.sh
