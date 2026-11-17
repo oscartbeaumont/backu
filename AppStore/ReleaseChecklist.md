@@ -54,6 +54,14 @@ account and cannot be done by an automated agent.
       keys can upload but cannot create cloud-managed distribution
       certificates, which causes `Cloud signing permission error` during
       export.
+- [ ] **Can I avoid an Admin key?** Yes, but creating a distribution
+      certificate and App Store profile in the portal is not enough by itself.
+      Export the Apple Distribution certificate as a password-protected `.p12`,
+      add the `.p12` and `.mobileprovision` to CI, and switch
+      `scripts/testflight.sh` to manual signing. Then an App Manager key can
+      upload. This is more secure but requires renewing the certificate and
+      profile roughly every year. With automatic cloud signing, the Admin key is
+      needed whenever xcodebuild has to create or renew distribution assets.
 - [ ] **Local network:** nothing to request on the App ID. The app includes
       `NSLocalNetworkUsageDescription`; iOS shows its standard Local Network
       prompt only when a user enters a LAN endpoint such as MinIO or Synology.
