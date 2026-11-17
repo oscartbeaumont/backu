@@ -38,7 +38,12 @@ export default function Footer() {
       </div>
 
       <div class="footer-bottom">
-        <span>© 2026 Oscar Beaumont</span>
+        <span>
+          © 2026{" "}
+          <a class="footer-author" href="https://otbeaumont.me" target="_blank" rel="noreferrer">
+            Oscar Beaumont
+          </a>
+        </span>
         <span>Free and open source under the MIT licence.</span>
       </div>
     </footer>

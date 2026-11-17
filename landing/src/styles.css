@@ -1197,6 +1197,18 @@ h3 {
   font-size: 0.76rem;
 }
 
+.footer-author {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .footer-author:hover {
+    color: var(--blue-dark);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Legal pages                                                        */
 /* ------------------------------------------------------------------ */
