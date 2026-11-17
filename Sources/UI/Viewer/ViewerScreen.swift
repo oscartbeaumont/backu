@@ -13,6 +13,18 @@ struct ViewerScreen: View {
     @State private var pullDown: CGFloat = 0
     @State private var isPastDismissThreshold = false
     @State private var isDismissing = false
+    @State private var pagerIsZoomed = false
+
+    /// Reduce Motion removes the zoom navigation transition (and its built-in
+    /// interactive swipe-down), so the viewer supplies its own pull instead.
+    /// `BACKU_REDUCE_MOTION=1` lets the UI tests exercise that path on a
+    /// simulator without changing a system setting.
+    private var reduceMotionEnabled: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["BACKU_REDUCE_MOTION"] == "1" { return true }
+        #endif
+        return reduceMotion
+    }
 
     init(presentation: ViewerPresentation) {
         self.presentation = presentation
@@ -53,7 +65,7 @@ struct ViewerScreen: View {
             // `TabView(.page)` keeps a page view controller whose gestures
             // fought the per-page zoom handling and swallowed fast flicks.
             Group {
-                if reduceMotion {
+                if reduceMotionEnabled {
                     pager
                         .offset(y: pullDown)
                         .scaleEffect(1 - dismissProgress * 0.2)
@@ -67,7 +79,7 @@ struct ViewerScreen: View {
             // swipe-down), so the fade fallback gets its own recogniser.
             .gesture(
                 VerticalDismissGesture(
-                    isEnabled: reduceMotion,
+                    isEnabled: reduceMotionEnabled && !pagerIsZoomed,
                     onChanged: { translation in
                         pullDown = translation > 0 ? translation : 0
                     },
@@ -120,8 +132,8 @@ struct ViewerScreen: View {
         // dismissal (a vertical drag shrinks the viewer back into its tile),
         // and the zoomed page's own pan gesture takes over while magnified.
         // macOS keeps the custom pull below.
-        .viewerZoomTransition(id: selection, in: zoomNamespace, reduceMotion: reduceMotion)
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.32, extraBounce: 0.02), value: chromeVisible)
+        .viewerZoomTransition(id: selection, in: zoomNamespace, reduceMotion: reduceMotionEnabled)
+        .animation(reduceMotionEnabled ? .easeInOut(duration: 0.2) : .snappy(duration: 0.32, extraBounce: 0.02), value: chromeVisible)
         .sensoryFeedback(.impact(weight: .medium), trigger: isPastDismissThreshold)
         .sensoryFeedback(.impact(weight: .light), trigger: photo?.isFavorite ?? false)
         .onChange(of: pullDown) { _, value in
@@ -158,9 +170,10 @@ struct ViewerScreen: View {
             photos: photos,
             selection: $selection,
             app: app,
-            reduceMotion: reduceMotion,
+            reduceMotion: reduceMotionEnabled,
+            isZoomed: $pagerIsZoomed,
             onSingleTap: {
-                withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .backuGentle) {
+                withAnimation(reduceMotionEnabled ? .easeInOut(duration: 0.2) : .backuGentle) {
                     chromeVisible.toggle()
                 }
             }
@@ -174,7 +187,7 @@ struct ViewerScreen: View {
             || (predicted > 260 && pullDown > 40)
         if shouldDismiss {
             isDismissing = true
-            withAnimation(.easeOut(duration: reduceMotion ? 0.1 : 0.14)) {
+            withAnimation(.easeOut(duration: reduceMotionEnabled ? 0.1 : 0.14)) {
                 pullDown = 0
             }
             Task { @MainActor in
@@ -182,7 +195,7 @@ struct ViewerScreen: View {
                 close()
             }
         } else {
-            withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.82)) {
+            withAnimation(reduceMotionEnabled ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.82)) {
                 pullDown = 0
             }
         }
@@ -218,12 +231,15 @@ struct ViewerScreen: View {
                     .transition(chromeTransition(edge: .bottom))
             }
         }
+        // On iOS the system zoom transition moves the whole screen (chrome
+        // included) during a swipe-down, so these two values stay at rest there.
+        // They only track progress for the Reduce Motion pull fallback.
         .opacity(isDismissing ? 0 : max(0, 1 - dismissProgress * 2.4))
         .allowsHitTesting(!isDismissing && dismissProgress < 0.15)
     }
 
     private func chromeTransition(edge: Edge) -> AnyTransition {
-        if reduceMotion {
+        if reduceMotionEnabled {
             return .opacity
         }
         return .move(edge: edge).combined(with: .opacity)
@@ -386,18 +402,20 @@ struct ViewerPage: View {
     @State private var offset: CGSize = .zero
     @State private var lastScale: CGFloat = 1
     @State private var lastOffset: CGSize = .zero
+    @State private var containerSize: CGSize = .zero
 
     private var photo: PhotoItem? { app.catalog.photo(id: photoID) }
 
     /// Distance at which releasing the swipe dismisses the viewer.
     private let dismissDistance: CGFloat = 140
     private let dismissVelocity: CGFloat = 260
+    private let doubleTapScale: CGFloat = 2.4
 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 if let image {
-                    pageImage(image)
+                    pageImage(image, in: geometry.size)
                 } else if let failure {
                     VStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle")
@@ -425,25 +443,17 @@ struct ViewerPage: View {
             .offset(y: reduceMotion ? 0 : pullDown)
             .scaleEffect(reduceMotion ? 1 : pullScale)
             .opacity(reduceMotion ? 1 - pullProgress * 0.45 : 1)
-            #if os(iOS)
-            // Reduce Motion removes the zoom transition (and its built-in
-            // swipe-down), so the fade fallback gets its own recogniser.
-            .gesture(
-                VerticalDismissGesture(
-                    isEnabled: reduceMotion,
-                    onChanged: { translation in
-                        pullDown = translation > 0 ? translation : 0
-                    },
-                    onEnded: { predicted in
-                        finishPull(predicted: predicted)
-                    }
-                )
-            )
-            #else
             .simultaneousGesture(drag)
-            #endif
             .onTapGesture {
                 withAnimation(.backuGentle) { chromeVisible.toggle() }
+            }
+            .onAppear { containerSize = geometry.size }
+            .onChange(of: geometry.size) { _, size in
+                containerSize = size
+                scale = 1
+                offset = .zero
+                lastScale = 1
+                lastOffset = .zero
             }
         }
         .task(id: photoID) { await load() }
@@ -459,29 +469,82 @@ struct ViewerPage: View {
     }
 
     @ViewBuilder
-    private func pageImage(_ image: PlatformImage) -> some View {
+    private func pageImage(_ image: PlatformImage, in size: CGSize) -> some View {
         if scale > 1 {
-            baseImage(image)
+            baseImage(image, in: size)
                 .id(imageID)
                 .transition(.opacity)
                 .gesture(panGesture)
         } else {
-            baseImage(image)
+            baseImage(image, in: size)
                 .id(imageID)
                 .transition(.opacity)
         }
     }
 
-    private func baseImage(_ image: PlatformImage) -> some View {
+    private func baseImage(_ image: PlatformImage, in size: CGSize) -> some View {
         Image(platformImage: image)
             .resizable()
             .scaledToFit()
             .scaleEffect(scale)
             .offset(offset)
             .gesture(magnification)
-            .onTapGesture(count: 2) { toggleZoom() }
-            .animation(.backuSnappy, value: scale)
-            .animation(.backuSnappy, value: offset)
+            // Double click zooms around the pointer, like the iOS viewer and
+            // Photos, rather than always into the centre.
+            .onTapGesture(count: 2, coordinateSpace: .local) { location in
+                handleDoubleTap(at: location, in: size)
+            }
+    }
+
+    /// The size the fitted image occupies inside the page.
+    private var fittedSize: CGSize {
+        guard let image, containerSize.width > 0, containerSize.height > 0 else { return .zero }
+        let fitted = min(
+            containerSize.width / image.size.width,
+            containerSize.height / image.size.height
+        )
+        return CGSize(width: image.size.width * fitted, height: image.size.height * fitted)
+    }
+
+    /// Keeps the photo inside the page: no black gutter can be pulled in, and
+    /// no spring chases the pointer while dragging.
+    private func clamped(_ proposed: CGSize, atScale target: CGFloat? = nil) -> CGSize {
+        let fitted = fittedSize
+        guard fitted.width > 0, fitted.height > 0 else { return .zero }
+        let zoom = target ?? scale
+        let maxX = max(0, (fitted.width * zoom - containerSize.width) / 2)
+        let maxY = max(0, (fitted.height * zoom - containerSize.height) / 2)
+        return CGSize(
+            width: min(max(proposed.width, -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY)
+        )
+    }
+
+    private func handleDoubleTap(at location: CGPoint, in size: CGSize) {
+        guard image != nil else { return }
+        if scale > 1.01 {
+            withAnimation(reduceMotion ? nil : .backuSnappy) {
+                scale = 1
+                offset = .zero
+            }
+            lastScale = 1
+            lastOffset = .zero
+            return
+        }
+        // Keep the point under the pointer fixed: scaling about the centre
+        // moves it by (location - centre) * (scale - 1).
+        let target = doubleTapScale
+        let proposed = CGSize(
+            width: -(location.x - size.width / 2) * (target - 1),
+            height: -(location.y - size.height / 2) * (target - 1)
+        )
+        let clampedOffset = clamped(proposed, atScale: target)
+        withAnimation(reduceMotion ? nil : .backuSnappy) {
+            scale = target
+            offset = clampedOffset
+        }
+        lastScale = target
+        lastOffset = clampedOffset
     }
 
     private func finishPull(predicted: CGFloat) {
@@ -561,22 +624,25 @@ struct ViewerPage: View {
                 scale = min(max(lastScale * value.magnification, 1), 8)
             }
             .onEnded { _ in
-                lastScale = scale
                 if scale <= 1.01 {
                     scale = 1
                     offset = .zero
                     lastOffset = .zero
+                } else {
+                    offset = clamped(offset)
+                    lastOffset = offset
                 }
+                lastScale = scale
             }
     }
 
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                offset = CGSize(
+                offset = clamped(CGSize(
                     width: lastOffset.width + value.translation.width,
                     height: lastOffset.height + value.translation.height
-                )
+                ))
             }
             .onEnded { _ in
                 lastOffset = offset
@@ -589,10 +655,10 @@ struct ViewerPage: View {
         DragGesture(minimumDistance: 10)
             .onChanged { value in
                 if scale > 1 {
-                    offset = CGSize(
+                    offset = clamped(CGSize(
                         width: lastOffset.width + value.translation.width,
                         height: lastOffset.height + value.translation.height
-                    )
+                    ))
                     return
                 }
                 // Horizontal drags belong to the pager; only lock in once the
@@ -612,19 +678,6 @@ struct ViewerPage: View {
                 }
                 finishPull(predicted: value.predictedEndTranslation.height)
             }
-    }
-
-    private func toggleZoom() {
-        withAnimation(.backuSnappy) {
-            if scale > 1 {
-                scale = 1
-                offset = .zero
-                lastOffset = .zero
-            } else {
-                scale = 2.4
-            }
-            lastScale = scale
-        }
     }
 }
 #endif

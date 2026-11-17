@@ -15,16 +15,20 @@ struct ViewerPager: UIViewControllerRepresentable {
     @Binding var selection: String
     let app: AppModel
     let reduceMotion: Bool
+    @Binding var isZoomed: Bool
     var onSingleTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection)
+        Coordinator(selection: $selection, isZoomed: $isZoomed)
     }
 
     func makeUIViewController(context: Context) -> ViewerPagerController {
         let controller = ViewerPagerController(app: app)
         controller.onSelectionChanged = { [weak coordinator = context.coordinator] id in
             coordinator?.select(id)
+        }
+        controller.onZoomChanged = { [weak coordinator = context.coordinator] zoomed in
+            coordinator?.zoomed(zoomed)
         }
         controller.onSingleTap = onSingleTap
         controller.update(photos: photos, selection: selection, reduceMotion: reduceMotion)
@@ -33,6 +37,7 @@ struct ViewerPager: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ViewerPagerController, context: Context) {
         context.coordinator.selection = $selection
+        context.coordinator.isZoomed = $isZoomed
         controller.onSingleTap = onSingleTap
         controller.update(photos: photos, selection: selection, reduceMotion: reduceMotion)
     }
@@ -40,9 +45,11 @@ struct ViewerPager: UIViewControllerRepresentable {
     @MainActor
     final class Coordinator {
         var selection: Binding<String>
+        var isZoomed: Binding<Bool>
 
-        init(selection: Binding<String>) {
+        init(selection: Binding<String>, isZoomed: Binding<Bool>) {
             self.selection = selection
+            self.isZoomed = isZoomed
         }
 
         func select(_ id: String) {
@@ -50,15 +57,35 @@ struct ViewerPager: UIViewControllerRepresentable {
                 selection.wrappedValue = id
             }
         }
+
+        func zoomed(_ zoomed: Bool) {
+            if isZoomed.wrappedValue != zoomed {
+                isZoomed.wrappedValue = zoomed
+            }
+        }
     }
 }
 
 /// A paged, horizontally scrolling container of `ViewerZoomPageController`s.
+///
+/// Only a small window of page controllers exists at a time. A window of 121
+/// (the viewer's maximum presentation window) meant building 121 controllers,
+/// scroll views, spinners and constraint sets inside the zoom transition, then
+/// laying all of them out in one commit. Pages are now created as the pager
+/// approaches them and released once they are a few photos behind, so opening
+/// costs the same for a 20-photo roll as for a 20,000-photo one.
 @MainActor
 final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     private let app: AppModel
     private let scrollView = UIScrollView()
-    private var pages: [ViewerZoomPageController] = []
+    /// Resident page controllers keyed by photo index.
+    private var pages: [Int: ViewerZoomPageController] = [:]
+    /// How many photos either side of the current one keep a live controller.
+    /// The pager can show at most the current photo and one neighbour mid-drag,
+    /// so two either side leaves a prepared page in both directions.
+    private let residentRadius = 2
+    /// Hard ceiling, in case a size change or a jump leaves stragglers behind.
+    private let maxResident = 9
     private var photos: [PhotoItem] = []
     private var photoIDs: [String] = []
     private var selection = ""
@@ -79,6 +106,14 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
 
     var onSelectionChanged: ((String) -> Void)?
     var onSingleTap: (() -> Void)?
+    var onZoomChanged: ((Bool) -> Void)?
+    private var reportedZoom = false
+    private var restoredPopGesture = false
+
+    #if DEBUG
+    private var frameLink: CADisplayLink?
+    private var lastFrameTimestamp: CFTimeInterval = 0
+    #endif
 
     init(app: AppModel) {
         self.app = app
@@ -110,6 +145,89 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         scrollView.isDirectionalLockEnabled = true
         scrollView.delegate = self
         view.addSubview(scrollView)
+        #if DEBUG
+        startFrameLink()
+        #endif
+    }
+
+    #if DEBUG
+    private func startFrameLink() {
+        guard ViewerInteractionProbe.shared.isEnabled, frameLink == nil else { return }
+        let link = CADisplayLink(target: self, selector: #selector(sampleFrame))
+        link.add(to: .main, forMode: .common)
+        frameLink = link
+        lastFrameTimestamp = 0
+    }
+
+    @objc private func sampleFrame(_ link: CADisplayLink) {
+        defer { lastFrameTimestamp = link.timestamp }
+        guard lastFrameTimestamp > 0 else { return }
+        ViewerInteractionProbe.shared.frame(
+            duration: (link.timestamp - lastFrameTimestamp) * 1000
+        )
+    }
+    #endif
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // The pager owns horizontal gestures, including a swipe that starts at
+        // the screen edge. The navigation stack's edge-swipe-to-pop would
+        // otherwise close the viewer instead of paging back.
+        disablePopGesture()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        #if DEBUG
+        startFrameLink()
+        #endif
+        // Re-assert after the zoom transition: UIKit can re-enable the pop
+        // gesture while it finishes the transition.
+        disablePopGesture()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        #if DEBUG
+        frameLink?.invalidate()
+        frameLink = nil
+        #endif
+    }
+
+    private func disablePopGesture() {
+        guard let navigation = enclosingNavigationController else { return }
+        // iOS 26 adds a second, content-wide pop gesture on top of the
+        // leading-edge one. A back-swipe anywhere in the photo would otherwise
+        // pop the viewer instead of paging the roll.
+        for gesture in [navigation.interactivePopGestureRecognizer,
+                        navigation.interactiveContentPopGestureRecognizer] {
+            guard let gesture, gesture.isEnabled else { continue }
+            gesture.isEnabled = false
+            restoredPopGesture = true
+        }
+    }
+
+    private func restorePopGesture() {
+        guard restoredPopGesture else { return }
+        let navigation = enclosingNavigationController
+        navigation?.interactivePopGestureRecognizer?.isEnabled = true
+        navigation?.interactiveContentPopGestureRecognizer?.isEnabled = true
+        restoredPopGesture = false
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        restorePopGesture()
+    }
+
+    private var enclosingNavigationController: UINavigationController? {
+        var controller: UIViewController? = self
+        while let current = controller {
+            if let navigation = current as? UINavigationController { return navigation }
+            if let navigation = current.navigationController { return navigation }
+            controller = current.parent
+        }
+        return nil
     }
 
     // MARK: Data
@@ -123,7 +241,7 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
             rebuildPages()
         } else {
             self.photos = photos
-            for page in pages {
+            for page in pages.values {
                 page.reduceMotion = reduceMotion
             }
         }
@@ -145,43 +263,106 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         photoIDs.firstIndex(of: id) ?? 0
     }
 
-    /// One zoom page per photo. Pages are cheap until they become visible: they
-    /// only load an image once the pager activates them.
+    // MARK: Page window
+
+    /// Drops every controller and starts a fresh window around the selection.
+    /// Only called when the roll itself changes, never on a page change.
     private func rebuildPages() {
         loadViewIfNeeded()
-        for page in pages {
-            page.willMove(toParent: nil)
-            page.view.removeFromSuperview()
-            page.removeFromParent()
+        let started = CFAbsoluteTimeGetCurrent()
+        for (index, page) in pages {
+            release(page, at: index)
         }
-        pages = photos.enumerated().map { index, photo in
-            let page = ViewerZoomPageController(photo: photo, app: app)
-            page.onSingleTap = { [weak self] in self?.onSingleTap?() }
-            page.onHandoffBegan = { [weak self] delta in
-                self?.beginEdgePageDrag(from: index, by: delta) ?? false
-            }
-            page.onHandoffChanged = { [weak self] translation in
-                self?.updateEdgePageDrag(translation: translation)
-            }
-            page.onHandoffEnded = { [weak self] translation, velocity in
-                self?.endEdgePageDrag(translation: translation, velocity: velocity)
-            }
-            page.onZoomStateChanged = { [weak self] _ in
-                guard let self, index == self.settledIndex else { return }
-                self.updateOuterPaging()
-            }
-            addChild(page)
-            page.view.frame = view.bounds
-            scrollView.addSubview(page.view)
-            page.didMove(toParent: self)
-            return page
-        }
-        settledIndex = min(max(0, index(of: selection)), max(0, pages.count - 1))
+        pages.removeAll()
+        settledIndex = min(max(0, index(of: selection)), max(0, photoIDs.count - 1))
         pendingIndex = settledIndex
+        ensurePages(around: settledIndex)
         scrollView.contentSize = .zero
         lastLayoutSize = .zero
         needsInitialScroll = true
         view.setNeedsLayout()
+        #if DEBUG
+        ViewerInteractionProbe.shared.pagesBuilt(
+            count: pages.count,
+            milliseconds: (CFAbsoluteTimeGetCurrent() - started) * 1000
+        )
+        #endif
+    }
+
+    /// Creates controllers for the photos within `residentRadius` of `center`.
+    /// Called on open and whenever the pager settles on a new photo, so it costs
+    /// one controller per photo actually travelled to.
+    private func ensurePages(around center: Int) {
+        guard !photoIDs.isEmpty else { return }
+        let lower = max(0, center - residentRadius)
+        let upper = min(photoIDs.count - 1, center + residentRadius)
+        guard lower <= upper else { return }
+        for index in lower...upper where pages[index] == nil {
+            pages[index] = makePage(at: index)
+        }
+        #if DEBUG
+        ViewerInteractionProbe.shared.residentPages(pages.count)
+        #endif
+    }
+
+    private func makePage(at index: Int) -> ViewerZoomPageController {
+        let page = ViewerZoomPageController(photo: photos[index], app: app)
+        page.reduceMotion = reduceMotion
+        page.onSingleTap = { [weak self] in self?.onSingleTap?() }
+        page.onHandoffBegan = { [weak self] delta in
+            self?.beginEdgePageDrag(from: index, by: delta) ?? false
+        }
+        page.onHandoffChanged = { [weak self] translation in
+            self?.updateEdgePageDrag(translation: translation)
+        }
+        page.onHandoffEnded = { [weak self] translation, velocity in
+            self?.endEdgePageDrag(translation: translation, velocity: velocity)
+        }
+        page.onZoomStateChanged = { [weak self] _ in
+            guard let self, index == self.settledIndex else { return }
+            self.updateOuterPaging()
+        }
+        addChild(page)
+        page.view.frame = CGRect(
+            x: pageWidth * CGFloat(index),
+            y: 0,
+            width: pageWidth,
+            height: view.bounds.height
+        )
+        scrollView.addSubview(page.view)
+        page.didMove(toParent: self)
+        page.setPosition(index + 1, of: photoIDs.count)
+        let distance = abs(index - settledIndex)
+        page.setActivation(distance == 0 ? .current : distance == 1 ? .neighbor : .idle)
+        return page
+    }
+
+    /// Releases controllers that are no longer near the settled photo, unless a
+    /// hand is on the screen. Evicting mid-gesture would pull a page out from
+    /// under a drag that is about to settle on it.
+    private func evictPages(around center: Int) {
+        guard !scrollView.isDragging, !scrollView.isDecelerating else { return }
+        let keepRadius = residentRadius + 1
+        for (index, page) in pages where abs(index - center) > keepRadius {
+            release(page, at: index)
+        }
+        if pages.count > maxResident {
+            let ordered = pages.keys.sorted { abs($0 - center) > abs($1 - center) }
+            for index in ordered where pages.count > maxResident {
+                if let page = pages[index] { release(page, at: index) }
+            }
+        }
+        #if DEBUG
+        ViewerInteractionProbe.shared.residentPages(pages.count)
+        #endif
+    }
+
+    private func release(_ page: ViewerZoomPageController, at index: Int) {
+        page.setActivation(.idle)
+        page.willMove(toParent: nil)
+        page.view.removeFromSuperview()
+        page.removeFromParent()
+        if pages[index] === page { pages.removeValue(forKey: index) }
     }
 
     override func viewDidLayoutSubviews() {
@@ -192,18 +373,30 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         let widthChanged = abs(pageWidth - size.width) > 0.5
         pageWidth = size.width
         scrollView.frame = view.bounds
+        let layoutStarted = CFAbsoluteTimeGetCurrent()
         scrollView.contentSize = CGSize(
-            width: size.width * CGFloat(max(1, pages.count)),
+            width: size.width * CGFloat(max(1, photoIDs.count)),
             height: size.height
         )
-        for (i, page) in pages.enumerated() {
-            page.view.frame = CGRect(x: size.width * CGFloat(i), y: 0, width: size.width, height: size.height)
+        for (index, page) in pages {
+            page.view.frame = CGRect(
+                x: size.width * CGFloat(index),
+                y: 0,
+                width: size.width,
+                height: size.height
+            )
         }
+        #if DEBUG
+        ViewerInteractionProbe.shared.pagesLaidOut(
+            milliseconds: (CFAbsoluteTimeGetCurrent() - layoutStarted) * 1000
+        )
+        #endif
 
         if widthChanged || size != lastLayoutSize || needsInitialScroll {
             lastLayoutSize = size
             let index = needsInitialScroll ? index(of: selection) : settledIndex
             pendingIndex = index
+            ensurePages(around: index)
             scrollView.setContentOffset(CGPoint(x: size.width * CGFloat(index), y: 0), animated: false)
             needsInitialScroll = false
             settle(at: index, notify: false)
@@ -213,8 +406,9 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     // MARK: Paging
 
     private func scrollToSelection(animated: Bool) {
-        guard pages.indices.contains(index(of: selection)), pageWidth > 0 else { return }
         let target = index(of: selection)
+        guard photoIDs.indices.contains(target), pageWidth > 0 else { return }
+        ensurePages(around: target)
         pendingIndex = target
         scrollView.setContentOffset(
             CGPoint(x: pageWidth * CGFloat(target), y: 0),
@@ -224,7 +418,13 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        dragStartIndex = min(max(0, pendingIndex), max(0, pages.count - 1))
+        dragStartIndex = min(max(0, pendingIndex), max(0, photoIDs.count - 1))
+        // The settled photo is about to leave: drop a full decode that has not
+        // started, and build the pages either side before the drag can reveal
+        // them, so page creation never lands in the middle of a gesture.
+        pages[settledIndex]?.cancelPendingFullLoad()
+        ensurePages(around: dragStartIndex + 1)
+        ensurePages(around: dragStartIndex - 1)
     }
 
     /// Photos pages exactly one photo per flick, never several at once, and
@@ -235,19 +435,29 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         withVelocity velocity: CGPoint,
         targetContentOffset: UnsafeMutablePointer<CGPoint>
     ) {
-        guard pageWidth > 1, !pages.isEmpty, edgeDragFrom == nil else { return }
+        guard pageWidth > 1, !photoIDs.isEmpty, edgeDragFrom == nil else { return }
         let proposed = Int((targetContentOffset.pointee.x / pageWidth).rounded())
-        let target = min(max(proposed, dragStartIndex - 1), min(dragStartIndex + 1, pages.count - 1))
-        pendingIndex = min(max(target, 0), pages.count - 1)
+        let target = min(max(proposed, dragStartIndex - 1), min(dragStartIndex + 1, photoIDs.count - 1))
+        pendingIndex = min(max(target, 0), photoIDs.count - 1)
         targetContentOffset.pointee.x = pageWidth * CGFloat(pendingIndex)
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard pageWidth > 1, !pages.isEmpty else { return }
+        guard pageWidth > 1, !photoIDs.isEmpty else { return }
         let raw = scrollView.contentOffset.x / pageWidth
-        let candidate = min(max(Int(raw.rounded()), 0), pages.count - 1)
+        let candidate = min(max(Int(raw.rounded()), 0), photoIDs.count - 1)
         guard candidate != settledIndex else { return }
-        settle(at: candidate, notify: true)
+        // Page and probe move at the halfway point so the new photo is ready,
+        // but the chrome (date, favourite) only changes once the roll settles:
+        // swapping it while two photos are half-visible reads as a flicker.
+        settle(at: candidate, notify: false)
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        // A drag that ends without momentum (including one that returns to the
+        // same photo) still has to re-settle: it may have cancelled the current
+        // photo's pending full-resolution load.
+        if !decelerate { settleToNearest() }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
@@ -259,27 +469,30 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     }
 
     private func settleToNearest() {
-        guard pageWidth > 1, !pages.isEmpty else { return }
-        let index = min(max(Int((scrollView.contentOffset.x / pageWidth).rounded()), 0), pages.count - 1)
+        guard pageWidth > 1, !photoIDs.isEmpty else { return }
+        let index = min(max(Int((scrollView.contentOffset.x / pageWidth).rounded()), 0), photoIDs.count - 1)
         pendingIndex = index
         settle(at: index, notify: true)
+        evictPages(around: index)
     }
 
     private func settle(at index: Int, notify: Bool) {
-        let index = min(max(index, 0), max(0, pages.count - 1))
+        guard !photoIDs.isEmpty else { return }
+        let index = min(max(index, 0), photoIDs.count - 1)
         settledIndex = index
         selection = photoIDs.indices.contains(index) ? photoIDs[index] : selection
+        ensurePages(around: index)
         activate(index)
         #if DEBUG
-        ViewerInteractionProbe.shared.pageChanged(index, count: pages.count)
+        ViewerInteractionProbe.shared.pageChanged(index, count: photoIDs.count)
         #endif
-        if notify, let id = photoIDs[safe: index] {
-            onSelectionChanged?(id)
+        if notify, photoIDs.indices.contains(index) {
+            onSelectionChanged?(photoIDs[index])
         }
     }
 
     private func activate(_ index: Int) {
-        for (i, page) in pages.enumerated() {
+        for (i, page) in pages {
             let distance = abs(i - index)
             if distance == 0 {
                 page.setActivation(.current)
@@ -299,7 +512,11 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     /// inert and the pager pages; while magnified the pager's pan is off, the
     /// photo pans, and the zoom page hands an edge drag back to the pager.
     private func updateOuterPaging() {
-        let currentIsZoomed = pages[safe: settledIndex]?.isZoomed ?? false
+        let currentIsZoomed = pages[settledIndex]?.isZoomed ?? false
+        if reportedZoom != currentIsZoomed {
+            reportedZoom = currentIsZoomed
+            onZoomChanged?(currentIsZoomed)
+        }
         let enabled = !currentIsZoomed && edgeDragFrom == nil
         if scrollView.panGestureRecognizer.isEnabled != enabled {
             scrollView.panGestureRecognizer.isEnabled = enabled
@@ -319,7 +536,9 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     // MARK: Edge hand-off from a zoomed page
 
     func beginEdgePageDrag(from index: Int, by delta: Int) -> Bool {
-        guard delta != 0, pages.indices.contains(index + delta) else { return false }
+        guard delta != 0, photoIDs.indices.contains(index + delta) else { return false }
+        // The neighbour must be live before the drag reveals it.
+        ensurePages(around: index + delta)
         edgeDragFrom = index
         edgeDragDirection = delta
         updateOuterPaging()
@@ -351,11 +570,12 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         } else if delta < 0, translation > threshold || velocity > 260 {
             target = from - 1
         }
-        target = min(max(target, 0), max(0, pages.count - 1))
+        target = min(max(target, 0), max(0, photoIDs.count - 1))
         edgeDragFrom = nil
         edgeDragDirection = 0
         pendingIndex = target
-        for (i, page) in pages.enumerated() where i != target {
+        ensurePages(around: target)
+        for (i, page) in pages where i != target {
             page.resetZoom(animated: true)
         }
         scrollView.setContentOffset(
@@ -366,12 +586,7 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
             settle(at: target, notify: true)
         }
         updateOuterPaging()
-    }
-}
-
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
+        evictPages(around: target)
     }
 }
 
@@ -392,6 +607,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     private let spinner = UIActivityIndicatorView(style: .large)
     private let statusLabel = UILabel()
     private var loadTask: Task<Void, Never>?
+    private var fullTask: Task<Void, Never>?
     private var loadGeneration = 0
     private var isLoading = false
     private var loadedFinal = false
@@ -403,9 +619,20 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     private var handoffStartTranslation: CGFloat = 0
     private var didResetPanAfterHandoff = false
 
+    /// Time a photo has to stay current before its full-resolution image is
+    /// decoded. Flicking through a roll otherwise starts a 2400px decode for
+    /// every photo that passes the viewport, which is the single most expensive
+    /// thing the viewer can do on the main thread. The 1200px viewer thumbnail
+    /// is already one-to-one with the screen at fit, so the delay is invisible
+    /// until the user zooms.
+    private let fullLoadDelay: Duration = .milliseconds(200)
+
     private var singleTap: UITapGestureRecognizer!
     private var doubleTap: UITapGestureRecognizer!
     private var edgePan: UIPanGestureRecognizer!
+    #if DEBUG
+    private var lastTouchDown: CFTimeInterval = 0
+    #endif
 
     var onSingleTap: (() -> Void)?
     var onHandoffBegan: ((_ delta: Int) -> Bool)?
@@ -456,6 +683,9 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
 
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = false
+        imageView.isAccessibilityElement = true
+        imageView.accessibilityIdentifier = "viewer.photo"
+        imageView.accessibilityTraits = .image
         scrollView.addSubview(imageView)
 
         spinner.color = .white
@@ -479,11 +709,14 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             statusLabel.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -80)
         ])
 
-        singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        singleTap = makeSingleTapRecognizer()
         singleTap.numberOfTapsRequired = 1
         doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
         doubleTap.numberOfTapsRequired = 2
-        singleTap.require(toFail: doubleTap)
+        // Deliberately *not* `singleTap.require(toFail: doubleTap)`: that makes
+        // every tap wait out the double-tap window (~350 ms) before chrome
+        // moves. Apple Photos responds on the first tap and lets a double tap
+        // zoom and toggle the chrome once; matching that removes the wait.
         scrollView.addGestureRecognizer(singleTap)
         scrollView.addGestureRecognizer(doubleTap)
 
@@ -494,6 +727,21 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         scrollView.addGestureRecognizer(edgePan)
     }
 
+    private func makeSingleTapRecognizer() -> UITapGestureRecognizer {
+        #if DEBUG
+        // The tests measure finger-down → chrome-toggle latency. Reading the
+        // timestamp inside the real recogniser avoids adding a competing
+        // gesture recogniser, which would block the system dismiss pan.
+        let tap = TrackingTapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        tap.onTouchDown = { [weak self] in
+            self?.lastTouchDown = CACurrentMediaTime()
+        }
+        return tap
+        #else
+        return UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        #endif
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let size = view.bounds.size
@@ -501,12 +749,23 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         scrollView.frame = view.bounds
         if size != lastBoundsSize {
             lastBoundsSize = size
-            layoutImage(resetZoom: true)
+            layoutImage(zoom: 1)
         }
         spinner.center = CGPoint(x: size.width / 2, y: size.height / 2)
     }
 
     // MARK: Activation + loading
+
+    /// VoiceOver needs a stable description of which photo in the roll this is;
+    /// the image view is the page's only accessibility element.
+    func setPosition(_ position: Int, of total: Int) {
+        imageView.accessibilityLabel = "Photo \(position) of \(total)"
+        if let date = photo.takenAt?.dayLabel {
+            imageView.accessibilityValue = date
+        } else {
+            imageView.accessibilityValue = photo.filename
+        }
+    }
 
     func setActivation(_ level: Activation) {
         let previous = activation
@@ -515,11 +774,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         case .idle:
             guard previous != .idle else { return }
             wantsFull = false
-            loadGeneration &+= 1
-            loadTask?.cancel()
-            loadTask = nil
-            isLoading = false
-            loadedFinal = false
+            cancelLoads()
             imageView.image = nil
             appliedImageSize = .zero
             spinner.stopAnimating()
@@ -527,6 +782,8 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             resetZoom(animated: false)
         case .neighbor:
             wantsFull = false
+            fullTask?.cancel()
+            fullTask = nil
             if previous == .idle {
                 ensureLoading()
             }
@@ -536,14 +793,37 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         }
     }
 
+    private func cancelLoads() {
+        loadGeneration &+= 1
+        loadTask?.cancel()
+        loadTask = nil
+        fullTask?.cancel()
+        fullTask = nil
+        isLoading = false
+        loadedFinal = false
+    }
+
+    /// Drops a full-resolution load that has not started yet. Called when the
+    /// user starts dragging: the photo is about to become a neighbour, and
+    /// decoding 2400px for it now is pure waste.
+    func cancelPendingFullLoad() {
+        fullTask?.cancel()
+        fullTask = nil
+    }
+
     private func ensureLoading() {
         if wantsFull && loadedFinal { return }
         guard !isLoading else { return }
         isLoading = true
         let generation = loadGeneration
 
-        if imageView.image == nil, let quick = app.images.cachedPreview(for: photo) {
-            show(quick, final: false)
+        let mediumSize = CGSize(width: 1200, height: 1200)
+        if imageView.image == nil {
+            if let sharp = app.images.cachedViewerThumbnail(for: photo, size: mediumSize) {
+                show(sharp, final: false)
+            } else if let quick = app.images.cachedPreview(for: photo) {
+                show(quick, final: false)
+            }
         }
         if imageView.image == nil, photo.isRemoteOnly {
             statusLabel.text = "Downloading from \(serverName)"
@@ -555,27 +835,43 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
 
         loadTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            if let medium = await self.app.images.thumbnail(
+            if let medium = await self.app.images.viewerThumbnail(
                 for: self.photo,
-                size: CGSize(width: 1200, height: 1200)
+                size: mediumSize
             ) {
                 if Task.isCancelled || generation != self.loadGeneration { return }
                 self.show(medium, final: false)
-            }
-            if self.wantsFull && !self.loadedFinal {
-                if let full = await self.app.images.fullImage(for: self.photo) {
-                    if Task.isCancelled || generation != self.loadGeneration { return }
-                    self.show(full, final: true)
-                } else if self.imageView.image == nil {
-                    self.showFailure()
-                }
             }
             guard !Task.isCancelled, generation == self.loadGeneration else { return }
             self.isLoading = false
             self.loadTask = nil
             if self.wantsFull && !self.loadedFinal, self.activation == .current {
-                self.ensureLoading()
+                self.scheduleFullLoad()
             }
+        }
+    }
+
+    /// Only a photo that has been on screen for a moment gets the expensive
+    /// full image. Leaving the page cancels the wait; an already-running decode
+    /// still finishes and lands in the cache for the next visit.
+    private func scheduleFullLoad() {
+        guard fullTask == nil, wantsFull, !loadedFinal, activation == .current else { return }
+        let generation = loadGeneration
+        fullTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: self?.fullLoadDelay ?? .milliseconds(140))
+            guard let self else { return }
+            guard !Task.isCancelled,
+                  generation == self.loadGeneration,
+                  self.wantsFull,
+                  !self.loadedFinal,
+                  self.activation == .current else { return }
+            if let full = await self.app.images.fullImage(for: self.photo) {
+                guard !Task.isCancelled, generation == self.loadGeneration else { return }
+                self.show(full, final: true)
+            } else if self.imageView.image == nil {
+                self.showFailure()
+            }
+            self.fullTask = nil
         }
     }
 
@@ -583,24 +879,43 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         spinner.stopAnimating()
         statusLabel.isHidden = true
         let hadImage = imageView.image != nil
-        let sizeChanged = appliedImageSize != image.size
-        if hadImage && !sizeChanged && scrollView.zoomScale <= 1.01 {
-            UIView.transition(
-                with: imageView,
-                duration: 0.16,
-                options: [.transitionCrossDissolve, .allowUserInteraction]
-            ) {
-                self.imageView.image = image
+        let previousAspect = Self.aspect(of: appliedImageSize)
+        let newAspect = Self.aspect(of: image.size)
+        // Aspect-fit means the laid-out frame depends only on the aspect ratio,
+        // not the pixel size. A sharper image of the same photo can therefore
+        // replace the pixels underneath an existing zoom without moving or
+        // rescaling anything — no jump, and no resetting a pinch in progress.
+        let aspectMatches = hadImage
+            && !imageView.bounds.isEmpty
+            && previousAspect > 0
+            && abs(previousAspect - newAspect) <= newAspect * 0.01
+
+        if aspectMatches {
+            if scrollView.zoomScale > 1.01 {
+                imageView.image = image
+            } else {
+                UIView.transition(
+                    with: imageView,
+                    duration: 0.16,
+                    options: [.transitionCrossDissolve, .allowUserInteraction]
+                ) {
+                    self.imageView.image = image
+                }
             }
+            appliedImageSize = image.size
         } else {
             imageView.image = image
-        }
-        appliedImageSize = image.size
-        if sizeChanged || imageView.bounds.isEmpty {
-            layoutImage(resetZoom: scrollView.zoomScale <= 1.01)
+            appliedImageSize = image.size
+            // Keep a pinch in progress; the first image always starts at fit.
+            layoutImage(zoom: hadImage ? max(scrollView.zoomScale, 1) : 1)
         }
         if final { loadedFinal = true }
         updateProbe()
+    }
+
+    private static func aspect(of size: CGSize) -> CGFloat {
+        guard size.width > 0, size.height > 0 else { return 0 }
+        return size.width / size.height
     }
 
     private func showFailure() {
@@ -617,7 +932,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
 
     // MARK: Layout
 
-    private func layoutImage(resetZoom: Bool) {
+    private func layoutImage(zoom: CGFloat) {
         let bounds = scrollView.bounds.size
         guard bounds.width > 0, bounds.height > 0 else { return }
         guard let image = imageView.image, image.size.width > 0, image.size.height > 0 else {
@@ -627,22 +942,29 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             return
         }
         let fit = Self.aspectFit(image.size, in: bounds)
-        if resetZoom {
-            scrollView.setZoomScale(1, animated: false)
-            imageView.transform = .identity
-            imageView.frame = CGRect(origin: .zero, size: fit)
-            scrollView.contentSize = fit
-            centerContent()
-        } else if imageView.bounds.size != fit {
-            // A different aspect ratio arrived while zoomed; settle back to 1x
-            // rather than leaving the old offset pointing at empty space.
-            scrollView.setZoomScale(1, animated: false)
-            imageView.transform = .identity
-            imageView.frame = CGRect(origin: .zero, size: fit)
-            scrollView.contentSize = fit
-            centerContent()
+        scrollView.setZoomScale(1, animated: false)
+        imageView.transform = .identity
+        imageView.frame = CGRect(origin: .zero, size: fit)
+        scrollView.contentSize = fit
+        if zoom > 1.001 {
+            scrollView.setZoomScale(zoom, animated: false)
         }
+        centerContent()
+        scrollView.contentOffset = clampedOffset(scrollView.contentOffset)
         updatePanAvailability()
+    }
+
+    private func clampedOffset(_ offset: CGPoint) -> CGPoint {
+        let bounds = scrollView.bounds.size
+        let inset = scrollView.adjustedContentInset
+        let minX = -inset.left
+        let maxX = max(minX, scrollView.contentSize.width - bounds.width + inset.right)
+        let minY = -inset.top
+        let maxY = max(minY, scrollView.contentSize.height - bounds.height + inset.bottom)
+        return CGPoint(
+            x: min(max(offset.x, minX), maxX),
+            y: min(max(offset.y, minY), maxY)
+        )
     }
 
     private static func aspectFit(_ size: CGSize, in bounds: CGSize) -> CGSize {
@@ -721,6 +1043,14 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     // MARK: Gestures
 
     @objc private func handleSingleTap() {
+        #if DEBUG
+        if lastTouchDown > 0 {
+            ViewerInteractionProbe.shared.tapLatency(
+                milliseconds: (CACurrentMediaTime() - lastTouchDown) * 1000
+            )
+            lastTouchDown = 0
+        }
+        #endif
         onSingleTap?()
     }
 
@@ -832,17 +1162,20 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         #if DEBUG
         guard ViewerInteractionProbe.shared.isEnabled else { return }
         let bounds = scrollView.bounds
-        let inset = scrollView.adjustedContentInset
         let zoom = max(scrollView.zoomScale, 0.01)
         let imageSize = imageView.bounds.size
+        // `contentOffset` already includes the centring inset, so the point at
+        // the middle of the viewport is just offset + bounds / 2. Subtracting
+        // the inset again (as this used to) reports a different centre for
+        // every aspect ratio.
         let centerX = imageSize.width > 0
-            ? (scrollView.contentOffset.x + bounds.width / 2 - inset.left) / zoom / imageSize.width
+            ? (scrollView.contentOffset.x + bounds.width / 2) / zoom / imageSize.width
             : 0.5
         let centerY = imageSize.height > 0
-            ? (scrollView.contentOffset.y + bounds.height / 2 - inset.top) / zoom / imageSize.height
+            ? (scrollView.contentOffset.y + bounds.height / 2) / zoom / imageSize.height
             : 0.5
-        let minX = -inset.left
-        let maxX = max(minX, scrollView.contentSize.width - bounds.width + inset.right)
+        let minX = -scrollView.adjustedContentInset.left
+        let maxX = max(minX, scrollView.contentSize.width - bounds.width + scrollView.adjustedContentInset.right)
         let overpan = max(0, minX - scrollView.contentOffset.x)
             + max(0, scrollView.contentOffset.x - maxX)
         ViewerInteractionProbe.shared.zoomChanged(
@@ -854,4 +1187,18 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         #endif
     }
 }
+
+#if DEBUG
+/// A single-tap recogniser that reports when the finger lands, so the probe can
+/// measure the real finger-down to chrome-toggle latency without adding a
+/// second gesture recogniser that would compete with scrolling.
+private final class TrackingTapGestureRecognizer: UITapGestureRecognizer {
+    var onTouchDown: (() -> Void)?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        onTouchDown?()
+    }
+}
+#endif
 #endif

@@ -27,6 +27,12 @@ final class ImageCache {
 
     private let thumbnails = NSCache<NSString, Box>()
     private let degradedThumbnails = NSCache<NSString, Box>()
+    /// Viewer-size (1200px) thumbnails live in their own cache. They are an
+    /// order of magnitude larger than grid tiles, so letting them into the
+    /// shared cache evicts every grid thumbnail in the library and pushes the
+    /// footprint up by ~100 MB while paging. Keeping them separate also means
+    /// closing the viewer returns to a grid that is still warm.
+    private let viewerThumbnails = NSCache<NSString, Box>()
     private let fullImages = NSCache<NSString, Box>()
     private var inFlight: [String: Task<PlatformImage?, Never>] = [:]
     private var fullInFlight: [String: Task<PlatformImage?, Never>] = [:]
@@ -40,6 +46,10 @@ final class ImageCache {
         thumbnails.totalCostLimit = 96 * 1024 * 1024
         degradedThumbnails.countLimit = 240
         degradedThumbnails.totalCostLimit = 12 * 1024 * 1024
+        // Five pages (current plus two either side) is what the viewer can ask
+        // for at once; the surplus covers a swipe back.
+        viewerThumbnails.countLimit = 8
+        viewerThumbnails.totalCostLimit = 44 * 1024 * 1024
         fullImages.countLimit = 3
         fullImages.totalCostLimit = 72 * 1024 * 1024
     }
@@ -89,6 +99,43 @@ final class ImageCache {
         return image
     }
 
+    /// Viewer-sized thumbnail, cached apart from the grid's tiles. Sharing the
+    /// same in-flight request means a prefetch and the page that needs it still
+    /// decode once.
+    func viewerThumbnail(for photo: PhotoItem, size: CGSize) async -> PlatformImage? {
+        let cacheKey = key(for: photo, size: size)
+        if let cached = viewerThumbnails.object(forKey: cacheKey) { return cached.image }
+        let identifier = "viewer|\(cacheKey)"
+        if let task = inFlight[identifier] { return await task.value }
+
+        let task = Task<PlatformImage?, Never>(priority: .userInitiated) { [weak self] in
+            guard let self else { return nil }
+            return await self.load(
+                photo: photo,
+                size: size,
+                cacheKey: cacheKey,
+                onDegraded: nil,
+                storeInGridCache: false
+            )
+        }
+        inFlight[identifier] = task
+        let image = await task.value
+        inFlight[identifier] = nil
+        if let image {
+            viewerThumbnails.setObject(Box(image), forKey: cacheKey, cost: Self.cost(of: image))
+        }
+        return image
+    }
+
+    func cachedViewerThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
+        cachedThumbnail(for: photo, size: size)
+            ?? viewerThumbnails.object(forKey: key(for: photo, size: size))?.image
+    }
+
+    func hasViewerThumbnail(for photo: PhotoItem, size: CGSize) -> Bool {
+        cachedViewerThumbnail(for: photo, size: size) != nil
+    }
+
     /// Background fill used by the remote prefetcher. Shares the normal request
     /// path so a tile that appears mid-flight simply awaits the same task.
     func prefetchThumbnail(for photo: PhotoItem, size: CGSize) async {
@@ -100,14 +147,15 @@ final class ImageCache {
         photo: PhotoItem,
         size: CGSize,
         cacheKey: NSString,
-        onDegraded: (@MainActor (PlatformImage) -> Void)?
+        onDegraded: (@MainActor (PlatformImage) -> Void)?,
+        storeInGridCache: Bool = true
     ) async -> PlatformImage? {
         let image: PlatformImage?
         let keyString = cacheKey as String
         if let localIdentifier = photo.localIdentifier {
             image = await library.thumbnail(for: localIdentifier, targetSize: size) { [weak self] degraded in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, storeInGridCache else { return }
                     let key = keyString as NSString
                     self.degradedThumbnails.setObject(Box(degraded), forKey: key, cost: Self.cost(of: degraded))
                     self.previewKeys[photo.id] = key
@@ -122,12 +170,27 @@ final class ImageCache {
             image = nil
         }
 
-        if let image {
-            thumbnails.setObject(Box(image), forKey: cacheKey, cost: Self.cost(of: image))
+        guard let image else { return nil }
+        let ready = await Self.displayReady(image)
+        if storeInGridCache {
+            thumbnails.setObject(Box(ready), forKey: cacheKey, cost: Self.cost(of: ready))
             degradedThumbnails.removeObject(forKey: cacheKey)
             previewKeys[photo.id] = cacheKey
         }
+        return ready
+    }
+
+    /// Decodes the bitmap before it reaches a view. `UIImage` decodes lazily on
+    /// first draw, which puts a multi-megabyte decode inside the next frame
+    /// commit; doing it here moves that work to a background queue and keeps
+    /// the swipe or the zoom transition at 120 Hz. The unprepared image is
+    /// returned unchanged on failure so the viewer still shows something.
+    private nonisolated static func displayReady(_ image: PlatformImage) async -> PlatformImage {
+        #if canImport(UIKit)
+        return await image.byPreparingForDisplay() ?? image
+        #else
         return image
+        #endif
     }
 
     func fullImage(for photo: PhotoItem) async -> PlatformImage? {
@@ -137,13 +200,16 @@ final class ImageCache {
 
         let task = Task<PlatformImage?, Never>(priority: .userInitiated) { [weak self] in
             guard let self else { return nil }
+            let image: PlatformImage?
             if let localIdentifier = photo.localIdentifier {
-                return await self.library.fullImage(for: localIdentifier)
+                image = await self.library.fullImage(for: localIdentifier)
+            } else if let loader = self.remoteImageLoader {
+                image = await loader(photo)
+            } else {
+                image = nil
             }
-            if let loader = self.remoteImageLoader {
-                return await loader(photo)
-            }
-            return nil
+            guard let image else { return nil }
+            return await Self.displayReady(image)
         }
         fullInFlight[photo.id] = task
         let image = await task.value
@@ -163,11 +229,16 @@ final class ImageCache {
             viewerPrefetch[id] = nil
         }
         for photo in photos where viewerPrefetch[photo.id] == nil {
-            guard thumbnails.object(forKey: key(for: photo, size: size)) == nil else { continue }
-            viewerPrefetch[photo.id] = Task(priority: .utility) { [weak self] in
-                guard !Task.isCancelled else { return }
-                _ = await self?.thumbnail(for: photo, size: size)
-                self?.viewerPrefetch[photo.id] = nil
+            guard !hasViewerThumbnail(for: photo, size: size) else { continue }
+            let id = photo.id
+            viewerPrefetch[id] = Task(priority: .utility) { [weak self] in
+                // Registered before the cancellation check: a task cancelled
+                // before it starts still runs, and it must clear its slot.
+                // Otherwise the entry is never freed (and that photo could
+                // never be prefetched again for the life of the viewer).
+                defer { self?.viewerPrefetch[id] = nil }
+                guard let self, !Task.isCancelled else { return }
+                _ = await self.viewerThumbnail(for: photo, size: size)
             }
         }
     }
@@ -175,6 +246,7 @@ final class ImageCache {
     func clearMemory() {
         thumbnails.removeAllObjects()
         degradedThumbnails.removeAllObjects()
+        viewerThumbnails.removeAllObjects()
         fullImages.removeAllObjects()
         previewKeys.removeAll()
         faceCache.removeAll()
