@@ -46,12 +46,15 @@ final class ImageCache {
         thumbnails.totalCostLimit = 96 * 1024 * 1024
         degradedThumbnails.countLimit = 240
         degradedThumbnails.totalCostLimit = 12 * 1024 * 1024
-        // Five pages (current plus two either side) is what the viewer can ask
-        // for at once; the surplus covers a swipe back.
-        viewerThumbnails.countLimit = 8
-        viewerThumbnails.totalCostLimit = 44 * 1024 * 1024
-        fullImages.countLimit = 3
-        fullImages.totalCostLimit = 72 * 1024 * 1024
+        // Five pages (current plus two either side) is what the viewer keeps,
+        // and six entries cover the page the viewer came from as well.
+        viewerThumbnails.countLimit = 6
+        viewerThumbnails.totalCostLimit = 36 * 1024 * 1024
+        // Only the photo on screen is sharpened, so the previous photo's full
+        // image is the only one worth keeping: more would evict useful tiles
+        // and hold another 20 MB for a swipe that has not happened.
+        fullImages.countLimit = 2
+        fullImages.totalCostLimit = 52 * 1024 * 1024
     }
 
     private func key(for photo: PhotoItem, size: CGSize) -> NSString {
@@ -193,9 +196,17 @@ final class ImageCache {
         #endif
     }
 
+    /// Synchronous lookup for a photo the viewer has already sharpened. The
+    /// viewer uses it to paint the full image the instant a page becomes
+    /// current again, instead of showing the soft thumbnail and waiting out
+    /// the full-load delay.
+    func cachedFullImage(for photo: PhotoItem) -> PlatformImage? {
+        fullImages.object(forKey: photo.id as NSString)?.image
+    }
+
     func fullImage(for photo: PhotoItem) async -> PlatformImage? {
         let cacheKey = photo.id as NSString
-        if let cached = fullImages.object(forKey: cacheKey) { return cached.image }
+        if let cached = cachedFullImage(for: photo) { return cached }
         if let task = fullInFlight[photo.id] { return await task.value }
 
         let task = Task<PlatformImage?, Never>(priority: .userInitiated) { [weak self] in

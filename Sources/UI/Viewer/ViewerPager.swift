@@ -109,6 +109,10 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     var onZoomChanged: ((Bool) -> Void)?
     private var reportedZoom = false
     private var restoredPopGesture = false
+    /// Transition pop gestures disabled for the viewer's lifetime.
+    private var disabledTransitionPans: [UIGestureRecognizer] = []
+    /// Gates installed on the zoom transition's dismiss recogniser.
+    private var dismissGates: [HorizontalDismissGate] = []
 
     #if DEBUG
     private var frameLink: CADisplayLink?
@@ -181,8 +185,8 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         #if DEBUG
         startFrameLink()
         #endif
-        // Re-assert after the zoom transition: UIKit can re-enable the pop
-        // gesture while it finishes the transition.
+        // Re-assert after the zoom transition: UIKit installs the transition's
+        // own pop recogniser while it finishes the push, after `viewWillAppear`.
         disablePopGesture()
     }
 
@@ -195,19 +199,83 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     }
 
     private func disablePopGesture() {
-        guard let navigation = enclosingNavigationController else { return }
-        // iOS 26 adds a second, content-wide pop gesture on top of the
-        // leading-edge one. A back-swipe anywhere in the photo would otherwise
-        // pop the viewer instead of paging the roll.
-        for gesture in [navigation.interactivePopGestureRecognizer,
-                        navigation.interactiveContentPopGestureRecognizer] {
-            guard let gesture, gesture.isEnabled else { continue }
-            gesture.isEnabled = false
-            restoredPopGesture = true
+        if let navigation = enclosingNavigationController {
+            // iOS 26 adds a second, content-wide pop gesture on top of the
+            // leading-edge one. A back-swipe anywhere in the photo would
+            // otherwise pop the viewer instead of paging the roll.
+            for gesture in [navigation.interactivePopGestureRecognizer,
+                            navigation.interactiveContentPopGestureRecognizer] {
+                guard let gesture, gesture.isEnabled else { continue }
+                gesture.isEnabled = false
+                restoredPopGesture = true
+            }
+        }
+        disableTransitionPopGesture()
+        gateHorizontalDismiss()
+    }
+
+    /// The zoom navigation transition installs a *third* interactive-pop pan on
+    /// the SwiftUI hosting view itself (a sibling of the vertical
+    /// `_UIContentSwipeDismiss` that owns swipe-down). That one only accepts a
+    /// touch that begins in the first ~4 points of the screen and is owned by
+    /// neither of the navigation controller's public pop gestures, so a swipe
+    /// from the leading edge still popped the viewer while everything a few
+    /// points in paged the roll. It is a distinct object from the dismiss
+    /// recogniser, so disabling it hands the leading edge to the pager and
+    /// leaves swipe-down alone.
+    private func disableTransitionPopGesture() {
+        guard let window = view.window else { return }
+        var ancestor: UIView? = view
+        while let current = ancestor, current !== window {
+            for gesture in current.gestureRecognizers ?? [] {
+                guard gesture.isEnabled,
+                      String(describing: type(of: gesture)).contains("ParallaxTransitionPan") else { continue }
+                gesture.isEnabled = false
+                disabledTransitionPans.append(gesture)
+            }
+            ancestor = current.superview
+        }
+    }
+
+    /// The zoom transition's swipe-down dismiss recogniser also tracks
+    /// horizontal drags: dragging away from a photo's edge (which is exactly
+    /// where a zoomed photo hands the gesture to the pager) ended in an
+    /// interactive back that closed the viewer. The viewer never dismisses
+    /// horizontally — paging and panning own that axis — so the recogniser is
+    /// gated to vertical drags.
+    private func gateHorizontalDismiss() {
+        guard let window = view.window else { return }
+        // Drop gates whose recogniser has since been re-created by the system.
+        dismissGates.removeAll { $0.gesture == nil }
+        var ancestor: UIView? = view
+        while let current = ancestor, current !== window {
+            for gesture in current.gestureRecognizers ?? [] {
+                guard String(describing: type(of: gesture)).contains("ContentSwipeDismiss") else { continue }
+                if let gate = dismissGates.first(where: { $0.gesture === gesture }) {
+                    // UIKit can install its own delegate again; take it back.
+                    if gesture.delegate !== gate {
+                        gate.adopt(gesture.delegate)
+                        gesture.delegate = gate
+                    }
+                    continue
+                }
+                let gate = HorizontalDismissGate(gesture: gesture, forwarding: gesture.delegate)
+                gesture.delegate = gate
+                dismissGates.append(gate)
+            }
+            ancestor = current.superview
         }
     }
 
     private func restorePopGesture() {
+        for gesture in disabledTransitionPans {
+            gesture.isEnabled = true
+        }
+        disabledTransitionPans.removeAll()
+        for gate in dismissGates {
+            gate.restore()
+        }
+        dismissGates.removeAll()
         guard restoredPopGesture else { return }
         let navigation = enclosingNavigationController
         navigation?.interactivePopGestureRecognizer?.isEnabled = true
@@ -287,6 +355,16 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
             milliseconds: (CFAbsoluteTimeGetCurrent() - started) * 1000
         )
         #endif
+        // The roll can lose the photo that is on screen (the library changed
+        // underneath the viewer). Point SwiftUI at the photo that is actually
+        // shown, or the chrome and the info sheet would describe a photo that
+        // no longer exists.
+        if !photoIDs.contains(selection), photoIDs.indices.contains(settledIndex) {
+            let fallback = photoIDs[settledIndex]
+            Task { @MainActor [weak self] in
+                self?.onSelectionChanged?(fallback)
+            }
+        }
     }
 
     /// Creates controllers for the photos within `residentRadius` of `center`.
@@ -297,12 +375,19 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         let lower = max(0, center - residentRadius)
         let upper = min(photoIDs.count - 1, center + residentRadius)
         guard lower <= upper else { return }
-        for index in lower...upper where pages[index] == nil {
-            pages[index] = makePage(at: index)
+        for index in lower...upper {
+            ensurePage(at: index)
         }
         #if DEBUG
         ViewerInteractionProbe.shared.residentPages(pages.count)
         #endif
+    }
+
+    /// Builds one page if it does not exist yet. Cheap and idempotent, so it is
+    /// safe to call at the start of a gesture.
+    private func ensurePage(at index: Int) {
+        guard photoIDs.indices.contains(index), pages[index] == nil else { return }
+        pages[index] = makePage(at: index)
     }
 
     private func makePage(at index: Int) -> ViewerZoomPageController {
@@ -321,6 +406,20 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         page.onZoomStateChanged = { [weak self] _ in
             guard let self, index == self.settledIndex else { return }
             self.updateOuterPaging()
+        }
+        page.onZoomMetrics = { [weak self] scale, centerX, centerY, overpan in
+            // Every resident page reports, but only the one on screen describes
+            // the viewer; a neighbour resetting its zoom used to overwrite the
+            // current photo's zoom in the readout.
+            guard let self, index == self.settledIndex else { return }
+            #if DEBUG
+            ViewerInteractionProbe.shared.zoomChanged(
+                scale: scale,
+                centerX: centerX,
+                centerY: centerY,
+                overpan: overpan
+            )
+            #endif
         }
         addChild(page)
         page.view.frame = CGRect(
@@ -342,8 +441,7 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     /// under a drag that is about to settle on it.
     private func evictPages(around center: Int) {
         guard !scrollView.isDragging, !scrollView.isDecelerating else { return }
-        let keepRadius = residentRadius + 1
-        for (index, page) in pages where abs(index - center) > keepRadius {
+        for (index, page) in pages where abs(index - center) > residentRadius {
             release(page, at: index)
         }
         if pages.count > maxResident {
@@ -420,11 +518,13 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         dragStartIndex = min(max(0, pendingIndex), max(0, photoIDs.count - 1))
         // The settled photo is about to leave: drop a full decode that has not
-        // started, and build the pages either side before the drag can reveal
-        // them, so page creation never lands in the middle of a gesture.
+        // started, and build exactly the two photos this drag can reveal
+        // before it reveals them. Building a whole window around each
+        // neighbour (as this used to) put up to four extra controllers and
+        // their image requests into the first frame of every swipe.
         pages[settledIndex]?.cancelPendingFullLoad()
-        ensurePages(around: dragStartIndex + 1)
-        ensurePages(around: dragStartIndex - 1)
+        ensurePage(at: dragStartIndex - 1)
+        ensurePage(at: dragStartIndex + 1)
     }
 
     /// Photos pages exactly one photo per flick, never several at once, and
@@ -481,10 +581,13 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
         let index = min(max(index, 0), photoIDs.count - 1)
         settledIndex = index
         selection = photoIDs.indices.contains(index) ? photoIDs[index] : selection
+        disablePopGesture()
         ensurePages(around: index)
         activate(index)
         #if DEBUG
+        ViewerInteractionProbe.shared.sharpen(pages[index]?.isShowingFullImage ?? false)
         ViewerInteractionProbe.shared.pageChanged(index, count: photoIDs.count)
+        pages[index]?.updateProbe()
         #endif
         if notify, photoIDs.indices.contains(index) {
             onSelectionChanged?(photoIDs[index])
@@ -538,7 +641,7 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     func beginEdgePageDrag(from index: Int, by delta: Int) -> Bool {
         guard delta != 0, photoIDs.indices.contains(index + delta) else { return false }
         // The neighbour must be live before the drag reveals it.
-        ensurePages(around: index + delta)
+        ensurePage(at: index + delta)
         edgeDragFrom = index
         edgeDragDirection = delta
         updateOuterPaging()
@@ -608,6 +711,8 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     private let statusLabel = UILabel()
     private var loadTask: Task<Void, Never>?
     private var fullTask: Task<Void, Never>?
+    /// Whether `fullTask` has finished waiting and is decoding.
+    private var fullTaskIsDecoding = false
     private var loadGeneration = 0
     private var isLoading = false
     private var loadedFinal = false
@@ -624,7 +729,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     /// every photo that passes the viewport, which is the single most expensive
     /// thing the viewer can do on the main thread. The 1200px viewer thumbnail
     /// is already one-to-one with the screen at fit, so the delay is invisible
-    /// until the user zooms.
+    /// until the user zooms — and zooming skips it.
     private let fullLoadDelay: Duration = .milliseconds(200)
 
     private var singleTap: UITapGestureRecognizer!
@@ -639,6 +744,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     var onHandoffChanged: ((CGFloat) -> Void)?
     var onHandoffEnded: ((_ translation: CGFloat, _ velocity: CGFloat) -> Void)?
     var onZoomStateChanged: ((_ zoomed: Bool) -> Void)?
+    var onZoomMetrics: ((_ scale: CGFloat, _ centerX: CGFloat, _ centerY: CGFloat, _ overpan: CGFloat) -> Void)?
     var reduceMotion = false
 
     var isZoomed: Bool { scrollView.zoomScale > 1.01 }
@@ -809,10 +915,17 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     func cancelPendingFullLoad() {
         fullTask?.cancel()
         fullTask = nil
+        fullTaskIsDecoding = false
     }
 
     private func ensureLoading() {
         if wantsFull && loadedFinal { return }
+        // Revisiting a photo whose full image is still cached should be sharp
+        // immediately, not after a 1200px placeholder and the full-load delay.
+        if wantsFull, let full = app.images.cachedFullImage(for: photo) {
+            show(full, final: true)
+            return
+        }
         guard !isLoading else { return }
         isLoading = true
         let generation = loadGeneration
@@ -846,7 +959,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             self.isLoading = false
             self.loadTask = nil
             if self.wantsFull && !self.loadedFinal, self.activation == .current {
-                self.scheduleFullLoad()
+                self.scheduleFullLoad(immediately: self.isZoomed)
             }
         }
     }
@@ -854,17 +967,35 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     /// Only a photo that has been on screen for a moment gets the expensive
     /// full image. Leaving the page cancels the wait; an already-running decode
     /// still finishes and lands in the cache for the next visit.
-    private func scheduleFullLoad() {
-        guard fullTask == nil, wantsFull, !loadedFinal, activation == .current else { return }
+    ///
+    /// Zooming skips the wait. The 1200px viewer thumbnail is one-to-one with
+    /// the screen at fit but visibly soft at 2.5x, and pinching is the user
+    /// asking for detail — waiting 200 ms first made an immediate zoom sit
+    /// blurred for half a second.
+    private func scheduleFullLoad(immediately: Bool = false) {
+        guard wantsFull, !loadedFinal, activation == .current else { return }
+        if let pending = fullTask {
+            // Promote a waiting task; never restart a decode that is already
+            // running (that would do the work twice).
+            guard immediately, !fullTaskIsDecoding else { return }
+            pending.cancel()
+            fullTask = nil
+        }
         let generation = loadGeneration
+        let delay = fullLoadDelay
+        fullTaskIsDecoding = false
         fullTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: self?.fullLoadDelay ?? .milliseconds(140))
+            if !immediately {
+                try? await Task.sleep(for: delay)
+                if Task.isCancelled { return }
+            }
             guard let self else { return }
             guard !Task.isCancelled,
                   generation == self.loadGeneration,
                   self.wantsFull,
                   !self.loadedFinal,
                   self.activation == .current else { return }
+            self.fullTaskIsDecoding = true
             if let full = await self.app.images.fullImage(for: self.photo) {
                 guard !Task.isCancelled, generation == self.loadGeneration else { return }
                 self.show(full, final: true)
@@ -872,6 +1003,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
                 self.showFailure()
             }
             self.fullTask = nil
+            self.fullTaskIsDecoding = false
         }
     }
 
@@ -909,7 +1041,14 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             // Keep a pinch in progress; the first image always starts at fit.
             layoutImage(zoom: hadImage ? max(scrollView.zoomScale, 1) : 1)
         }
-        if final { loadedFinal = true }
+        if final {
+            loadedFinal = true
+            #if DEBUG
+            if activation == .current {
+                ViewerInteractionProbe.shared.sharpen(true)
+            }
+            #endif
+        }
         updateProbe()
     }
 
@@ -1002,9 +1141,19 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         imageView
     }
 
+    /// Whether the photo on screen is the full-resolution one (as opposed to
+    /// the 1200px viewer thumbnail). The UI tests use this to prove a photo
+    /// sharpens after a pause and sharpens *at once* when zoomed.
+    var isShowingFullImage: Bool { loadedFinal }
+
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         centerContent()
         updatePanAvailability()
+        // A pinch asks for detail now: start the full decode without waiting
+        // out the delay that exists to protect flicking through the roll.
+        if scrollView.zoomScale > 1.01 {
+            scheduleFullLoad(immediately: true)
+        }
     }
 
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
@@ -1114,17 +1263,24 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             guard onHandoffBegan?(direction) == true else { return }
             handoffActive = true
             handoffStartTranslation = translation.x
-            // The image is at its edge: stop its own rubber-band so the pager
-            // gets the whole gesture.
-            scrollView.panGestureRecognizer.isEnabled = false
+            // Keep this scroll view's own pan recogniser live. It owns the
+            // gesture, and the zoom transition's swipe-dismiss recogniser waits
+            // for every other pan to fail: disabling this one mid-drag handed
+            // the rest of the gesture to the system, which popped the viewer
+            // with a horizontal interactive back instead of paging the roll.
+            // Stopping the bounce is enough to hold the photo still at its
+            // edge while the pager slides the page away.
+            scrollView.bounces = false
+            scrollView.contentOffset = clampedOffset(scrollView.contentOffset)
         case .ended, .cancelled, .failed:
             if handoffActive {
                 let travel = pan.state == .ended
                     ? translation.x - handoffStartTranslation
                     : 0
                 onHandoffEnded?(travel, velocity.x)
-                didResetPanAfterHandoff = true
                 handoffActive = false
+                scrollView.bounces = true
+                didResetPanAfterHandoff = true
                 schedulePanReset()
             }
         default:
@@ -1158,7 +1314,9 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
 
     // MARK: Probe
 
-    private func updateProbe() {
+    /// Reports live zoom, centre and over-pan to the pager, which forwards them
+    /// for the photo on screen only.
+    func updateProbe() {
         #if DEBUG
         guard ViewerInteractionProbe.shared.isEnabled else { return }
         let bounds = scrollView.bounds
@@ -1178,12 +1336,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         let maxX = max(minX, scrollView.contentSize.width - bounds.width + scrollView.adjustedContentInset.right)
         let overpan = max(0, minX - scrollView.contentOffset.x)
             + max(0, scrollView.contentOffset.x - maxX)
-        ViewerInteractionProbe.shared.zoomChanged(
-            scale: scrollView.zoomScale,
-            centerX: centerX,
-            centerY: centerY,
-            overpan: overpan
-        )
+        onZoomMetrics?(scrollView.zoomScale, centerX, centerY, overpan)
         #endif
     }
 }
@@ -1201,4 +1354,70 @@ private final class TrackingTapGestureRecognizer: UITapGestureRecognizer {
     }
 }
 #endif
+
+/// Refuses to let the zoom transition's dismiss recogniser begin on a mostly
+/// horizontal drag, while forwarding everything else to the delegate the system
+/// installed. A vertical pull still dismisses the viewer.
+@MainActor
+final class HorizontalDismissGate: NSObject, UIGestureRecognizerDelegate {
+    private(set) weak var gesture: UIGestureRecognizer?
+    private weak var forwarding: UIGestureRecognizerDelegate?
+
+    init(gesture: UIGestureRecognizer, forwarding: UIGestureRecognizerDelegate?) {
+        self.gesture = gesture
+        self.forwarding = forwarding
+    }
+
+    func restore() {
+        // Only take the delegate back if it is still ours; UIKit may have
+        // replaced it while the transition ran.
+        if gesture?.delegate === self {
+            gesture?.delegate = forwarding
+        }
+    }
+
+    /// Remembers a delegate UIKit installed in place of this gate.
+    func adopt(_ delegate: UIGestureRecognizerDelegate?) {
+        guard delegate !== self else { return }
+        forwarding = delegate
+    }
+
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer {
+            let velocity = pan.velocity(in: pan.view)
+            if abs(velocity.x) > abs(velocity.y) { return false }
+        }
+        return forwarding?.gestureRecognizerShouldBegin?(gestureRecognizer) ?? true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        forwarding?.gestureRecognizer?(gestureRecognizer, shouldReceive: touch) ?? true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        // UIKit's default without a delegate is no simultaneous recognition;
+        // keep that unless the system's own delegate said otherwise.
+        forwarding?.gestureRecognizer?(gestureRecognizer, shouldRecognizeSimultaneouslyWith: other) ?? false
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy other: UIGestureRecognizer
+    ) -> Bool {
+        forwarding?.gestureRecognizer?(gestureRecognizer, shouldBeRequiredToFailBy: other) ?? false
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRequireFailureOf other: UIGestureRecognizer
+    ) -> Bool {
+        forwarding?.gestureRecognizer?(gestureRecognizer, shouldRequireFailureOf: other) ?? false
+    }
+}
 #endif

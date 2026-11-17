@@ -92,6 +92,18 @@ final class ViewerInteractionProbe {
         revision &+= 1
     }
 
+    /// Whether the current photo is showing its full-resolution image rather
+    /// than the viewer-size thumbnail, so a test can prove a photo sharpens
+    /// after a pause and sharpens straight away when zoomed.
+    private(set) var sharp = false
+
+    func sharpen(_ value: Bool) {
+        if sharp != value {
+            sharp = value
+            revision &+= 1
+        }
+    }
+
     /// The app's physical footprint in megabytes, sampled when the page changes.
     /// Paging the whole roll must not grow it without bound.
     private(set) var footprintMB: Double = 0
@@ -110,11 +122,11 @@ final class ViewerInteractionProbe {
         footprintMB = Double(info.phys_footprint) / 1_048_576
     }
 
-    /// `page=4/27;scale=2.50;cx=0.79;cy=0.45;over=0.0;live=5;setup=3.1ms;layout=0.4ms;worst=16.7ms;drops=0;tap=83ms;mem=142.3MB`
+    /// `page=4/27;scale=2.50;cx=0.79;cy=0.45;over=0.0;live=5;setup=3.1ms;layout=0.4ms;worst=16.7ms;drops=0;tap=83ms;mem=142.3MB;sharp=1`
     var value: String {
         _ = revision
         return String(
-            format: "page=%d/%d;scale=%.2f;cx=%.3f;cy=%.3f;over=%.1f;live=%d;setup=%.1fms;layout=%.1fms;worst=%.1fms;drops=%d;tap=%.0fms;mem=%.1fMB",
+            format: "page=%d/%d;scale=%.2f;cx=%.3f;cy=%.3f;over=%.1f;live=%d;setup=%.1fms;layout=%.1fms;worst=%.1fms;drops=%d;tap=%.0fms;mem=%.1fMB;sharp=%d",
             pageIndex + 1,
             pageCount,
             scale,
@@ -127,7 +139,8 @@ final class ViewerInteractionProbe {
             worstFrameMilliseconds,
             droppedFrames,
             tapMilliseconds,
-            footprintMB
+            footprintMB,
+            sharp ? 1 : 0
         )
     }
 }

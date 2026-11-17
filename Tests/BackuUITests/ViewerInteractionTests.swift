@@ -168,7 +168,7 @@ final class ViewerInteractionTests: XCTestCase {
         XCTAssertTrue(opened.contains("live="), opened)
 
         XCTAssertLessThanOrEqual(
-            value(opened, key: "live"), 7,
+            value(opened, key: "live"), 5,
             "Opening built a page controller per photo: \(opened)"
         )
         XCTAssertLessThanOrEqual(
@@ -190,7 +190,7 @@ final class ViewerInteractionTests: XCTestCase {
                 last = probe(app)
                 peak = max(peak, value(last, key: "mem"))
                 XCTAssertLessThanOrEqual(
-                    value(last, key: "live"), 7,
+                    value(last, key: "live"), 5,
                     "Resident page controllers grew while paging: \(last)"
                 )
             }
@@ -201,24 +201,26 @@ final class ViewerInteractionTests: XCTestCase {
         let firstPass = swipeRoundTrip()
         attach(app, text: "first round trip: \(firstPass)")
         let secondPass = swipeRoundTrip()
-        attach(app, "after two full-page round trips")
+        attach(app, text: "second round trip: \(secondPass)")
+        let thirdPass = swipeRoundTrip()
+        attach(app, "after three full-page round trips")
         attach(
             app,
-            text: "second round trip: \(secondPass) · peak \(String(format: "%.1f", peak))MB"
+            text: "third round trip: \(thirdPass) · peak \(String(format: "%.1f", peak))MB"
         )
-        // Two identical passes must not keep growing: the caches fill on the
-        // first pass, and a leak would show up as a second identical step.
+        // The first passes fill the caches; after that the footprint has to be
+        // flat. A leak shows up as one more identical step per pass.
         XCTAssertFalse(
-            value(secondPass, key: "mem").isNaN,
-            "The probe did not report memory: \(secondPass)"
+            value(thirdPass, key: "mem").isNaN,
+            "The probe did not report memory: \(thirdPass)"
         )
         XCTAssertLessThanOrEqual(
-            value(secondPass, key: "mem") - value(firstPass, key: "mem"), 20,
-            "Paging the roll leaks memory: first \(firstPass), second \(secondPass)"
+            value(thirdPass, key: "mem") - value(secondPass, key: "mem"), 12,
+            "Paging the roll leaks memory: second \(secondPass), third \(thirdPass)"
         )
         XCTAssertLessThanOrEqual(
-            value(secondPass, key: "mem") - value(opened, key: "mem"), 140,
-            "Paging the roll grows memory past the cache budget: open \(opened), settled \(secondPass)"
+            value(thirdPass, key: "mem") - value(opened, key: "mem"), 140,
+            "Paging the roll grows memory past the cache budget: open \(opened), settled \(thirdPass)"
         )
     }
 
@@ -237,13 +239,19 @@ final class ViewerInteractionTests: XCTestCase {
         let state = probe(app)
         attach(app, "ten flicks")
         attach(app, text: "open \(opened) → after ten flicks \(state)")
+        // The measurement starts at page creation, so the open's own frames are
+        // already in the count; the flicks have to add almost nothing.
         XCTAssertLessThanOrEqual(
-            value(state, key: "drops"), 10,
-            "Flicking through ten photos dropped frames: \(state)"
+            value(state, key: "drops") - value(opened, key: "drops"), 4,
+            "Flicking through ten photos dropped frames: open \(opened), after \(state)"
         )
         XCTAssertLessThanOrEqual(
-            value(state, key: "live"), 7,
+            value(state, key: "live"), 5,
             "Flicking through ten photos grew the page window: \(state)"
+        )
+        XCTAssertEqual(
+            value(state, key: "sharp"), 1,
+            "The photo did not sharpen after the roll stopped: \(state)"
         )
     }
 
@@ -453,10 +461,25 @@ final class ViewerInteractionTests: XCTestCase {
         attach(app, "landscape-paged")
         XCTAssertEqual(page(app), before + 1, "Paging broke after rotation")
 
+        // A rotated page is re-laid-out; zooming must still work, and a zoom
+        // must not survive into the next photo.
+        window.pinch(withScale: 3, velocity: 2)
+        sleep(1)
+        let zoomed = probe(app)
+        attach(app, text: "landscape zoomed: \(zoomed)")
+        XCTAssertGreaterThan(value(zoomed, key: "scale"), 2, "Pinching broke after rotation: \(zoomed)")
+        window.doubleTap()
+        sleep(1)
+        XCTAssertEqual(value(probe(app), key: "scale"), 1, accuracy: 0.05, "Double tap did not reset after rotation")
+
         XCUIDevice.shared.orientation = .portrait
         sleep(2)
         attach(app, "portrait-again")
         XCTAssertEqual(page(app), before + 1, "Returning to portrait changed the photo")
+        XCTAssertEqual(value(probe(app), key: "over"), 0, accuracy: 1, "Returning to portrait left the photo out of bounds")
+        window.swipeLeft()
+        sleep(1)
+        XCTAssertEqual(page(app), before + 2, "Paging broke after rotating back")
     }
 
     /// VoiceOver users need to hear which photo of the roll they are on.
@@ -484,24 +507,236 @@ final class ViewerInteractionTests: XCTestCase {
         XCTAssertTrue(app.buttons["Info"].exists, "A drag on the chrome toggled it")
     }
 
-    /// A back-swipe that starts near the leading edge must page the roll. (The
-    /// system reserves the first few points of the screen for its own back
-    /// gesture; this starts just inside that strip.)
-    func testBackSwipeNearScreenEdgePages() throws {
+    /// A back-swipe that starts at the very leading edge must page the roll.
+    /// The zoom navigation transition installs its own interactive-pop pan on
+    /// the SwiftUI hosting view, which the navigation controller's public pop
+    /// gestures do not cover; it only accepted touches in the first few points
+    /// of the screen, so those swipes closed the viewer instead of paging.
+    func testBackSwipeFromTheLeadingEdgePages() throws {
         let app = launch()
         let window = openFirstPhoto(app)
-        window.swipeLeft()
+        var report: [String] = []
+
+        for dx in [0.05, 0.01, 0.003, 0.0] as [CGFloat] {
+            window.swipeLeft()
+            usleep(500_000)
+            window.swipeLeft()
+            usleep(900_000)
+            let before = page(app)
+            drag(
+                window,
+                from: CGVector(dx: dx, dy: 0.5),
+                to: CGVector(dx: 0.62, dy: 0.5),
+                velocity: .default
+            )
+            sleep(1)
+            let open = app.otherElements["viewer.page"].exists
+            report.append("dx=\(dx): open=\(open) \(before) → \(open ? String(page(app)) : "-")")
+            XCTAssertTrue(open, "A swipe starting \(dx) across closed the viewer instead of paging")
+            XCTAssertEqual(page(app), before - 1, "A swipe starting \(dx) across did not page back")
+        }
+        attach(app, text: "leading-edge swipes: " + report.joined(separator: " · "))
+        attach(app, "leading-edge-swipe-paged")
+
+        // Swipe-down must still dismiss: the leading-edge fix must not take the
+        // zoom transition's dismissal with it.
+        drag(
+            window,
+            from: CGVector(dx: 0.5, dy: 0.3),
+            to: CGVector(dx: 0.5, dy: 0.9),
+            velocity: .fast
+        )
+        sleep(1)
+        XCTAssertFalse(app.otherElements["viewer.page"].exists, "Swipe-down no longer dismisses the viewer")
+        XCTAssertTrue(
+            app.buttons.matching(identifier: "library.tile").firstMatch.waitForExistence(timeout: 5),
+            "The viewer closed without returning to the library"
+        )
+    }
+
+    /// Tapping the chrome (close, favourite, info) must act on the photo and
+    /// leave the chrome alone: only a tap on the photo toggles it.
+    func testChromeButtonsDoNotToggleTheChrome() throws {
+        let app = launch()
+        let window = openFirstPhoto(app)
+        XCTAssertTrue(app.buttons["Info"].waitForExistence(timeout: 5), "Chrome should start visible")
+        let start = page(app)
+
+        // The heart flips its own state, not the chrome's.
+        let wasFavorite = app.buttons["Remove favorite"].exists
+        app.buttons[wasFavorite ? "Remove favorite" : "Favorite"].tap()
+        XCTAssertTrue(
+            app.buttons[wasFavorite ? "Favorite" : "Remove favorite"].waitForExistence(timeout: 3),
+            "Tapping the heart did not change the favourite state"
+        )
+        XCTAssertTrue(app.buttons["Info"].exists, "Tapping the heart toggled the chrome")
+        XCTAssertEqual(page(app), start, "Tapping the heart paged the roll")
+        // Put it back so the photo's state does not leak into later runs.
+        app.buttons[wasFavorite ? "Favorite" : "Remove favorite"].tap()
+
+        // Info opens the sheet; dismissing it leaves the chrome showing.
+        app.buttons["Info"].tap()
+        XCTAssertTrue(app.navigationBars["Details"].waitForExistence(timeout: 5), "Info did not open")
+        attach(app, "info-sheet-over-viewer")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.navigationBars["Details"].waitForNonExistence(timeout: 5), "The sheet did not close")
+        XCTAssertTrue(app.buttons["Info"].exists, "Dismissing the sheet hid the chrome")
+        XCTAssertEqual(page(app), start, "Opening and closing the sheet changed the photo")
+
+        // After paging, the chrome still points at the photo on screen.
         window.swipeLeft()
         sleep(1)
+        XCTAssertEqual(page(app), start + 1, "Paging failed")
+        XCTAssertTrue(app.buttons["Info"].exists, "Paging hid the chrome")
+        let favouriteAfterPaging = app.buttons["Remove favorite"].exists
+        app.buttons[favouriteAfterPaging ? "Remove favorite" : "Favorite"].tap()
+        XCTAssertTrue(
+            app.buttons[favouriteAfterPaging ? "Favorite" : "Remove favorite"].waitForExistence(timeout: 3),
+            "The heart did not act on the photo after paging"
+        )
+        XCTAssertEqual(page(app), start + 1, "Tapping the heart after paging paged the roll")
+        app.buttons[favouriteAfterPaging ? "Favorite" : "Remove favorite"].tap()
+        attach(app, "chrome-after-paging")
+
+        app.buttons["Tag"].tap()
+        XCTAssertTrue(app.navigationBars["Details"].waitForExistence(timeout: 5), "Tag did not open")
+        app.buttons["Done"].tap()
+        app.buttons["People"].tap()
+        XCTAssertTrue(app.navigationBars["Details"].waitForExistence(timeout: 5), "People did not open")
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["Info"].waitForExistence(timeout: 3))
+
+        // And Close still closes from a paged viewer.
+        app.buttons["Close"].tap()
+        XCTAssertTrue(
+            app.buttons.matching(identifier: "library.tile").firstMatch.waitForExistence(timeout: 8),
+            "Close did not return to the library after paging"
+        )
+    }
+
+    /// Chrome that the user hid must stay hidden while they page, and a tap on
+    /// the photo must bring it back.
+    func testChromeVisibilitySurvivesPaging() throws {
+        let app = launch()
+        let window = openFirstPhoto(app)
+        XCTAssertTrue(app.buttons["Info"].waitForExistence(timeout: 5))
+
+        window.tap()
+        XCTAssertTrue(app.buttons["Info"].waitForNonExistence(timeout: 3), "A tap did not hide the chrome")
+        let before = page(app)
+        window.swipeLeft()
+        sleep(1)
+        XCTAssertEqual(page(app), before + 1, "Paging failed with the chrome hidden")
+        XCTAssertFalse(app.buttons["Info"].exists, "Paging brought the chrome back")
+        window.tap()
+        XCTAssertTrue(app.buttons["Info"].waitForExistence(timeout: 3), "A tap on the photo did not restore the chrome")
+        attach(app, "chrome-restored-after-paging")
+    }
+
+    /// Paging out of a zoomed photo must hand the gesture over at the edge in
+    /// both directions, land exactly one photo, and leave the new photo at fit.
+    func testPagingWhileZoomedHandsOffBothWays() throws {
+        let app = launch()
+        let window = openFirstPhoto(app)
+        let start = page(app)
+
+        window.pinch(withScale: 3, velocity: 2)
+        sleep(1)
+        XCTAssertGreaterThan(value(probe(app), key: "scale"), 2, "Pinch did not zoom")
+        // Reach the right edge, then keep going: the pager takes over.
+        drag(window, from: CGVector(dx: 0.9, dy: 0.5), to: CGVector(dx: 0.05, dy: 0.5), velocity: .slow)
+        sleep(1)
+        drag(window, from: CGVector(dx: 0.9, dy: 0.5), to: CGVector(dx: 0.1, dy: 0.5), velocity: .slow)
+        sleep(1)
+        XCTAssertEqual(page(app), start + 1, "Dragging past the right edge did not page forward")
+        XCTAssertEqual(value(probe(app), key: "scale"), 1, accuracy: 0.02, "The photo arrived zoomed")
+
+        // Back the other way: zoom, reach the left edge, continue.
+        window.pinch(withScale: 3, velocity: 2)
+        sleep(1)
+        drag(window, from: CGVector(dx: 0.1, dy: 0.5), to: CGVector(dx: 0.95, dy: 0.5), velocity: .slow)
+        sleep(1)
+        XCTAssertEqual(page(app), start + 1, "Panning to the left edge paged by itself")
+        drag(window, from: CGVector(dx: 0.12, dy: 0.5), to: CGVector(dx: 0.95, dy: 0.5), velocity: .slow)
+        sleep(1)
+        let landed = probe(app)
+        attach(app, "zoomed-handoff-both-ways")
+        attach(app, text: "after left hand-off: page \(page(app)) · \(landed)")
+        XCTAssertEqual(page(app), start, "Dragging past the left edge did not page back")
+        XCTAssertEqual(value(landed, key: "scale"), 1, accuracy: 0.02, "The photo arrived zoomed")
+        XCTAssertEqual(value(landed, key: "over"), 0, accuracy: 1, "The photo arrived out of bounds")
+    }
+
+    /// A photo that has been on screen sharpens; a photo that is zoomed
+    /// straight after arriving must sharpen too, instead of waiting out the
+    /// deferral that protects flicking through the roll.
+    func testZoomingSharpensThePhoto() throws {
+        let app = launch()
+        let window = openFirstPhoto(app)
+        sleep(2)
+        XCTAssertEqual(value(probe(app), key: "sharp"), 1, "The photo never sharpened after a pause")
+
+        window.swipeLeft()
+        window.pinch(withScale: 3, velocity: 2)
+        sleep(2)
+        let state = probe(app)
+        attach(app, "zoomed-after-arriving")
+        attach(app, text: "zoomed immediately after paging: \(state)")
+        XCTAssertGreaterThan(value(state, key: "scale"), 2, "The pinch did not zoom")
+        XCTAssertEqual(value(state, key: "sharp"), 1, "A zoomed photo stayed soft: \(state)")
+    }
+
+    /// Opening and closing repeatedly must reuse the warm caches: the same
+    /// photo, the same small page window, and no growth per cycle.
+    func testReopeningKeepsPhotoAndMemory() throws {
+        let app = launch()
+        var memories: [Double] = []
+        var setups: [Double] = []
+        for round in 0..<4 {
+            let tiles = app.buttons.matching(identifier: "library.tile")
+            XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 20))
+            tiles.element(boundBy: 0).tap()
+            XCTAssertTrue(app.otherElements["viewer.page"].waitForExistence(timeout: 10), "Round \(round) never opened")
+            sleep(1)
+            let state = probe(app)
+            XCTAssertEqual(page(app), 1, "Round \(round) opened on a different photo")
+            XCTAssertLessThanOrEqual(value(state, key: "live"), 5, "Round \(round) kept too many pages: \(state)")
+            memories.append(value(state, key: "mem"))
+            setups.append(value(state, key: "setup"))
+            app.buttons["Close"].tap()
+            XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 8), "Round \(round) did not close")
+            sleep(1)
+        }
+        attach(app, text: "open/close cycles: mem \(memories.map { String(format: "%.1f", $0) }) · setup \(setups)")
+        XCTAssertLessThanOrEqual(
+            memories[3] - memories[1], 25,
+            "Reopening the viewer grew memory every time: \(memories)"
+        )
+        XCTAssertTrue(setups.allSatisfy { $0 <= 25 }, "Reopening built pages slowly: \(setups)")
+    }
+
+    /// Backgrounding and returning must leave the viewer usable, including the
+    /// leading edge, which is owned by a recogniser that UIKit re-installs.
+    func testBackgroundingKeepsTheViewerUsable() throws {
+        let app = launch()
+        let window = openFirstPhoto(app)
         let before = page(app)
 
-        let beforeState = probe(app)
-        drag(window, from: CGVector(dx: 0.05, dy: 0.5), to: CGVector(dx: 0.65, dy: 0.5), velocity: .default)
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        app.activate()
+        XCTAssertTrue(app.otherElements["viewer.page"].waitForExistence(timeout: 15), "The viewer closed in the background")
+        attach(app, "after-foregrounding")
+        XCTAssertEqual(page(app), before, "Foregrounding changed the photo")
+
+        window.swipeLeft()
         sleep(1)
-        attach(app, "edge-swipe-back")
-        attach(app, text: "before edge swipe: \(beforeState) · after: page \(page(app))")
-        XCTAssertTrue(app.otherElements["viewer.page"].exists, "An edge swipe dismissed the viewer")
-        XCTAssertEqual(page(app), before - 1, "An edge swipe did not page back")
+        XCTAssertEqual(page(app), before + 1, "Paging broke after foregrounding")
+
+        drag(window, from: CGVector(dx: 0.002, dy: 0.5), to: CGVector(dx: 0.62, dy: 0.5), velocity: .default)
+        sleep(1)
+        XCTAssertTrue(app.otherElements["viewer.page"].exists, "A leading-edge swipe closed the viewer after foregrounding")
+        XCTAssertEqual(page(app), before, "A leading-edge swipe did not page after foregrounding")
     }
 
     /// Photos also dismisses on a downward pull while a photo is magnified (the
