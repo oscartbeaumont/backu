@@ -8,15 +8,17 @@
 
 Backu is a native iPhone, iPad and Mac app that backs your photo library up to any S3-compatible storage, then lets you browse, search and organise it from a library that feels like the Photos app. There is no Backu account and no server in the middle: the app talks straight to the bucket you own.
 
+Landing: [backu-landing-production.up.railway.app](https://backu-landing-production.up.railway.app)
+
 <p align="center">
-  <img src="docs/library.png" width="220" alt="Library grid">
-  <img src="docs/viewer.png" width="220" alt="Full-screen photo viewer">
-  <img src="docs/people.png" width="220" alt="People and pets">
+  <img src="Media/library.png" width="220" alt="Library grid">
+  <img src="Media/viewer.png" width="220" alt="Full-screen photo viewer">
+  <img src="Media/people.png" width="220" alt="People and pets">
 </p>
 <p align="center">
-  <img src="docs/search.png" width="220" alt="Instant on-device search">
-  <img src="docs/servers.png" width="220" alt="Multiple storage servers">
-  <img src="docs/onboarding.png" width="220" alt="Onboarding">
+  <img src="Media/search.png" width="220" alt="Instant on-device search">
+  <img src="Media/servers.png" width="220" alt="Multiple storage servers">
+  <img src="Media/onboarding.png" width="220" alt="Onboarding">
 </p>
 
 ## What it does
@@ -154,6 +156,23 @@ xcodebuild -project Backu.xcodeproj -scheme Backu \
 ```
 
 `Tools/MockS3` is a stdlib-only S3 server with a real SigV4 verifier, so the integration tests fail if the signature implementation drifts. `scripts/dev.sh` downloads the public-domain sample photos, sets up a simulator with them, and starts a live mock bucket for hands-on work. The photos are not committed; see `Tests/Fixtures/ATTRIBUTION.md`.
+
+## Landing
+
+The consumer site and the App Store privacy/support pages live in `landing/`.
+They use **Solid 2** with **`@solidjs/vite-plugin` start mode** (`ssr: true`,
+`start: { nodeServer: true }`) and deploy as a Node server:
+
+```sh
+cd landing
+npm install
+npm run dev       # http://localhost:3000
+npm run build
+npm start         # production server
+```
+
+Production: <https://backu-landing-production.up.railway.app>. See
+`landing/README.md` for the deploy and custom-domain notes.
 
 ## Testing notes
 

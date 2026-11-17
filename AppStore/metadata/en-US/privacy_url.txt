@@ -1,1 +1,1 @@
-https://oscartbeaumont.github.io/backu/privacy.html
+https://backu-landing-production.up.railway.app/privacy

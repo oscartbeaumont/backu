@@ -22,11 +22,11 @@ Screenshots live in `screenshots/iphone-6.9/` and `screenshots/ipad-13/`, captur
 from the real app on those device classes. Regenerate them with the
 `testAppStoreScreenshots` UI test (see `Tools/Screenshots/README.md`).
 
-The privacy policy and support pages are in `docs/*.html` and are published from
-the repository's `/docs` folder by GitHub Pages:
+The privacy policy and support pages are served by the Solid landing in
+`landing/` at:
 
-- https://oscartbeaumont.github.io/backu/privacy.html
-- https://oscartbeaumont.github.io/backu/support.html
+- https://backu-landing-production.up.railway.app/privacy
+- https://backu-landing-production.up.railway.app/support
 
 The bundle identifier is `dev.oscartbeaumont.backu`; the app record and TestFlight
-upload steps are in `docs/ReleaseChecklist.md`.
+upload steps are in `AppStore/ReleaseChecklist.md`.

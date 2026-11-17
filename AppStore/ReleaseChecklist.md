@@ -89,8 +89,8 @@ IPA and uploads it with `altool`. `SKIP_UPLOAD=1` stops after the IPA.
 In App Store Connect → App Store tab, paste from `AppStore/metadata/en-US/`:
 
 - [ ] Name, subtitle, keywords, promotional text, description, release notes.
-- [ ] Support URL, marketing URL, privacy policy URL (the three GitHub Pages
-      pages in `Docs/`).
+- [ ] Support URL, marketing URL, privacy policy URL (copy from
+      `AppStore/metadata/en-US/`; the landing is deployed from `landing/`).
 - [ ] Screenshots: `AppStore/screenshots/iphone-6.9/` and
       `AppStore/screenshots/ipad-13/` (upload in filename order).
 - [ ] Category: Photo & Video (primary), Productivity (secondary).
