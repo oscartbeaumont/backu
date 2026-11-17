@@ -244,7 +244,8 @@ enum RemoteAssetLoader {
         // real extension for both the cache file and ImageIO's type sniffing
         // (ImageIO reads the bytes, so the name only has to be truthful).
         let extensionName = thumbnail
-            ? (PreviewFormat.from(key: key)?.fileExtension ?? key.pathExtensionLower)
+            ? (PreviewFormat.from(key: key)?.fileExtension
+                ?? (key.pathExtensionLower.isEmpty ? "jpg" : key.pathExtensionLower))
             : BackupEngine.fileExtension(for: photo)
         let cacheURL = AppPaths.imageCache.appendingPathComponent("\(safeName).\(extensionName)")
 
