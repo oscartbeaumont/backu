@@ -231,9 +231,12 @@ enum RemoteAssetLoader {
     /// Thumbnails stay in memory (they are tiny); originals stream to disk so a
     /// 4K video or a 48 MP photo never has to fit in RAM.
     static func load(photo: PhotoItem, server: ServerConfig, client: S3Client, thumbnail: Bool) async -> PlatformImage? {
+        let copy = photo.copy(on: server.id)
         let key = thumbnail
-            ? (photo.remoteThumbnailKey ?? photo.copy(on: server.id)?.thumbnailKey)
-            : photo.copy(on: server.id)?.objectKey
+            // Older indexes may have no thumbnail; fall back to the original
+            // rather than leaving a permanent placeholder.
+            ? (photo.remoteThumbnailKey ?? copy?.thumbnailKey ?? copy?.objectKey)
+            : copy?.objectKey
         guard let key else { return nil }
 
         let safeName = SigV4Signer.sha256Hex(Data((server.id.uuidString + key).utf8))

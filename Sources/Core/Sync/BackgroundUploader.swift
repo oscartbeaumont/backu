@@ -13,6 +13,14 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
 
     /// Set by the app delegate so iOS can resume events after relaunch.
     static var backgroundCompletionHandler: (() -> Void)?
+    private static var pendingBackgroundEvents = false
+
+    /// True after iOS has delivered background URLSession events but before the
+    /// app has reconciled them. The app calls `completeBackgroundEvents()` once
+    /// the catalog is persisted.
+    var hasPendingBackgroundEvents: Bool {
+        Self.pendingBackgroundEvents
+    }
 
     private let lock = NSLock()
     private var continuations: [String: CheckedContinuation<UploadResult, Error>] = [:]
@@ -198,11 +206,28 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DispatchQueue.main.async {
+            Self.pendingBackgroundEvents = true
+            NotificationCenter.default.post(name: .backupUploaderDidFinishEvents, object: nil)
+        }
+    }
+
+    /// Hands the completion handler back to iOS after reconciliation. Calling it
+    /// any earlier lets iOS suspend the app before the catalog is updated.
+    func completeBackgroundEvents() {
+        DispatchQueue.main.async {
+            Self.pendingBackgroundEvents = false
             let handler = Self.backgroundCompletionHandler
             Self.backgroundCompletionHandler = nil
             handler?()
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted on the main queue after the background URLSession has delivered
+    /// every event, so the app can reconcile uploads that finished while it was
+    /// suspended and hand the completion handler back to iOS.
+    static let backupUploaderDidFinishEvents = Notification.Name("dev.oscartbeaumont.backu.uploader-finished-events")
 }
 
 enum DeviceInfo {

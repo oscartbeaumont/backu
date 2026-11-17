@@ -53,6 +53,10 @@ enum AppPaths {
         supportDirectory.appendingPathComponent("places.json")
     }
 
+    static var uploadJournalFile: URL {
+        supportDirectory.appendingPathComponent("upload-journal.json")
+    }
+
     /// Clears half-written exports and keeps biometric data out of iCloud
     /// device backups, matching the privacy copy in the app.
     static func prepareForLaunch() {

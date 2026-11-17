@@ -5,6 +5,7 @@ struct SettingsScreen: View {
     @Environment(\.openURL) private var openURL
     @State private var showAddServer = false
     @State private var confirmReset = false
+    @State private var showBackupActivity = false
 
     var body: some View {
         ScrollView {
@@ -46,6 +47,8 @@ struct SettingsScreen: View {
     private func backupCard() -> some View {
         @Bindable var settings = app.settings
         SettingsCard(title: "Backup", symbol: "arrow.up.circle") {
+            backupStatusRow
+            Divider().opacity(0.4)
             SettingsToggle(
                 title: "Automatic backup",
                 subtitle: "Upload new photos whenever Backu runs.",
@@ -112,6 +115,87 @@ struct SettingsScreen: View {
             Divider().opacity(0.4)
             backupActions
         }
+    }
+
+    private var backupStatusRow: some View {
+        Button {
+            showBackupActivity = true
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Image(systemName: statusSymbol)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(statusTint)
+                        .frame(width: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(statusTitle)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                        Text(statusSubtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                if app.backup.isRunning, app.backup.totalCount > 0 {
+                    ProgressBar(value: app.backup.progress)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("settings.backupActivity")
+        .sheet(isPresented: $showBackupActivity) {
+            BackupActivityView()
+                .environment(app)
+        }
+    }
+
+    private var statusTitle: String {
+        if app.backup.isRunning {
+            return app.backup.totalCount == 0 ? "Checking uploads" : "Backing up"
+        }
+        if app.backup.failedCount > 0 { return "Uploads need attention" }
+        if app.photosPendingBackup > 0 { return "Photos waiting to upload" }
+        if app.backup.lastRunAt != nil { return "Uploads up to date" }
+        return "Upload activity"
+    }
+
+    private var statusSubtitle: String {
+        if app.backup.isRunning {
+            return "\(app.backup.completedCount) of \(app.backup.totalCount) · \(app.backupServer?.name ?? "storage")"
+        }
+        if app.backup.failedCount > 0 {
+            return "\(app.backup.failedCount) failed · tap for details"
+        }
+        if app.photosPendingBackup > 0 {
+            let pending = app.photosPendingBackup
+            return app.settings.autoBackupEnabled
+                ? "\(pending) waiting · iOS will continue in the background"
+                : "\(pending) waiting · automatic backup is off"
+        }
+        if let last = app.backup.lastRunAt {
+            return "Last run \(last.relativeShort) · tap for details"
+        }
+        return "Queue and background status"
+    }
+
+    private var statusSymbol: String {
+        if app.backup.isRunning { return "arrow.up.circle.fill" }
+        if app.backup.failedCount > 0 { return "exclamationmark.triangle.fill" }
+        if app.backup.lastRunAt != nil { return "checkmark.icloud.fill" }
+        return "arrow.up.circle"
+    }
+
+    private var statusTint: Color {
+        if app.backup.isRunning { return Theme.accent }
+        if app.backup.failedCount > 0 { return .orange }
+        if app.backup.lastRunAt != nil { return Theme.mint }
+        return Theme.accent
     }
 
     @ViewBuilder

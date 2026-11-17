@@ -57,6 +57,21 @@ The sidecar is deliberately human-readable:
 }
 ```
 
+## Upload status and background uploads
+
+Open **Settings → Backup → Upload activity** (or tap the progress pill in the
+Library) to see the live queue: current file, completed and failed counts,
+transferred bytes, speed, per-item progress, background schedule and the last
+run. The same view explains what iOS will do next.
+
+Automatic backup uses a `BGProcessingTask`: iOS wakes the app, it uploads a
+bounded chunk, then asks for another window if photos are still waiting. Large
+files use a background `URLSession`, so in-flight parts continue while the app is
+suspended. Every object is journalled before its first byte is sent; if the app
+is killed after an upload reaches the bucket, the next launch re-reads the
+sidecar and records the copy instead of uploading it again. Force-quitting the
+app intentionally stops iOS background work until you reopen it.
+
 ## Transfer performance
 
 The S3 layer is built for real networks, not just localhost:

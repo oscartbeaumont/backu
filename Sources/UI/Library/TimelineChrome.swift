@@ -268,6 +268,7 @@ struct LibraryTopBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var label: TimelineLabelState
     var pendingCount: Int
+    var onShowActivity: () -> Void
     var onAddServer: () -> Void
     @Namespace private var backupNamespace
 
@@ -327,8 +328,12 @@ struct LibraryTopBar: View {
     @ViewBuilder
     private var backupControl: some View {
         if app.backup.isRunning {
-            backupProgressPill
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
+            Button(action: onShowActivity) {
+                backupProgressPill
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Backup activity")
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else if app.servers.servers.isEmpty {
             Button(action: onAddServer) {
                 Label("Add storage", systemImage: "externaldrive.badge.plus")
@@ -340,12 +345,15 @@ struct LibraryTopBar: View {
             .buttonBorderShape(.capsule)
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else if pendingCount == 0 {
-            Image(systemName: "checkmark.icloud.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Theme.mint)
-                .frame(width: 42, height: 42)
-                .accessibilityLabel("All \(app.catalog.photos.count) photos backed up")
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
+            Button(action: onShowActivity) {
+                Image(systemName: "checkmark.icloud.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.mint)
+                    .frame(width: 42, height: 42)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("All \(app.catalog.photos.count) photos backed up. Open backup activity")
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else {
             Button {
                 app.startBackup()

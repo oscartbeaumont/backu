@@ -87,8 +87,12 @@ final class AppModel {
     var lastAutoBackupCheck: Date?
     var lastCloudSyncAt: Date?
     var isBootstrapped = false
+    /// When iOS is asked to wake the app for automatic uploads. Shown in the
+    /// backup activity sheet so the background promise is visible.
+    var backgroundBackupRequestedAt: Date?
 
     private var libraryObserverTask: Task<Void, Never>?
+    private var backgroundObserverTask: Task<Void, Never>?
     private var lastKnownChange = Date.distantPast
     private var remoteSyncDismissTask: Task<Void, Never>?
 
@@ -143,9 +147,15 @@ final class AppModel {
             await scanLibrary()
         }
         await syncRemoteLibraries()
+        await resumePendingUploads()
         startPhotoLibraryObserver()
+        startBackgroundUploadObserver()
         if settings.autoBackupEnabled {
             await runAutoBackup(reason: "launch")
+        }
+        scheduleBackgroundBackup()
+        if BackgroundUploader.shared.hasPendingBackgroundEvents {
+            await processBackgroundUploadEvents()
         }
         if settings.faceRecognitionEnabled && !catalog.photos.isEmpty {
             await analyzer.analyzeMissing(
@@ -161,9 +171,26 @@ final class AppModel {
     func handleActivation() async {
         guard isBootstrapped else { return }
         await scanLibrary()
+        await resumePendingUploads()
         await syncRemoteLibraries()
         await runAutoBackup(reason: "foreground")
+        scheduleBackgroundBackup()
         analyzeInBackgroundIfNeeded()
+        if BackgroundUploader.shared.hasPendingBackgroundEvents {
+            await processBackgroundUploadEvents()
+        }
+    }
+
+    /// Runs after iOS delivers background URLSession events. Reconcile first,
+    /// persist, then release the system completion handler.
+    func processBackgroundUploadEvents() async {
+        // Only reconcile here. Starting new uploads from a URLSession event has
+        // no guaranteed execution time; the scheduled BGProcessingTask does that
+        // with a real window and an expiry handler.
+        await resumePendingUploads()
+        scheduleBackgroundBackup()
+        catalog.saveNow()
+        BackgroundUploader.shared.completeBackgroundEvents()
     }
 
     private func analyzeInBackgroundIfNeeded() {
@@ -176,6 +203,16 @@ final class AppModel {
                 places: places,
                 limit: 25
             )
+        }
+    }
+
+    private func startBackgroundUploadObserver() {
+        guard backgroundObserverTask == nil else { return }
+        backgroundObserverTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .backupUploaderDidFinishEvents) {
+                guard let self else { return }
+                await self.processBackgroundUploadEvents()
+            }
         }
     }
 
@@ -271,22 +308,73 @@ final class AppModel {
             trigger: .manual,
             force: force
         )
+        scheduleBackgroundBackup()
+    }
+
+    /// Finalizes uploads that already reached the bucket while the app was
+    /// closed, without starting a new transfer.
+    @discardableResult
+    func resumePendingUploads() async -> Int {
+        guard let server = backupServer, let client = servers.client(for: server) else { return 0 }
+        return await backup.resumePendingUploads(
+            server: server,
+            client: client,
+            catalog: catalog
+        )
+    }
+
+    var photosPendingBackup: Int {
+        guard let server = backupServer else { return 0 }
+        return catalog.photos.filter { photo in
+            photo.isLocal && (photo.copy(on: server.id) == nil || photo.sidecarDirtyAt != nil)
+        }.count
+    }
+
+    /// Ask iOS for a background processing window. Short delay while photos are
+    /// waiting; a slow periodic check when everything is up to date.
+    func scheduleBackgroundBackup() {
+        guard settings.autoBackupEnabled, backupServer != nil else {
+            BackupScheduler.cancel()
+            #if os(iOS)
+            backgroundBackupRequestedAt = nil
+            #endif
+            return
+        }
+        let pending = photosPendingBackup
+        let delay: TimeInterval = pending > 0 ? 60 : 6 * 60 * 60
+        BackupScheduler.schedule(after: delay)
+        #if os(iOS)
+        backgroundBackupRequestedAt = Date().addingTimeInterval(delay)
+        #endif
     }
 
     func runAutoBackup(reason: String) async {
-        guard settings.autoBackupEnabled else { return }
-        if let last = lastAutoBackupCheck, Date().timeIntervalSince(last) < 60 * 3 { return }
+        guard settings.autoBackupEnabled else {
+            scheduleBackgroundBackup()
+            return
+        }
+        let isBackground = reason == "background" || reason == "background-events"
+        if !isBackground {
+            if let last = lastAutoBackupCheck, Date().timeIntervalSince(last) < 60 * 3 { return }
+        }
         lastAutoBackupCheck = Date()
         guard let server = backupServer, let client = servers.client(for: server) else { return }
-        guard !backup.isRunning else { return }
+        guard !backup.isRunning else {
+            scheduleBackgroundBackup()
+            return
+        }
         backup.start(
             server: server,
             client: client,
             catalog: catalog,
             settings: settings,
             faceStore: faceStore,
-            trigger: .automatic
+            trigger: isBackground ? .background : .automatic,
+            // A background window is short and can be terminated; do a bounded
+            // chunk and let the next window continue.
+            limit: isBackground ? 25 : nil
         )
+        scheduleBackgroundBackup()
     }
 
     var lastBackupError: String? { backup.lastError }

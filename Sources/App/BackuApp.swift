@@ -15,10 +15,16 @@ struct BackuApp: App {
             Task { @MainActor in AppModel.shared?.backup.cancel() }
         }) { done in
             Task { @MainActor in
-                await AppModel.shared?.scanLibrary()
-                await AppModel.shared?.runAutoBackup(reason: "background")
-                await AppModel.shared?.backup.awaitCompletion()
-                done()
+                guard let app = AppModel.shared else {
+                    done(false)
+                    return
+                }
+                await app.scanLibrary()
+                await app.resumePendingUploads()
+                await app.runAutoBackup(reason: "background")
+                await app.backup.awaitCompletion()
+                app.scheduleBackgroundBackup()
+                done(true)
             }
         }
         #endif
@@ -35,7 +41,7 @@ struct BackuApp: App {
                     } else if phase == .background {
                         app.catalog.saveNow()
                         app.servers.persistNow()
-                        BackupScheduler.schedule()
+                        app.scheduleBackgroundBackup()
                     }
                 }
         }

@@ -138,6 +138,14 @@ final class BackuUITests: XCTestCase {
         app.navigationBars["Servers"].buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.staticTexts["Backup"].waitForExistence(timeout: 8), "Did not return to Settings")
 
+        let activityRow = app.buttons.matching(identifier: "settings.backupActivity").firstMatch
+        XCTAssertTrue(activityRow.waitForExistence(timeout: 8), "Backup activity row missing")
+        activityRow.tap()
+        XCTAssertTrue(app.otherElements["backup.activity"].waitForExistence(timeout: 8), "Upload activity sheet missing")
+        XCTAssertTrue(app.staticTexts["Up to date"].waitForExistence(timeout: 8), "Upload activity did not show the finished state")
+        attach(app, "08-backup-activity")
+        app.buttons["Done"].firstMatch.tap()
+
         let sponsor = app.buttons["Sponsor Backu on GitHub"]
         XCTAssertTrue(sponsor.waitForExistence(timeout: 8), "In-app sponsor action missing")
         for _ in 0..<5 {

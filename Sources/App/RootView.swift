@@ -28,6 +28,8 @@ struct RootView: View {
         .environment(\.viewerZoomNamespace, viewerNamespace)
         .background(Theme.pageBackground)
         .animation(.backuSnappy, value: app.showOnboarding)
+        .onChange(of: app.settings.autoBackupEnabled) { _, _ in app.scheduleBackgroundBackup() }
+        .onChange(of: app.settings.backupServerID) { _, _ in app.scheduleBackgroundBackup() }
         #if os(macOS)
         .sheet(item: $app.viewer) { presentation in
             ViewerScreen(presentation: presentation)

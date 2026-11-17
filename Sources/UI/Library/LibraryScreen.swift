@@ -115,6 +115,7 @@ struct LibraryScreen: View {
 
     @State private var filter: LibraryFilter = .all
     @State private var showAddServer = false
+    @State private var showBackupActivity = false
     @State private var items: [LibraryItem] = []
     @State private var photos: [PhotoItem] = []
     @State private var summary = LibrarySummary()
@@ -216,10 +217,10 @@ struct LibraryScreen: View {
             .overlay(alignment: .top) {
                 LibraryTopBar(
                     label: label,
-                    pendingCount: summary.pending
-                ) {
-                    showAddServer = true
-                }
+                    pendingCount: summary.pending,
+                    onShowActivity: { showBackupActivity = true },
+                    onAddServer: { showAddServer = true }
+                )
             }
             .overlay(alignment: .trailing) {
                 YearRail(
@@ -270,6 +271,10 @@ struct LibraryScreen: View {
         }
         .sheet(isPresented: $showAddServer) {
             AddServerFlow()
+                .environment(app)
+        }
+        .sheet(isPresented: $showBackupActivity) {
+            BackupActivityView()
                 .environment(app)
         }
         .simultaneousGesture(pinchToResize)

@@ -130,6 +130,7 @@ final class BackupEngine {
     enum Trigger: String, Sendable {
         case manual
         case automatic
+        case background
         case resume
     }
 
@@ -147,9 +148,13 @@ final class BackupEngine {
     var serverID: UUID?
     var trigger: Trigger = .manual
     var lastError: String?
+    var reclaimedCount = 0
+    var lastRunDuration: TimeInterval?
 
     private var runTask: Task<Void, Never>?
+    private var runStartedAt: Date?
     private let library = PhotoLibraryService.shared
+    private let journal = UploadJournal.shared
 
     var progress: Double {
         guard totalCount > 0 else { return 0 }
@@ -157,6 +162,34 @@ final class BackupEngine {
     }
 
     var isIdle: Bool { !isRunning }
+
+    var currentItem: Item? {
+        items.first { item in
+            switch item.phase {
+            case .preparing, .analyzing, .uploading, .metadata: return true
+            case .queued, .done, .failed: return false
+            }
+        }
+    }
+
+    var queuedCount: Int {
+        items.filter { $0.phase == .queued }.count
+    }
+
+    var failedItems: [Item] {
+        items.filter { $0.phase == .failed }
+    }
+
+    var averageBytesPerSecond: Double {
+        let elapsed: TimeInterval
+        if let runStartedAt {
+            elapsed = Date().timeIntervalSince(runStartedAt)
+        } else {
+            elapsed = lastRunDuration ?? 0
+        }
+        guard elapsed > 0.2 else { return 0 }
+        return Double(transferredBytes) / elapsed
+    }
 
     // MARK: Running
 
@@ -182,23 +215,11 @@ final class BackupEngine {
         items = []
         lastSummary = nil
         lastError = nil
-        status = trigger == .automatic ? "Backing up automatically…" : "Starting backup…"
-
-        let candidates = candidatesForBackup(catalog: catalog, server: server, force: force, limit: limit)
-        totalCount = candidates.count
-        totalBytes = candidates.reduce(into: 0) { total, photo in
-            total += Int64(photo.metadata.fileSize ?? 0)
-        }
-        items = candidates.map { photo in
-            Item(
-                id: photo.id,
-                filename: photo.filename,
-                phase: .queued,
-                progress: 0,
-                bytes: photo.copy(on: server.id)?.byteCount ?? 0,
-                isMetadataOnly: photo.copy(on: server.id) != nil && photo.sidecarDirtyAt != nil
-            )
-        }
+        reclaimedCount = 0
+        lastRunDuration = nil
+        runStartedAt = nil
+        totalCount = 0
+        status = "Checking uploads…"
         lastRunAt = Date()
 
         runTask = Task { [weak self] in
@@ -207,14 +228,50 @@ final class BackupEngine {
             // Complete/Abort. Clean those up before starting new work; the
             // bucket lifecycle rule is the backstop for ids we never saw.
             await client.abortStaleMultipartUploads()
+
+            // Finish uploads that reached the bucket while the app was closed
+            // instead of sending the bytes again.
+            self.reclaimedCount = await self.reconcileUploads(
+                server: server,
+                client: client,
+                catalog: catalog,
+                showStatus: true
+            )
+
+            let candidates = self.candidatesForBackup(catalog: catalog, server: server, force: force, limit: limit)
+            self.totalCount = candidates.count
+            self.totalBytes = candidates.reduce(into: 0) { total, photo in
+                total += Int64(photo.metadata.fileSize ?? 0)
+            }
+            self.items = candidates.map { photo in
+                Item(
+                    id: photo.id,
+                    filename: photo.filename,
+                    phase: .queued,
+                    progress: 0,
+                    bytes: photo.copy(on: server.id)?.byteCount ?? 0,
+                    isMetadataOnly: photo.copy(on: server.id) != nil && photo.sidecarDirtyAt != nil
+                )
+            }
+
             if candidates.isEmpty {
                 // Still publish the index so names and tags edited while every
                 // photo was already uploaded reach the bucket.
                 await self.uploadIndex(client: client, catalog: catalog, server: server, device: DeviceInfo.name)
                 self.isRunning = false
-                self.status = "Everything is backed up."
+                self.status = self.reclaimedCount > 0
+                    ? "Recovered \(self.reclaimedCount) upload\(self.reclaimedCount == 1 ? "" : "s")."
+                    : "Everything is backed up."
                 self.lastSummary = "Everything is up to date."
+                self.lastRunDuration = 0
                 return
+            }
+
+            self.runStartedAt = Date()
+            switch trigger {
+            case .automatic: self.status = "Backing up automatically…"
+            case .background: self.status = "Backing up in the background…"
+            case .manual, .resume: self.status = "Uploading…"
             }
             await self.runLoop(
                 server: server,
@@ -232,6 +289,54 @@ final class BackupEngine {
     /// completion as soon as the loop is scheduled.
     func awaitCompletion() async {
         await runTask?.value
+    }
+
+    /// Called on launch/activation and after background URLSession events. Only
+    /// finalizes uploads that already landed; it never starts a new transfer.
+    @discardableResult
+    func resumePendingUploads(
+        server: ServerConfig,
+        client: S3Client,
+        catalog: CatalogStore
+    ) async -> Int {
+        guard !isRunning else { return 0 }
+        let recovered = await reconcileUploads(
+            server: server,
+            client: client,
+            catalog: catalog,
+            showStatus: false
+        )
+        if recovered > 0 {
+            reclaimedCount = recovered
+            lastSummary = "Recovered \(recovered) completed upload\(recovered == 1 ? "" : "s")."
+            lastRunAt = Date()
+            status = lastSummary ?? "Idle"
+            catalog.saveNow()
+        }
+        return recovered
+    }
+
+    private func reconcileUploads(
+        server: ServerConfig,
+        client: S3Client,
+        catalog: CatalogStore,
+        showStatus: Bool
+    ) async -> Int {
+        journal.purgeStale()
+        let pending = journal.pending(serverID: server.id).count
+        guard pending > 0 else { return 0 }
+        if showStatus { status = "Finishing uploads…" }
+        let recovered = await UploadReconciler.reconcile(
+            server: server,
+            client: client,
+            catalog: catalog,
+            journal: journal
+        ) { [weak self] completed, total in
+            guard let self else { return }
+            if showStatus { self.status = "Finishing uploads… \(completed)/\(total)" }
+        }
+        if recovered > 0 { catalog.saveNow() }
+        return recovered
     }
 
     func cancel() {
@@ -326,13 +431,21 @@ final class BackupEngine {
 
         isRunning = false
         isCancelling = false
+        if let runStartedAt { lastRunDuration = Date().timeIntervalSince(runStartedAt) }
+        runStartedAt = nil
         catalog.saveNow()
+        let remaining = catalog.photos.filter { photo in
+            photo.isLocal && (photo.copy(on: server.id) == nil || photo.sidecarDirtyAt != nil)
+        }.count
         if Task.isCancelled {
             status = "Backup stopped."
             lastSummary = "Stopped after \(completedCount) of \(totalCount)."
         } else if failedCount > 0 {
             status = "Backup finished with \(failedCount) problem\(failedCount == 1 ? "" : "s")."
             lastSummary = "\(completedCount) uploaded, \(failedCount) failed."
+        } else if remaining > 0 {
+            status = "Backed up \(completedCount); \(remaining) waiting for the next background window."
+            lastSummary = "\(remaining) photo\(remaining == 1 ? "" : "s") waiting."
         } else {
             status = "Backed up \(completedCount) item\(completedCount == 1 ? "" : "s")."
             lastSummary = "Everything is up to date."
@@ -385,6 +498,18 @@ final class BackupEngine {
             objectKey = key
             let size = (try? FileManager.default.attributesOfItem(atPath: exported.url.path)[.size] as? Int64) ?? 0
             byteCount = size
+            let journalSidecarKey = photo.copy(on: server.id)?.sidecarKey ?? key + ".json"
+            journal.begin(
+                UploadRecord(
+                    photoID: photo.id,
+                    serverID: server.id,
+                    objectKey: key,
+                    sidecarKey: journalSidecarKey,
+                    byteCount: size,
+                    sha256: photo.sha256,
+                    startedAt: Date()
+                )
+            )
 
             if size >= Self.multipartThreshold {
                 sha = try await uploadMultipart(
@@ -425,6 +550,17 @@ final class BackupEngine {
                 $0.analyzedAt = photo.analyzedAt ?? Date()
                 $0.remoteThumbnailKey = photo.remoteThumbnailKey
             }
+            journal.begin(
+                UploadRecord(
+                    photoID: photo.id,
+                    serverID: server.id,
+                    objectKey: key,
+                    sidecarKey: journalSidecarKey,
+                    byteCount: size,
+                    sha256: sha,
+                    startedAt: Date()
+                )
+            )
         }
 
         updateItem(photo.id) { $0.phase = .metadata }
@@ -459,6 +595,7 @@ final class BackupEngine {
             for: current.id
         )
         catalog.mutatePhoto(current.id) { $0.sidecarDirtyAt = nil }
+        journal.finish(photoID: current.id, serverID: server.id)
         transferredBytes += byteCount
     }
 
