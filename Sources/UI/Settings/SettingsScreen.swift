@@ -310,30 +310,118 @@ struct SettingsScreen: View {
 
     // MARK: Library
 
+    /// Standard photo-library permission row: the state is always visible, and
+    /// the action matches what iOS will actually let the app do. A limited
+    /// grant can be widened in place; a refusal can only be undone in Settings.
+    private var photoAccessRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: accessSymbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(accessTint)
+                .frame(width: 26)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Photo access")
+                    .font(.subheadline)
+                Text(app.authorization.photoAccessTitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            accessAction
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.photoAccess")
+    }
+
+    private var accessSymbol: String {
+        switch app.authorization {
+        case .authorized: return "lock.shield.fill"
+        case .limited: return "photo.badge.checkmark"
+        case .notDetermined: return "lock.shield"
+        default: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var accessTint: Color {
+        switch app.authorization {
+        case .authorized: return Theme.mint
+        case .limited: return Theme.accent
+        case .notDetermined: return Theme.accent
+        default: return .orange
+        }
+    }
+
+    @ViewBuilder
+    private var accessAction: some View {
+        switch app.authorization {
+        case .notDetermined:
+            Button("Allow") {
+                Task { await app.requestPhotoAccess() }
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .accessibilityIdentifier("settings.photoAccess.allow")
+
+        case .limited:
+            #if os(iOS)
+            Menu {
+                Button {
+                    Task { await app.requestMorePhotos() }
+                } label: {
+                    Label("Select More Photos…", systemImage: "photo.badge.plus")
+                }
+                Button {
+                    PhotoAccess.openSystemSettings()
+                } label: {
+                    Label("Open Settings", systemImage: "gearshape")
+                }
+            } label: {
+                Text("Manage")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .accessibilityIdentifier("settings.photoAccess.manage")
+            #else
+            Button("Settings") { PhotoAccess.openSystemSettings() }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.glass)
+                .controlSize(.small)
+            #endif
+
+        case .denied, .restricted:
+            Button("Open Settings") {
+                PhotoAccess.openSystemSettings()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .accessibilityIdentifier("settings.photoAccess.settings")
+
+        case .authorized:
+            Button("Settings") {
+                PhotoAccess.openSystemSettings()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.glass)
+            .controlSize(.small)
+            .accessibilityIdentifier("settings.photoAccess.settings")
+
+        @unknown default:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder
     private func libraryCard() -> some View {
         @Bindable var settings = app.settings
         SettingsCard(title: "Library", symbol: "photo.on.rectangle") {
-            HStack(spacing: 12) {
-                Image(systemName: "lock.shield")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Photo access")
-                        .font(.subheadline)
-                    Text(app.photoAccessDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(app.hasPhotoAccess ? "Refresh" : "Allow") {
-                    Task { await app.requestPhotoAccess() }
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.glass)
-                .controlSize(.small)
-            }
+            photoAccessRow
 
             HStack(spacing: 12) {
                 Image(systemName: "arrow.clockwise")

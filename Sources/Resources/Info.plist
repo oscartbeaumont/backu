@@ -25,11 +25,13 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Oscar Beaumont</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Backu needs access to your photo library to back up your photos and build an on-device search index.</string>
+	<string>Backu needs access to your photo library to show your photos, back up the originals and build an on-device search index.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Backu connects to S3-compatible photo storage servers on your local network.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Backu can save photos you download from your storage back to your photo library.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

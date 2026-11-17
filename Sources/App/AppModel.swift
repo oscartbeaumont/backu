@@ -217,6 +217,11 @@ final class AppModel {
     }
 
     private func startPhotoLibraryObserver() {
+        // Registering a change observer while the grant is still undetermined
+        // makes PhotoKit request read/write access. The observer is therefore
+        // only installed once access exists; the upgrade paths call
+        // `scanLibrary`, which installs it.
+        guard hasPhotoAccess else { return }
         guard libraryObserverTask == nil else { return }
         libraryObserverTask = Task { [weak self] in
             guard let self else { return }
@@ -236,17 +241,23 @@ final class AppModel {
     }
 
     var photoAccessDescription: String {
-        switch authorization {
-        case .authorized: return "Full access"
-        case .limited: return "Limited access"
-        case .denied, .restricted: return "No access"
-        case .notDetermined: return "Not asked yet"
-        @unknown default: return "Unknown"
-        }
+        authorization.photoAccessTitle
     }
 
+    /// Re-reads the system state. Called on launch and whenever the app comes
+    /// back to the foreground so a change made in Settings is picked up without
+    /// restarting.
     @discardableResult
+    func refreshPhotoAuthorization() -> PHAuthorizationStatus {
+        authorization = PhotoLibraryService.authorizationStatus
+        return authorization
+    }
+
     func requestPhotoAccess() async -> PHAuthorizationStatus {
+        guard authorization == .notDetermined else {
+            // Once the person has answered, iOS will not show the prompt again.
+            return authorization
+        }
         authorization = await PhotoLibraryService.requestAuthorization()
         if hasPhotoAccess {
             await scanLibrary(force: true)
@@ -254,16 +265,32 @@ final class AppModel {
         return authorization
     }
 
+    /// Opens the system sheet for widening a limited selection, then picks up
+    /// whatever they chose. This is the in-app equivalent of the "Select More
+    /// Photos…" row in Settings; upgrading a limited grant to full access needs
+    /// the system Settings app, which the UI offers separately.
+    func requestMorePhotos() async {
+        #if os(iOS)
+        _ = await PhotoLibraryService.shared.presentLimitedLibraryPicker()
+        refreshPhotoAuthorization()
+        if hasPhotoAccess {
+            await scanLibrary(force: true)
+        }
+        #endif
+    }
+
     // MARK: - Library
 
     func scanLibrary(force: Bool = false) async {
         guard !isScanning else { return }
-        if !force, let last = catalog.lastScanAt, Date().timeIntervalSince(last) < 20 { return }
-        authorization = PhotoLibraryService.authorizationStatus
-        if authorization == .notDetermined {
-            authorization = await PhotoLibraryService.requestAuthorization()
-        }
+        // Read the system state before the debounce so returning from Settings
+        // updates the UI even when a scan ran a moment ago.
+        refreshPhotoAuthorization()
+        // Asking for permission is never implicit. Onboarding and the library's
+        // call to action do it deliberately, with an explanation.
         guard hasPhotoAccess else { return }
+        startPhotoLibraryObserver()
+        if !force, let last = catalog.lastScanAt, Date().timeIntervalSince(last) < 20 { return }
 
         isScanning = true
         let scanned = await PhotoLibraryService.shared.scan(

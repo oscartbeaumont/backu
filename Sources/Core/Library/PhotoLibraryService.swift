@@ -1,7 +1,12 @@
 import Foundation
 import ImageIO
 import Photos
+import PhotosUI
 import UniformTypeIdentifiers
+
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ExportedAsset: Sendable {
     var url: URL
@@ -23,8 +28,32 @@ final class PhotoLibraryService: @unchecked Sendable {
 
     /// Shared with the prefetcher: a `PHCachingImageManager` only serves
     /// preheated images to requests made through the same instance.
-    let imageManager = PHCachingImageManager()
-    private let resourceManager = PHAssetResourceManager.default()
+    ///
+    /// Created on first use rather than with the service. Constructing one
+    /// installs PhotoKit's own library observer, which asks for read/write
+    /// access when the grant is still undetermined — exactly the launch-time
+    /// prompt the onboarding page exists to avoid.
+    private let imageManagerLock = NSLock()
+    private var cachedImageManager: PHCachingImageManager?
+    private var cachedResourceManager: PHAssetResourceManager?
+
+    var imageManager: PHCachingImageManager {
+        imageManagerLock.lock()
+        defer { imageManagerLock.unlock() }
+        if let cachedImageManager { return cachedImageManager }
+        let manager = PHCachingImageManager()
+        cachedImageManager = manager
+        return manager
+    }
+
+    var resourceManager: PHAssetResourceManager {
+        imageManagerLock.lock()
+        defer { imageManagerLock.unlock() }
+        if let cachedResourceManager { return cachedResourceManager }
+        let manager = PHAssetResourceManager.default()
+        cachedResourceManager = manager
+        return manager
+    }
 
     static var authorizationStatus: PHAuthorizationStatus {
         PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -37,6 +66,43 @@ final class PhotoLibraryService: @unchecked Sendable {
             }
         }
     }
+
+    #if os(iOS)
+    /// The standard "Select More Photos" sheet for a limited library. Only the
+    /// person can widen a limited selection; apps cannot ask for "more" through
+    /// the normal prompt, so this is the supported in-app route. The completion
+    /// fires with the newly selected identifiers once they finish.
+    @MainActor
+    func presentLimitedLibraryPicker() async -> [String] {
+        guard PhotoLibraryService.authorizationStatus == .limited,
+              let controller = Self.topViewController() else { return [] }
+        return await withCheckedContinuation { continuation in
+            PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: controller) { identifiers in
+                continuation.resume(returning: identifiers)
+            }
+        }
+    }
+
+    @MainActor
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+            ?? scenes.flatMap(\.windows).first
+        var controller = window?.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        if let navigation = controller as? UINavigationController {
+            return navigation.visibleViewController
+        }
+        if let tab = controller as? UITabBarController {
+            return tab.selectedViewController
+        }
+        return controller
+    }
+    #endif
 
     func asset(for localIdentifier: String) -> PHAsset? {
         PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject

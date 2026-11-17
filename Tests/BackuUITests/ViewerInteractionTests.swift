@@ -48,6 +48,13 @@ final class ViewerInteractionTests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let springboardAllow = springboard.buttons["Allow Full Access"]
         if springboardAllow.waitForExistence(timeout: 2) { springboardAllow.tap() }
+        // Permission is never requested implicitly, so a clean simulator lands
+        // on the library's access call to action instead of a system alert.
+        let ask = app.buttons["Allow Photo Access"]
+        if ask.waitForExistence(timeout: 2) {
+            ask.tap()
+            if springboardAllow.waitForExistence(timeout: 4) { springboardAllow.tap() }
+        }
 
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 20), "Library never appeared")
         return app

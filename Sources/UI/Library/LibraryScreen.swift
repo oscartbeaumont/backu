@@ -180,6 +180,22 @@ struct LibraryScreen: View {
                     header(topInset: topInset)
                     filterBar(proxy: proxy)
 
+                    if app.authorization == .limited {
+                        PhotoAccessBanner(
+                            isLimited: true,
+                            onAction: { Task { await app.requestMorePhotos() } }
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                    } else if !app.hasPhotoAccess && !app.catalog.photos.isEmpty {
+                        PhotoAccessBanner(
+                            isLimited: false,
+                            onAction: { PhotoAccess.openSystemSettings() }
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                    }
+
                     if app.backup.isRunning || app.backup.lastError != nil {
                         BackupBanner()
                             .padding(.horizontal, 16)
@@ -302,11 +318,14 @@ struct LibraryScreen: View {
 
     private var subtitle: String {
         if app.isScanning { return "Scanning your photo library…" }
-        if !app.hasPhotoAccess { return "Photo access is off" }
+        if !app.hasPhotoAccess {
+            return app.authorization == .notDetermined ? "Photo access not asked yet" : "Photo access is off"
+        }
         guard !app.catalog.photos.isEmpty else { return "No photos yet" }
         guard summary.count > 0 else { return "No \(filter.rawValue.lowercased()) photos" }
         let noun = filter == .all ? "item" : filter.rawValue.lowercased()
-        return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up"
+        let access = app.authorization == .limited ? " · Limited access" : ""
+        return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up\(access)"
     }
 
     // MARK: Filters
@@ -361,14 +380,30 @@ struct LibraryScreen: View {
 
     private var emptyState: some View {
         Group {
-            if !app.hasPhotoAccess {
+            if app.authorization == .limited && app.catalog.photos.isEmpty {
+                EmptyStateView(
+                    symbol: "photo.badge.plus",
+                    title: "No photos shared",
+                    message: "You've given Backu access to an empty selection. Choose the photos you want to see and back up — everything else stays private.",
+                    actionTitle: "Select More Photos"
+                ) {
+                    Task { await app.requestMorePhotos() }
+                }
+            } else if !app.hasPhotoAccess {
+                let denied = app.authorization == .denied || app.authorization == .restricted
                 EmptyStateView(
                     symbol: "photo.on.rectangle.angled",
-                    title: "Your library is private",
-                    message: "Backu needs access to show your photos, build the search index and back them up. Nothing leaves the device until you add a server.",
-                    actionTitle: "Allow Photo Access"
+                    title: denied ? "Photo access is off" : "Your library is private",
+                    message: denied
+                        ? "iOS will not ask again. Allow photo access for Backu in Settings to show your library and back up new photos."
+                        : "Backu needs access to show your photos, build the search index and back them up. Nothing leaves the device until you add a server.",
+                    actionTitle: denied ? "Open Settings" : "Allow Photo Access"
                 ) {
-                    Task { await app.requestPhotoAccess() }
+                    if denied {
+                        PhotoAccess.openSystemSettings()
+                    } else {
+                        Task { await app.requestPhotoAccess() }
+                    }
                 }
             } else if app.catalog.photos.isEmpty {
                 EmptyStateView(
@@ -602,6 +637,41 @@ struct LibraryScreen: View {
         withAnimation(.smooth(duration: 0.32)) {
             proxy.scrollTo(anchor.photoID, anchor: .top)
         }
+    }
+}
+
+struct PhotoAccessBanner: View {
+    var isLimited: Bool
+    var onAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: isLimited ? "photo.badge.checkmark" : "lock.shield")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(isLimited ? Theme.mint : .orange)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isLimited ? "You're seeing selected photos" : "Photo access is off")
+                    .font(.footnote.weight(.semibold))
+                Text(isLimited
+                     ? "Backu can only see the photos you shared. Add more at any time."
+                     : "New photos can't be shown or backed up until you allow access in Settings.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(isLimited ? "Select More" : "Settings", action: onAction)
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.glass)
+                .controlSize(.small)
+        }
+        .padding(12)
+        .contentCard(radius: 16)
+        .accessibilityElement(children: .contain)
     }
 }
 

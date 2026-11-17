@@ -160,6 +160,24 @@ final class BackuUITests: XCTestCase {
         app.launchEnvironment["BACKU_RESET"] = "1"
         app.launch()
 
+        // A fresh install starts with the photo-access explanation, then the
+        // system prompt, then the welcome page. Later runs go straight to the
+        // welcome because iOS remembers the answer.
+        let askForPhotos = app.buttons["Allow Photo Access"]
+        if askForPhotos.waitForExistence(timeout: 6) {
+            attach(app, "09-photo-access-onboarding")
+            XCTAssertTrue(
+                app.staticTexts["A private view of\nyour photo library."].exists,
+                "The permission page did not explain why access is needed"
+            )
+            askForPhotos.tap()
+            let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            let allow = springboard.buttons["Allow Full Access"]
+            if allow.waitForExistence(timeout: 5) {
+                allow.tap()
+            }
+        }
+
         XCTAssertTrue(app.staticTexts["Your photos.\nYour bucket."].waitForExistence(timeout: 15), "Welcome screen missing")
         attach(app, "10-welcome")
 
@@ -261,6 +279,11 @@ final class BackuUITests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let springboardAllow = springboard.buttons["Allow Full Access"]
         if springboardAllow.waitForExistence(timeout: 3) { springboardAllow.tap() }
+        let ask = app.buttons["Allow Photo Access"]
+        if ask.waitForExistence(timeout: 2) {
+            ask.tap()
+            if springboardAllow.waitForExistence(timeout: 4) { springboardAllow.tap() }
+        }
 
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 15))
         let tiles = app.buttons.matching(identifier: "library.tile")
