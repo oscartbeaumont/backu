@@ -8,7 +8,7 @@
 
 Backu is a native iPhone, iPad and Mac app that backs your photo library up to any S3-compatible storage, then lets you browse, search and organise it from a library that feels like the Photos app. There is no Backu account and no server in the middle: the app talks straight to the bucket you own.
 
-Landing: [backu-landing-production.up.railway.app](https://backu-landing-production.up.railway.app)
+Landing: [backu-landing.oscartbeaumont.workers.dev](https://backu-landing.oscartbeaumont.workers.dev)
 
 <p align="center">
   <img src="Media/library.png" width="220" alt="Library grid">
@@ -161,17 +161,18 @@ xcodebuild -project Backu.xcodeproj -scheme Backu \
 
 The consumer site and the App Store privacy/support pages live in `landing/`.
 They use **Solid 2** with **`@solidjs/vite-plugin` start mode** (`ssr: true`,
-`start: { nodeServer: true }`) and deploy as a Node server:
+`start: { nodeServer: true }`) and deploy as a Cloudflare Worker with static
+assets:
 
 ```sh
 cd landing
 npm install
 npm run dev       # http://localhost:3000
 npm run build
-npm start         # production server
+npx wrangler deploy  # production Worker
 ```
 
-Production: <https://backu-landing-production.up.railway.app>. See
+Production: <https://backu-landing.oscartbeaumont.workers.dev>. See
 `landing/README.md` for the deploy and custom-domain notes.
 
 ## Testing notes

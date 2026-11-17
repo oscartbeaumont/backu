@@ -1,1 +1,1 @@
-https://backu-landing-production.up.railway.app
+https://backu-landing.oscartbeaumont.workers.dev

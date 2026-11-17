@@ -33,19 +33,39 @@ npm run build
 PORT=3000 npm start
 ```
 
+This runs the Node handler emitted by `start.nodeServer`. That is useful for
+local production checks; Cloudflare runs the web-standard handler instead.
+
 ## Deploy
 
-The site is deployed to Railway as the `backu-landing` project from this directory:
+The site is deployed to Cloudflare Workers as `backu-landing`, with the static
+client assets served by Workers Static Assets:
 
 ```sh
-railway link        # select the backu-landing project
-railway up -y
+npx wrangler deploy
 ```
 
-Production URL: <https://backu-landing-production.up.railway.app>
+Configuration lives in `wrangler.jsonc`. Production URL:
+<https://backu-landing.oscartbeaumont.workers.dev>
 
-If the site moves to a custom domain, set `VITE_SITE_URL` at build time, update
-`public/robots.txt` and `public/sitemap.xml`, and update the App Store URLs in
+`main` is `dist/server/server.js`, the web `Request` → `Response` handler. The
+Worker uses the `nodejs_compat` flag because Solid's server runtime imports
+`node:async_hooks`.
+
+### CI
+
+`.github/workflows/deploy-landing.yml` type-checks, builds and deploys on every
+push to `main` that touches `landing/`. Add these repository secrets once:
+
+- `CLOUDFLARE_ACCOUNT_ID` — `f8b7c4b3e3ed4fb3d04a4264e21dd18e`
+- `CLOUDFLARE_API_TOKEN` — a token with **Workers Scripts: Edit**
+
+Until the token is present, the deploy step is skipped and the workflow still
+verifies the build. A local `wrangler login` session can also deploy.
+
+If the site moves to a custom domain, add the route in `wrangler.jsonc`, set
+`VITE_SITE_URL` at build time, update `public/robots.txt` and
+`public/sitemap.xml`, and update the App Store URLs in
 `AppStore/metadata/en-US/{marketing,privacy,support}_url.txt`.
 
 ## Routes
