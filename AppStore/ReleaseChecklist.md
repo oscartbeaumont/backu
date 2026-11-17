@@ -17,7 +17,7 @@
   the manual TestFlight workflow are ready.
 
 **To finish, the account owner needs to do two things:** create the app record,
-and provide an App Store Connect API key (App Manager) so the archive can be
+and provide an App Store Connect API key (Admin) so the archive can be
 signed for distribution and uploaded. The key is also what lets the workflow
 create the distribution certificate and profile automatically. No `.p12` or
 `.mobileprovision` secrets are needed.
@@ -48,10 +48,12 @@ account and cannot be done by an automated agent.
 - [ ] If you already created an app record with a different bundle ID, create
       a **new** app record for `me.otbeaumont.backu`. App Store Connect cannot
       change the bundle ID of an existing record.
-- [ ] Create an **App Store Connect API key** with the **App Manager** role
-      (**Admin** if automatic signing cannot create the distribution
-      certificate): Users and Access → Integrations → App Store Connect API →
-      Team Keys. Download the `.p8` once; note the Key ID and Issuer ID.
+- [ ] Create an **App Store Connect API key** with the **Admin** role:
+      Users and Access → Integrations → App Store Connect API → Team Keys.
+      Download the `.p8` once; note the Key ID and Issuer ID. **App Manager**
+      keys can upload but cannot create cloud-managed distribution
+      certificates, which causes `Cloud signing permission error` during
+      export.
 - [ ] **Local network:** nothing to request on the App ID. The app includes
       `NSLocalNetworkUsageDescription`; iOS shows its standard Local Network
       prompt only when a user enters a LAN endpoint such as MinIO or Synology.

@@ -3,11 +3,12 @@ name: TestFlight
 # Manual only. Requires the App Store Connect app record to exist, plus these
 # repository secrets:
 #   APPLE_TEAM_ID       Apple Developer team ID
-#   ASC_KEY_ID          App Store Connect API key ID (App Manager role)
+#   ASC_KEY_ID          App Store Connect API key ID (Admin role)
 #   ASC_ISSUER_ID       App Store Connect issuer ID
 #   ASC_PRIVATE_KEY     the AuthKey_<id>.p8 contents
 #
-# The API key is used both for automatic signing (xcodebuild) and for the upload
+# The API key needs the Admin role so xcodebuild can create the cloud-managed
+# distribution certificate and profile. It is used for signing and uploading.
 # (altool). No certificate or profile secrets are required.
 
 on:

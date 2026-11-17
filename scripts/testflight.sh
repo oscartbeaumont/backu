@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Archives, signs and uploads a TestFlight build using an App Store Connect API
-# key. The API key needs the App Manager (or Admin) role so xcodebuild can create
-# the distribution certificate and provisioning profile on the fly.
+# key. The API key needs the Admin role so xcodebuild can create the cloud-managed
+# distribution certificate and provisioning profile on the fly. App Manager keys
+# can upload, but cannot create distribution signing assets from CI.
 #
 # Required environment:
 #   APPLE_TEAM_ID        e.g. 68994Z5PT3
