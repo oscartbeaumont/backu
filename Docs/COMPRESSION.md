@@ -165,12 +165,13 @@ library, with none of the risk.
 It also halves the viewer's first-paint payload (153 KB → 82 KB). The bigger
 viewer win is not a codec at all: `ViewerPager.ensureLoading()` downloads the
 **full original** as soon as a page becomes current, even though a fit-to-screen
-view is 1200 px. On a remote 24 MP photo that is 10–25 MB to paint something a
-160 KB preview already covers. Deferring the original until the user zooms would
-remove 95 %+ of viewer bytes for every format, including HEIC and video posters.
-That change is intentionally out of scope here (it changes viewer behaviour and
-its tests), but it is the next thing worth doing if bandwidth or time-to-sharp
-matters more than storage.
+view is 1200 px. On the 24 MP wallpaper in the corpus a view costs a 161 KB
+preview + a 10.1 MB original; a HEIC preview is 109 KB, so deferring the
+original until the user zooms turns that into 109 KB — 94× less data for every
+photo opened and not zoomed. JXL lossless would have made the same view
+8.35 MB, a 19 % saving. That change is intentionally out of scope here (it
+changes viewer behaviour and its tests), but it is the next thing worth doing if
+bandwidth or time-to-sharp matters more than storage.
 
 ## 8. What it means for a real library
 
