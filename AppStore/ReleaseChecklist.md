@@ -175,9 +175,67 @@ be generated from this repository.
 - The first upload must be made after the app record exists; App Store Connect
   rejects a bundle ID that has no app record.
 
-## 7. macOS
+## 7. macOS publishing
 
-The same codebase builds a native Mac app, but TestFlight/App Store for Mac is a
-separate platform in App Store Connect. Add the Mac platform to the app record
-when ready, then archive with `-destination 'generic/platform=macOS'` and the
-macOS export method. The iOS pipeline above intentionally uploads only iOS.
+The same codebase builds a native Mac app. It uses the same App ID and bundle
+identifier (`me.otbeaumont.backu`) but macOS is a separate platform on the app
+record.
+
+### App Store Connect and Apple Developer
+
+- [ ] Open the existing Backu app record → **App Information** → **Add
+      Platform** → **macOS**. Use the same bundle ID; do not create a second
+      App ID.
+- [ ] No extra App ID capability is needed. The Mac target already carries
+      `com.apple.security.app-sandbox`,
+      `com.apple.security.network.client`,
+      `com.apple.security.files.user-selected.read-write` and the Photos
+      entitlement in `Sources/Resources/Backu.entitlements`.
+- [ ] Accept the macOS agreements/tax sections if App Store Connect asks.
+- [ ] Use the same Admin App Store Connect API key; cloud signing can create
+      the Mac App Store distribution certificate and profile.
+
+### Build and upload
+
+Run the same TestFlight workflow with macOS selected:
+
+```sh
+gh workflow run testflight.yml \
+  -f platform=macos \
+  -f marketing_version=1.0 \
+  -f build_number=1
+```
+
+The script archives with `generic/platform=macOS`, exports an App Store `.pkg`
+and uploads it with `altool -t macos`. Locally:
+
+```sh
+PLATFORM=macos BUILD_NUMBER=1 MARKETING_VERSION=1.0 ./scripts/testflight.sh
+```
+
+macOS builds appear under the macOS platform in TestFlight. Internal testers can
+install through TestFlight for Mac; external testing still needs Beta App
+Review.
+
+### App Store listing
+
+- [ ] Add macOS screenshots (1280×800, 1440×900, 2560×1600 or 2880×1800) to
+      the macOS platform. TestFlight does not require listing screenshots.
+- [ ] Reuse the App Store description, keywords, privacy and support URLs.
+- [ ] Mac App Store apps must remain sandboxed; do not switch the target to
+      non-sandboxed distribution.
+- [ ] Test photo access, S3 backup, menu commands and window resizing on a real
+      Mac before submitting.
+
+### Full Disk Access (FDA)
+
+Backu does **not** need Full Disk Access and should not ask for it. It reads
+photos through PhotoKit and only writes to locations the user selects, which is
+the App Store-compatible model.
+
+FDA is a user-granted TCC setting, not an app entitlement you can add to an App
+ID. A sandboxed Mac App Store app cannot use FDA to bypass the App Sandbox, and
+an App Store build that depends on broad disk access is likely to be rejected.
+If a future feature genuinely requires reading arbitrary files, treat that as a
+separate product/distribution decision rather than a normal App Store
+capability.

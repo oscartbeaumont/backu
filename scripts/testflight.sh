@@ -13,6 +13,7 @@
 # Optional:
 #   BUILD_NUMBER         defaults to 1; use a unique increasing value per upload
 #   MARKETING_VERSION    defaults to the project value (1.0)
+#   PLATFORM             ios (default) or macos
 #   SKIP_UPLOAD=1        build and export only, do not upload
 #   KEYCHAIN_PATH        keychain to unlock in CI (optional)
 #
@@ -28,7 +29,26 @@ cd "$(dirname "$0")/.."
 
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 MARKETING_VERSION="${MARKETING_VERSION:-1.0}"
-OUT="build/testflight"
+PLATFORM="${PLATFORM:-ios}"
+
+case "$PLATFORM" in
+  ios)
+    DESTINATION="generic/platform=iOS"
+    ALT_TYPE="ios"
+    ARTIFACT_EXT="ipa"
+    ;;
+  macos)
+    DESTINATION="generic/platform=macOS"
+    ALT_TYPE="macos"
+    ARTIFACT_EXT="pkg"
+    ;;
+  *)
+    echo "PLATFORM must be 'ios' or 'macos', got '$PLATFORM'" >&2
+    exit 2
+    ;;
+esac
+
+OUT="build/testflight-${PLATFORM}"
 ARCHIVE="$OUT/Backu.xcarchive"
 EXPORT="$OUT/export"
 
@@ -40,12 +60,12 @@ done
 echo "→ Generating the project"
 xcodegen generate >/dev/null
 
-echo "→ Archiving Backu $MARKETING_VERSION ($BUILD_NUMBER) for iOS"
+echo "→ Archiving Backu $MARKETING_VERSION ($BUILD_NUMBER) for $PLATFORM"
 rm -rf "$ARCHIVE" "$EXPORT"
 mkdir -p "$OUT"
 xcodebuild -project Backu.xcodeproj -scheme Backu \
   -configuration Release \
-  -destination 'generic/platform=iOS' \
+  -destination "$DESTINATION" \
   -archivePath "$ARCHIVE" \
   DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
   MARKETING_VERSION="$MARKETING_VERSION" \
@@ -77,7 +97,7 @@ cat > "$OUT/ExportOptions.plist" <<PLIST
 </plist>
 PLIST
 
-echo "→ Exporting the App Store IPA"
+echo "→ Exporting the App Store artifact"
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportPath "$EXPORT" \
@@ -87,12 +107,12 @@ xcodebuild -exportArchive \
   -authenticationKeyID "$ASC_KEY_ID" \
   -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
-IPA=$(find "$EXPORT" -maxdepth 1 -name '*.ipa' | head -1)
-[ -n "$IPA" ] || { echo "no IPA produced in $EXPORT"; exit 1; }
-echo "IPA: $IPA"
+ARTIFACT=$(find "$EXPORT" -maxdepth 1 -name "*.$ARTIFACT_EXT" | head -1)
+[ -n "$ARTIFACT" ] || { echo "no .$ARTIFACT_EXT produced in $EXPORT"; exit 1; }
+echo "Artifact: $ARTIFACT"
 
 if [ "${SKIP_UPLOAD:-0}" = "1" ]; then
-  echo "SKIP_UPLOAD=1, leaving the IPA for manual upload."
+  echo "SKIP_UPLOAD=1, leaving the artifact for manual upload."
   exit 0
 fi
 
@@ -103,16 +123,16 @@ chmod 600 "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
 export API_PRIVATE_KEYS_DIR="$KEY_DIR"
 
 echo "→ Validating with App Store Connect"
-xcrun altool --validate-app -f "$IPA" -t ios \
+xcrun altool --validate-app -f "$ARTIFACT" -t "$ALT_TYPE" \
   --api-key "$ASC_KEY_ID" --api-issuer "$ASC_ISSUER_ID"
 
 echo "→ Uploading to TestFlight"
-xcrun altool --upload-app -f "$IPA" -t ios \
+xcrun altool --upload-app -f "$ARTIFACT" -t "$ALT_TYPE" \
   --api-key "$ASC_KEY_ID" --api-issuer "$ASC_ISSUER_ID"
 
 cat <<EOF
 
-Uploaded Backu $MARKETING_VERSION ($BUILD_NUMBER).
+Uploaded Backu $MARKETING_VERSION ($BUILD_NUMBER) for $PLATFORM.
 Open App Store Connect → TestFlight to watch processing, add testers, and
 answer the export-compliance prompt if it appears.
 EOF
