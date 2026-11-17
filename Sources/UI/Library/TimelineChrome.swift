@@ -1,272 +1,107 @@
 import SwiftUI
 
-/// The continuous timeline's labels, kept in their own observable object so
-/// scrolling only invalidates the small chrome views that read them — never the
-/// grid itself.
+/// The small bit of scroll state the floating chrome needs. The grid itself
+/// never observes this, so scrolling only re-renders the header wash.
 @MainActor
 @Observable
 final class TimelineLabelState {
-    /// First day of the month at the top of the grid.
-    var month: Date?
-    /// Year at the top of the grid.
-    var year: Int?
-    /// Year under the finger while the rail is being dragged. It only becomes
-    /// the timeline's year once the drag is committed.
-    var scrubYear: Int?
     /// True once the large title has scrolled out of view.
     var isCollapsed = false
-    var isRailVisible = false
-    var isScrubbing = false
 
-    var highlightedYear: Int? { scrubYear ?? year }
-
-    private var lastTouch = Date.distantPast
-    private var idleTask: Task<Void, Never>?
-
-    /// Assigning the same value would still invalidate every view that reads
-    /// `isCollapsed`, so scrolling only pushes real transitions.
     func setCollapsed(_ value: Bool) {
         if isCollapsed != value { isCollapsed = value }
-    }
-
-    func touch() {
-        lastTouch = Date()
-        if !isRailVisible { isRailVisible = true }
-        guard idleTask == nil else { return }
-        // One light poll while the rail is on screen: it hides shortly after
-        // the last scroll instead of being re-armed on every frame.
-        idleTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(350))
-                guard let self else { return }
-                if self.isScrubbing {
-                    self.lastTouch = Date()
-                    continue
-                }
-                if Date().timeIntervalSince(self.lastTouch) > 2.2 {
-                    self.isRailVisible = false
-                    self.idleTask = nil
-                    return
-                }
-            }
-        }
-    }
-
-    func update(month: Date?, year: Int?) {
-        if self.month != month { self.month = month }
-        if self.year != year { self.year = year }
-    }
-
-    func cancel() {
-        idleTask?.cancel()
-        idleTask = nil
     }
 }
 
 /// A subtle blurred wash behind the status bar once the large title has
-/// scrolled away. It sits below the floating pill and buttons, so the month
-/// label and controls stay legible without moving.
+/// scrolled away. Photos uses a much taller, softer gradient than a material
+/// bar; this keeps the title and controls readable without cutting the grid.
 struct StatusBarScrim: View {
     var topInset: CGFloat
     var isVisible: Bool
 
     var body: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            .frame(height: max(topInset, 8) + 10)
-            .mask {
-                LinearGradient(
-                    colors: [.black, .black.opacity(0.92), .clear],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-            .ignoresSafeArea(edges: .top)
-            .opacity(isVisible ? 1 : 0)
-            .animation(.easeOut(duration: 0.18), value: isVisible)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        LinearGradient(
+            stops: [
+                .init(color: Theme.systemBackground, location: 0),
+                .init(color: Theme.systemBackground.opacity(0.88), location: 0.55),
+                .init(color: .clear, location: 1)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: max(topInset, 8) + 74)
+        .ignoresSafeArea(edges: .top)
+        .opacity(isVisible ? 1 : 0)
+        .animation(.easeOut(duration: 0.18), value: isVisible)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
-/// A small glass pill that names the month at the top of the grid. The label
-/// crossfades and nudges in the direction the timeline is travelling so a
-/// scroll feels continuous rather than teleporting.
-struct MonthPill: View {
-    var date: Date
-
+/// Photos' three-level library switch: Years, Months, All.
+///
+/// The control is a glass capsule with a matched-geometry selection pill. It
+/// floats above the tab bar, so the content keeps the full width on every
+/// level and the switch is reachable without leaving the timeline.
+struct LibraryLevelSwitcher: View {
+    @Binding var level: LibraryLevel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var displayed: Date
-    @State private var forward = true
+    @Namespace private var namespace
 
-    init(date: Date) {
-        self.date = date
-        _displayed = State(initialValue: date)
-    }
-
-    private var label: String {
-        displayed.formatted(.dateTime.month(.wide).year())
-    }
+    private var selected: LibraryLevel { level }
 
     var body: some View {
-        ZStack {
-            Text(label)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.primary)
-                .id(label)
-                .transition(pillTransition)
-        }
-        .padding(.horizontal, 13)
-        .frame(height: 34)
-        .glassCapsule()
-        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .smooth(duration: 0.3), value: displayed)
-        .onChange(of: date) { old, new in
-            forward = new < old
-            displayed = new
-        }
-        .onAppear { displayed = date }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(date.formatted(.dateTime.month(.wide).year()))
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityIdentifier("library.monthPill")
-    }
-
-    private var pillTransition: AnyTransition {
-        guard !reduceMotion else { return .opacity }
-        return .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: forward ? 10 : -10)),
-            removal: .opacity.combined(with: .offset(y: forward ? -10 : 10))
-        )
-    }
-}
-
-/// Trailing Liquid Glass year rail. Tapping or dragging maps the vertical
-/// position to a year and asks the parent to scroll there.
-struct YearRail: View {
-    var anchors: [YearAnchor]
-    var availableHeight: CGFloat
-    @Bindable var label: TimelineLabelState
-    var onSelect: (Int) -> Void
-
-    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var isShown: Bool { label.isRailVisible || label.isScrubbing || voiceOverEnabled }
-
-    private var railHeight: CGFloat {
-        guard !anchors.isEmpty else { return 0 }
-        let cap = max(180, min(availableHeight * 0.62, 460))
-        return min(CGFloat(anchors.count) * 24, cap)
-    }
-
-    private var rowHeight: CGFloat {
-        guard !anchors.isEmpty else { return 0 }
-        return railHeight / CGFloat(anchors.count)
-    }
-
-    private var yearFontSize: CGFloat {
-        min(11, max(7, rowHeight - 8))
-    }
-
-    private func yearLabel(_ anchor: YearAnchor) -> Text {
-        let highlighted = anchor.year == label.highlightedYear
-        let font = Font.system(
-            size: yearFontSize,
-            weight: highlighted ? .bold : .medium,
-            design: .rounded
-        )
-        let color = highlighted ? Theme.accent : Color.secondary
-        return Text(String(anchor.year))
-            .font(font)
-            .monospacedDigit()
-            .foregroundColor(color)
-    }
-
-    var body: some View {
-        if anchors.isEmpty {
-            EmptyView()
-        } else {
-            VStack(spacing: 0) {
-                ForEach(anchors) { anchor in
-                    yearLabel(anchor)
-                        .frame(width: 32, height: rowHeight)
+        HStack(spacing: 2) {
+            ForEach(LibraryLevel.allCases) { option in
+                Button {
+                    guard level != option else { return }
+                    level = option
+                } label: {
+                    Text(option.rawValue)
+                        .font(.subheadline.weight(level == option ? .semibold : .medium))
+                        .foregroundStyle(level == option ? Color.primary : Color.secondary)
+                        .frame(width: 78, height: 42)
+                        .background {
+                            if level == option {
+                                Capsule()
+                                    .fill(Color.primary.opacity(0.14))
+                                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.06)))
+                                    .matchedGeometryEffect(id: "library.level", in: namespace)
+                            }
+                        }
+                        .contentShape(Capsule())
                 }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(level == option ? .isSelected : [])
+                .accessibilityIdentifier("library.level.\(option.rawValue.lowercased())")
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 4)
-            .glassCapsule(interactive: true)
-            .overlay {
-                // A dedicated hit layer keeps the scrub gesture working even
-                // though the glass itself draws above the scroll content.
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                label.isScrubbing = true
-                                highlight(at: value.location.y)
-                            }
-                            .onEnded { value in
-                                commit(at: value.location.y)
-                                label.scrubYear = nil
-                                label.isScrubbing = false
-                            }
-                    )
-                    .allowsHitTesting(isShown)
-            }
-            .sensoryFeedback(.selection, trigger: label.highlightedYear)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Year timeline")
-            .accessibilityValue(label.highlightedYear.map(String.init) ?? "No years")
-            .accessibilityHint("Adjust to jump to another year")
-            .accessibilityAdjustableAction { direction in
-                adjust(direction)
-            }
-            .accessibilityAction(named: "Jump to latest year") {
-                if let newest = anchors.first { onSelect(newest.year) }
-            }
-            .accessibilityIdentifier("library.yearRail")
-            .opacity(isShown ? 1 : 0)
-            .scaleEffect(isShown || reduceMotion ? 1 : 0.94, anchor: .trailing)
-            .allowsHitTesting(isShown)
-            .accessibilityHidden(!isShown)
-            .animation(reduceMotion ? .easeOut(duration: 0.16) : .easeOut(duration: 0.22), value: isShown)
         }
-    }
-
-    private func highlight(at y: CGFloat) {
-        guard rowHeight > 0 else { return }
-        let index = min(max(Int(y / rowHeight), 0), anchors.count - 1)
-        let year = anchors[index].year
-        if label.scrubYear != year { label.scrubYear = year }
-    }
-
-    private func commit(at y: CGFloat) {
-        guard rowHeight > 0 else { return }
-        let index = min(max(Int(y / rowHeight), 0), anchors.count - 1)
-        onSelect(anchors[index].year)
-    }
-
-    private func adjust(_ direction: AccessibilityAdjustmentDirection) {
-        guard let current = label.highlightedYear ?? anchors.first?.year,
-              let index = anchors.firstIndex(where: { $0.year == current }) else { return }
-        let next: Int
-        switch direction {
-        case .increment: next = max(0, index - 1)
-        case .decrement: next = min(anchors.count - 1, index + 1)
-        @unknown default: return
-        }
-        guard next != index else { return }
-        onSelect(anchors[next].year)
+        .padding(3)
+        .frame(width: 240, height: 48)
+        .glassCapsule(interactive: true)
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .animation(
+            reduceMotion ? .easeInOut(duration: 0.16) : .snappy(duration: 0.28, extraBounce: 0.02),
+            value: selected
+        )
+        .sensoryFeedback(.selection, trigger: selected)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Library zoom level")
+        .accessibilityValue(level.rawValue)
+        .accessibilityIdentifier("library.levelSwitcher")
     }
 }
 
-/// Floating chrome over the timeline: the month pill (once the large title is
-/// gone) and the glass grid-size / backup controls.
+/// Floating chrome over the timeline: filter, grid density and backup state.
+/// The month pill and year scrubber are intentionally gone — Photos has no
+/// scrubber, and its date readout lives in the header subtitle and the Months
+/// section headers instead.
 struct LibraryTopBar: View {
     @Environment(AppModel.self) private var app
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Bindable var label: TimelineLabelState
+    @Binding var filter: LibraryFilter
+    var showsGridSize: Bool
     var pendingCount: Int
     var onShowActivity: () -> Void
     var onAddServer: () -> Void
@@ -278,30 +113,44 @@ struct LibraryTopBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if label.isCollapsed, let month = label.month {
-                MonthPill(date: month)
-                    .transition(reduceMotion
-                        ? .opacity
-                        : .opacity.combined(with: .scale(scale: 0.92, anchor: .leading)))
-            }
-
             Spacer(minLength: 8)
 
-            HStack(spacing: 10) {
+            filterMenu
+            if showsGridSize {
                 gridSizeMenu
-                GlassEffectContainer(spacing: 10) {
-                    backupControl
-                        .glassEffectID("backup", in: backupNamespace)
-                }
-                .animation(backupMotion, value: app.backup.isRunning)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
             }
-            .sensoryFeedback(trigger: app.backup.isRunning) { _, running in
-                running ? .impact(weight: .medium) : .success
+            GlassEffectContainer(spacing: 10) {
+                backupControl
+                    .glassEffectID("backup", in: backupNamespace)
             }
+            .animation(backupMotion, value: app.backup.isRunning)
+        }
+        .sensoryFeedback(trigger: app.backup.isRunning) { _, running in
+            running ? .impact(weight: .medium) : .success
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .animation(.backuGentle, value: label.isCollapsed)
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("Filter", selection: $filter) {
+                ForEach(LibraryFilter.allCases) { option in
+                    Label(option.rawValue, systemImage: option.symbol)
+                        .tag(option)
+                }
+            }
+        } label: {
+            Image(systemName: filter == .all ? "line.3.horizontal.decrease" : filter.symbol)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(filter == .all ? Color.primary : Theme.accent)
+                .frame(width: 42, height: 42)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .accessibilityLabel(filter == .all ? "Filter photos" : "Filter: \(filter.rawValue)")
+        .accessibilityIdentifier("library.filter")
     }
 
     private var gridSizeMenu: some View {
@@ -310,6 +159,7 @@ struct LibraryTopBar: View {
                 get: { app.settings.gridColumns },
                 set: { app.settings.gridColumns = $0 }
             )) {
+                Label("Full width", systemImage: "rectangle").tag(1)
                 Label("Large", systemImage: "square.grid.2x2").tag(2)
                 Label("Medium", systemImage: "square.grid.3x3").tag(3)
                 Label("Small", systemImage: "square.grid.4x4").tag(4)

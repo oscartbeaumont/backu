@@ -236,45 +236,116 @@ struct PhotoInfoSheet: View {
 
     private func detailsCard(_ photo: PhotoItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            cardTitle("Details", symbol: "camera")
-            infoRow("Captured", photo.takenAt.map { "\($0.dayLabel) · \($0.timeLabel)" } ?? "Unknown")
-            if let camera = photo.metadata.cameraDescription {
-                infoRow("Camera", camera)
+            HStack(alignment: .firstTextBaseline) {
+                Text(photo.metadata.cameraDescription ?? "Image information")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                if let format = formatLabel(photo) {
+                    Text(format)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(.quaternary.opacity(0.7)))
+                }
             }
+
             if let lens = photo.metadata.lensModel {
-                infoRow("Lens", lens)
+                Text(lens)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if let exposure = photo.metadata.exposureDescription {
-                infoRow("Exposure", exposure)
+
+            HStack(spacing: 6) {
+                if photo.pixelWidth > 0, photo.pixelHeight > 0 {
+                    let megapixels = Double(photo.pixelWidth * photo.pixelHeight) / 1_000_000
+                    Text(String(format: "%.1f MP", megapixels))
+                    Text("·")
+                    Text("\(photo.pixelWidth) × \(photo.pixelHeight)")
+                }
+                if let size = photo.metadata.fileSize, size > 0 {
+                    Text("·")
+                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                }
             }
-            if photo.pixelWidth > 0 {
-                infoRow("Size", "\(photo.pixelWidth) × \(photo.pixelHeight)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+
+            if hasExposureStats(photo) {
+                Divider().opacity(0.5)
+                HStack(spacing: 0) {
+                    exposureStat("ISO \(photo.metadata.iso ?? 0)", shows: photo.metadata.iso != nil)
+                    if photo.metadata.focalLength != nil {
+                        statDivider
+                        exposureStat("\(Int(photo.metadata.focalLength?.rounded() ?? 0)) mm", shows: true)
+                    }
+                    if let fNumber = photo.metadata.fNumber {
+                        statDivider
+                        exposureStat("ƒ/\(formatNumber(fNumber))", shows: true)
+                    }
+                    if let exposure = photo.metadata.exposureTime {
+                        statDivider
+                        exposureStat(formatShutter(exposure), shows: true)
+                    }
+                }
             }
-            if let size = photo.metadata.fileSize, size > 0 {
-                infoRow("File", ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-            }
-            if let place = photo.metadata.placeName {
-                infoRow("Place", place)
-            }
+
             if let sha = photo.sha256 {
-                infoRow("SHA-256", String(sha.prefix(20)) + "…")
+                Divider().opacity(0.5)
+                Text("SHA-256 \(sha.prefix(20))…")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .contentCard()
     }
 
-    private func infoRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 76, alignment: .leading)
-            Text(value)
-                .font(.caption)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private func formatLabel(_ photo: PhotoItem) -> String? {
+        if let type = photo.metadata.uti, let dot = type.lastIndex(of: ".") {
+            return String(type[type.index(after: dot)...]).uppercased()
         }
+        if let ext = photo.metadata.fileExtension, !ext.isEmpty {
+            return ext.uppercased()
+        }
+        return nil
+    }
+
+    private func hasExposureStats(_ photo: PhotoItem) -> Bool {
+        photo.metadata.iso != nil
+            || photo.metadata.focalLength != nil
+            || photo.metadata.fNumber != nil
+            || photo.metadata.exposureTime != nil
+    }
+
+    @ViewBuilder
+    private func exposureStat(_ text: String, shows: Bool) -> some View {
+        if shows {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var statDivider: some View {
+        Divider()
+            .frame(height: 18)
+    }
+
+    private func formatNumber(_ value: Double) -> String {
+        if value == value.rounded() { return String(Int(value)) }
+        return String(format: "%.1f", value)
+    }
+
+    private func formatShutter(_ value: Double) -> String {
+        if value >= 1 { return String(format: "%.0fs", value) }
+        return "1/\(Int((1 / value).rounded()))s"
     }
 
     // MARK: Place
@@ -295,6 +366,11 @@ struct PhotoInfoSheet: View {
                 .frame(height: 150)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .allowsHitTesting(false)
+                if let place = photo.metadata.placeName {
+                    Text(place)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)

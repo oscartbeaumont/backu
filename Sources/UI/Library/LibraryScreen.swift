@@ -18,19 +18,35 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     }
 }
 
-/// One entry of the year rail. The first photo of a year doubles as the
-/// scroll anchor for that year.
-struct YearAnchor: Identifiable, Equatable {
-    var year: Int
-    var photoID: String
-    var id: Int { year }
+/// Photos' three library zoom levels. Months is the date timeline: each month
+/// is a section with a header and a large card, so scrolling moves through time
+/// without needing a separate scrubber.
+enum LibraryLevel: String, CaseIterable, Identifiable {
+    case years = "Years"
+    case months = "Months"
+    case all = "All"
+
+    var id: String { rawValue }
 }
 
-/// Cheap lookup table for the timeline labels. Kept in sync with the visible
-/// photos so scrolling never has to filter the catalog.
-struct TimelineIndex {
-    var dates: [Date?] = []
-    var anchors: [YearAnchor] = []
+/// One month of the timeline. Sections are built once per catalog/filter change
+/// so scrolling only lays out views; it never regroups the library.
+struct LibraryMonthSection: Identifiable {
+    var id: String
+    var monthStart: Date
+    var title: String
+    var items: [LibraryItem]
+    var cover: LibraryItem
+    var dayText: String
+}
+
+/// One year of the timeline.
+struct LibraryYearSection: Identifiable {
+    var id: Int
+    var year: Int
+    var items: [LibraryItem]
+    var cover: LibraryItem
+    var firstMonthID: String?
 }
 
 /// A mutable box that does not invalidate the view: the grid's frame changes on
@@ -114,17 +130,18 @@ struct LibraryScreen: View {
     @Environment(\.displayScale) private var displayScale
 
     @State private var filter: LibraryFilter = .all
+    @State private var level: LibraryLevel = .all
     @State private var showAddServer = false
     @State private var showBackupActivity = false
     @State private var items: [LibraryItem] = []
     @State private var photos: [PhotoItem] = []
+    @State private var monthSections: [LibraryMonthSection] = []
+    @State private var yearSections: [LibraryYearSection] = []
     @State private var summary = LibrarySummary()
-    @State private var index = TimelineIndex()
     @State private var metrics = TimelineMetrics()
     @State private var label = TimelineLabelState()
     @State private var window = ScrollWindow()
     @State private var prefetcher = ThumbnailPrefetcher()
-    @State private var lastRow = -1
     @State private var viewWidth: CGFloat = 0
     @State private var viewHeight: CGFloat = 0
     @State private var pinchBaseColumns: Int?
@@ -139,6 +156,12 @@ struct LibraryScreen: View {
         return formatter
     }()
 
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM yyyy"
+        return formatter
+    }()
+
     /// Columns added on top of the stored preference for roomier layouts.
     private var columnExtra: Int {
         #if os(macOS)
@@ -150,6 +173,9 @@ struct LibraryScreen: View {
 
     private var columns: Int {
         let base = app.settings.gridColumns
+        // Full width is a deliberate level, not a density that gains extra
+        // columns on a roomier screen.
+        if base <= 1 { return 1 }
         #if os(macOS)
         return min(8, base + columnExtra)
         #else
@@ -178,7 +204,6 @@ struct LibraryScreen: View {
                         .id("library.top")
 
                     header(topInset: topInset)
-                    filterBar(proxy: proxy)
 
                     if app.authorization == .limited {
                         PhotoAccessBanner(
@@ -209,7 +234,17 @@ struct LibraryScreen: View {
                     if items.isEmpty {
                         emptyState
                     } else {
-                        photoGrid(width: width)
+                        Group {
+                            switch level {
+                            case .years:
+                                yearsTimeline(width: width, proxy: proxy)
+                            case .months:
+                                monthsTimeline(width: width, proxy: proxy)
+                            case .all:
+                                photoGrid(width: width)
+                            }
+                        }
+                        .transition(.opacity)
                     }
 
                     Color.clear.frame(height: 10)
@@ -219,7 +254,10 @@ struct LibraryScreen: View {
             .scrollDismissesKeyboard(.immediately)
             .background(Theme.pageBackground)
             #if os(iOS)
-            .ignoresSafeArea(edges: .top)
+            // All Photos bleeds under the status bar; the timeline levels keep
+            // their month headers below it so a scrolled header can never
+            // collide with the clock.
+            .ignoresSafeArea(edges: level == .all ? .top : Edge.Set())
             #endif
             .onGeometryChange(for: CGFloat.self) { view in
                 view.frame(in: .global).minY
@@ -232,21 +270,22 @@ struct LibraryScreen: View {
             }
             .overlay(alignment: .top) {
                 LibraryTopBar(
-                    label: label,
+                    filter: $filter,
+                    showsGridSize: level == .all,
                     pendingCount: summary.pending,
                     onShowActivity: { showBackupActivity = true },
                     onAddServer: { showAddServer = true }
                 )
             }
-            .overlay(alignment: .trailing) {
-                YearRail(
-                    anchors: index.anchors,
-                    availableHeight: availableHeight,
-                    label: label
-                ) { year in
-                    jump(to: year, using: proxy)
-                }
-                .padding(.trailing, 6)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                LibraryLevelSwitcher(
+                    level: Binding(
+                        get: { level },
+                        set: { changeLevel($0, proxy: proxy) }
+                    )
+                )
+                .padding(.top, 6)
+                .padding(.bottom, 8)
             }
             #if DEBUG
             .overlay(alignment: .bottomTrailing) { TileLoadProbeView() }
@@ -265,10 +304,14 @@ struct LibraryScreen: View {
                 requestWindow()
             }
             .animation(.backuGentle, value: app.remoteSyncMessage)
+            .onChange(of: filter) { _, _ in
+                withAnimation(.backuSnappy) {
+                    proxy.scrollTo("library.top", anchor: .top)
+                }
+            }
         }
         .task {
             rebuildContent()
-            label.touch()
         }
         .onChange(of: app.catalog.version) { _, _ in rebuildContent() }
         .onChange(of: filter) { _, _ in rebuildContent() }
@@ -282,7 +325,6 @@ struct LibraryScreen: View {
             if filter == .pending { rebuildContent() } else { rebuildItems() }
         }
         .onDisappear {
-            label.cancel()
             window.cancel()
             prefetcher.stop()
         }
@@ -309,10 +351,10 @@ struct LibraryScreen: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
-        .padding(.trailing, 104)
+        .padding(.trailing, level == .all ? 162 : 112)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
-        .padding(.top, topInset + 10)
+        .padding(.top, level == .all ? topInset + 10 : 10)
         .padding(.bottom, 4)
     }
 
@@ -323,33 +365,16 @@ struct LibraryScreen: View {
         }
         guard !app.catalog.photos.isEmpty else { return "No photos yet" }
         guard summary.count > 0 else { return "No \(filter.rawValue.lowercased()) photos" }
-        let noun = filter == .all ? "item" : filter.rawValue.lowercased()
         let access = app.authorization == .limited ? " · Limited access" : ""
-        return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up\(access)"
-    }
-
-    // MARK: Filters
-
-    private func filterBar(proxy: ScrollViewProxy) -> some View {
-        ScrollView(.horizontal) {
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    ForEach(LibraryFilter.allCases) { option in
-                        FilterChip(title: option.rawValue, isSelected: filter == option) {
-                            guard filter != option else { return }
-                            withAnimation(.backuSnappy) {
-                                filter = option
-                                proxy.scrollTo("library.top", anchor: .top)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 6)
+        switch level {
+        case .years:
+            return "\(yearSections.count) year\(yearSections.count == 1 ? "" : "s") · \(summary.count) item\(summary.count == 1 ? "" : "s")\(access)"
+        case .months:
+            return "\(monthSections.count) month\(monthSections.count == 1 ? "" : "s") · \(summary.count) item\(summary.count == 1 ? "" : "s")\(access)"
+        case .all:
+            let noun = filter == .all ? "item" : filter.rawValue.lowercased()
+            return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up\(access)"
         }
-        .scrollIndicators(.hidden)
-        .padding(.bottom, 6)
     }
 
     // MARK: Banners and empty state
@@ -443,35 +468,191 @@ struct LibraryScreen: View {
         return CGSize(width: side * scale, height: side * scale)
     }
 
-    private func photoGrid(width: CGFloat) -> some View {
-        let side = tileSide(width: width)
-        let pixels = thumbnailPixels(side: side)
-        return LazyVGrid(
-            columns: Array(repeating: GridItem(.fixed(side), spacing: gridSpacing), count: columns),
-            spacing: gridSpacing
-        ) {
-            ForEach(items) { item in
-                PhotoTile(
-                    photo: item.photo,
-                    columns: columns,
-                    side: side,
-                    targetSize: pixels,
-                    backupState: item.backupState,
-                    dateText: item.dateText,
-                    cornerRadius: 0
-                ) {
-                    app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+    // MARK: Timeline levels
+
+    /// Months is the date timeline: one bold header and one large card per
+    /// month, scrolling continuously through the library's history. Tapping a
+    /// month drills into the continuous All grid at that month's first photo.
+    private func monthsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
+        let cardWidth = max(1, width - 40)
+        return LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(monthSections.enumerated()), id: \.element.id) { position, section in
+                Button {
+                    changeLevel(
+                        .all,
+                        target: section.cover.id,
+                        anchor: UnitPoint(x: 0.5, y: 0.18),
+                        proxy: proxy
+                    )
+                } label: {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(section.title)
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.primary)
+
+                        TimelineCard(
+                            photo: section.cover.photo,
+                            width: cardWidth,
+                            aspectRatio: 1.5,
+                            cornerRadius: 12
+                        ) {
+                            ZStack(alignment: .topLeading) {
+                                LinearGradient(
+                                    colors: [.black.opacity(0.34), .clear],
+                                    startPoint: .top,
+                                    endPoint: .center
+                                )
+                                HStack(alignment: .top) {
+                                    Text(section.dayText)
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                                    Spacer()
+                                    if section.items.count > 1 {
+                                        Text("\(section.items.count)")
+                                            .font(.caption2.weight(.semibold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 4)
+                                            .background(Capsule().fill(.black.opacity(0.36)))
+                                    }
+                                }
+                                .padding(14)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .contentShape(Rectangle())
                 }
-                .id(item.photo.id)
+                .buttonStyle(.plain)
+                .id("month-\(section.id)")
+                .padding(.top, position == 0 ? 6 : 20)
+                .padding(.bottom, 12)
+                .accessibilityLabel("\(section.title), \(section.items.count) photo\(section.items.count == 1 ? "" : "s")")
+                .accessibilityHint("Shows this month in the photo grid")
+                .accessibilityIdentifier("library.monthCard")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onGeometryChange(for: CGRect.self) { view in
-            view.frame(in: .global)
-        } action: { frame in
-            metrics.frame = frame
-            updateTimeline()
-            label.touch()
+    }
+
+    /// Years is the widest view of the timeline. A year card drills into that
+    /// year's Months level, so moving back through time is two clear zooms.
+    private func yearsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
+        let cardWidth = max(1, width - 40)
+        return LazyVStack(spacing: 30) {
+            ForEach(yearSections) { section in
+                Button {
+                    let target = section.firstMonthID.map { "month-\($0)" }
+                    changeLevel(
+                        .months,
+                        target: target,
+                        anchor: UnitPoint(x: 0.5, y: 0.16),
+                        proxy: proxy
+                    )
+                } label: {
+                    TimelineCard(
+                        photo: section.cover.photo,
+                        width: cardWidth,
+                        aspectRatio: 4.0 / 3.0,
+                        cornerRadius: 12
+                    ) {
+                        ZStack(alignment: .topLeading) {
+                            LinearGradient(
+                                colors: [.black.opacity(0.42), .clear],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(String(section.year))
+                                    .font(.system(size: 30, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+                                Spacer(minLength: 0)
+                                HStack {
+                                    Spacer()
+                                    Text("\(section.items.count) photo\(section.items.count == 1 ? "" : "s")")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 5)
+                                        .background(Capsule().fill(.black.opacity(0.36)))
+                                }
+                            }
+                            .padding(16)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .id("year-\(section.year)")
+                .accessibilityLabel("\(section.year), \(section.items.count) photo\(section.items.count == 1 ? "" : "s")")
+                .accessibilityHint("Shows the months in this year")
+                .accessibilityIdentifier("library.yearCard")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func photoGrid(width: CGFloat) -> some View {
+        if columns <= 1 {
+            let scale = max(displayScale, 1)
+            LazyVStack(spacing: gridSpacing) {
+                ForEach(items) { item in
+                    let aspect = max(0.2, item.photo.aspectRatio)
+                    PhotoTile(
+                        photo: item.photo,
+                        columns: 1,
+                        side: nil,
+                        aspectRatio: aspect,
+                        targetSize: CGSize(width: width * scale, height: width / aspect * scale),
+                        backupState: item.backupState,
+                        dateText: item.dateText,
+                        cornerRadius: 0
+                    ) {
+                        app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+                    }
+                    .id(item.photo.id)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGRect.self) { view in
+                view.frame(in: .global)
+            } action: { frame in
+                metrics.frame = frame
+                updateTimeline()
+            }
+        } else {
+            let side = tileSide(width: width)
+            let pixels = thumbnailPixels(side: side)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(side), spacing: gridSpacing), count: columns),
+                spacing: gridSpacing
+            ) {
+                ForEach(items) { item in
+                    PhotoTile(
+                        photo: item.photo,
+                        columns: columns,
+                        side: side,
+                        targetSize: pixels,
+                        backupState: item.backupState,
+                        dateText: item.dateText,
+                        cornerRadius: 0
+                    ) {
+                        app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+                    }
+                    .id(item.photo.id)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGRect.self) { view in
+                view.frame(in: .global)
+            } action: { frame in
+                metrics.frame = frame
+                updateTimeline()
+            }
         }
     }
 
@@ -483,27 +664,29 @@ struct LibraryScreen: View {
     private var pinchToResize: some Gesture {
         MagnifyGesture(minimumScaleDelta: 0.01)
             .onChanged { value in
+                guard level == .all else { return }
                 if pinchBaseColumns == nil { pinchBaseColumns = columns }
                 guard let base = pinchBaseColumns, base > 0 else { return }
-                let target = min(8, max(2, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
+                let target = min(8, max(1, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
                 if target != pinchPreviewColumns {
                     pinchPreviewColumns = target
                     pinchHaptic += 1
                 }
             }
             .onEnded { value in
+                guard level == .all else { return }
                 let base = pinchBaseColumns ?? columns
                 pinchBaseColumns = nil
                 pinchPreviewColumns = nil
                 guard base > 0 else { return }
-                let target = min(8, max(2, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
+                let target = min(8, max(1, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
                 guard target != base else { return }
                 applyColumns(target)
             }
     }
 
     private func applyColumns(_ target: Int) {
-        let base = min(8, max(2, target - columnExtra))
+        let base = min(8, max(1, target - columnExtra))
         withAnimation(reduceMotion ? .easeInOut(duration: 0.16) : .smooth(duration: 0.3)) {
             app.settings.gridColumns = base
         }
@@ -526,9 +709,7 @@ struct LibraryScreen: View {
         }
 
         photos = filtered
-        index = timelineIndex(for: filtered)
         rebuildItems()
-        lastRow = -1
         updateTimeline()
         window.invalidate()
         requestWindow(immediate: true)
@@ -556,49 +737,72 @@ struct LibraryScreen: View {
         }
         items = built
         summary = LibrarySummary(count: photos.count, backedUp: backedUp, pending: pendingTotal)
+        rebuildSections()
     }
 
-    private func timelineIndex(for photos: [PhotoItem]) -> TimelineIndex {
-        var dates: [Date?] = []
-        var anchors: [YearAnchor] = []
-        dates.reserveCapacity(photos.count)
-        var previousYear: Int?
-        for photo in photos {
-            let date = photo.takenAt ?? photo.addedAt
-            dates.append(date)
-            guard let date else { continue }
-            let year = calendar.component(.year, from: date)
-            if year != previousYear {
-                anchors.append(YearAnchor(year: year, photoID: photo.id))
-                previousYear = year
+    /// The All grid is chronological, so one pass over `items` gives both
+    /// timelines. Sections are built here, not in `body`, so a scroll never
+    /// regroups or re-sorts the library.
+    private func rebuildSections() {
+        var months: [LibraryMonthSection] = []
+        var years: [LibraryYearSection] = []
+
+        for item in items {
+            let date = item.photo.takenAt ?? item.photo.addedAt ?? .distantPast
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            let year = parts.year ?? 0
+            let month = parts.month ?? 0
+            let monthID = String(format: "%04d-%02d", year, month)
+            let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)) ?? date
+
+            if months.last?.id != monthID {
+                months.append(LibraryMonthSection(
+                    id: monthID,
+                    monthStart: monthStart,
+                    title: year > 0 ? Self.monthFormatter.string(from: monthStart) : "Undated",
+                    items: [],
+                    cover: item,
+                    dayText: String(parts.day ?? 0)
+                ))
             }
+            months[months.count - 1].items.append(item)
+
+            if years.last?.year != year {
+                years.append(LibraryYearSection(
+                    id: year,
+                    year: year,
+                    items: [],
+                    cover: item,
+                    firstMonthID: nil
+                ))
+            }
+            years[years.count - 1].items.append(item)
         }
-        return TimelineIndex(dates: dates, anchors: anchors)
+
+        for index in years.indices {
+            let year = years[index].year
+            years[index].firstMonthID = months.first { $0.id.hasPrefix(String(format: "%04d-", year)) }?.id
+        }
+
+        monthSections = months
+        yearSections = years
     }
 
     // MARK: Scroll pipeline
 
-    /// Called on every scroll tick. It only does arithmetic and, when the row
-    /// changes, updates the small label state — never the grid.
+    /// Called on every scroll tick. It only does arithmetic: collapse the
+    /// large title and, in the All grid, keep the prefetch window moving.
     private func updateTimeline() {
         let frame = metrics.frame
-        guard frame.width > 0, !index.dates.isEmpty, viewHeight > 0 else { return }
+        guard frame.width > 0, viewHeight > 0 else { return }
         let side = tileSide(width: frame.width)
         let rowHeight = max(side + gridSpacing, 1)
         let travelled = metrics.scrollTop - frame.minY
-        let row = max(0, Int(floor(travelled / rowHeight)))
 
         label.setCollapsed(travelled >= 0)
+        guard level == .all else { return }
+        let row = max(0, Int(floor(travelled / rowHeight)))
         requestWindow(firstRow: row, rowHeight: rowHeight)
-
-        guard row != lastRow else { return }
-        lastRow = row
-        guard row * columns < index.dates.count else { return }
-        let position = min(row * columns, index.dates.count - 1)
-        guard let date = index.dates[position] else { return }
-        let parts = calendar.dateComponents([.year, .month], from: date)
-        guard let month = calendar.date(from: parts) else { return }
-        label.update(month: month, year: parts.year)
     }
 
     private func requestWindow(firstRow: Int? = nil, rowHeight: CGFloat? = nil, immediate: Bool = false) {
@@ -637,10 +841,34 @@ struct LibraryScreen: View {
         }
     }
 
-    private func jump(to year: Int, using proxy: ScrollViewProxy) {
-        guard let anchor = index.anchors.first(where: { $0.year == year }) else { return }
-        withAnimation(.smooth(duration: 0.32)) {
-            proxy.scrollTo(anchor.photoID, anchor: .top)
+    /// Switches timeline level and scrolls to the requested section, once the
+    /// new level has been laid out. Photos animates the level change; keeping
+    /// the delay short makes the destination feel like part of the same zoom.
+    private func changeLevel(
+        _ newLevel: LibraryLevel,
+        target: String? = nil,
+        anchor: UnitPoint = .top,
+        proxy: ScrollViewProxy
+    ) {
+        guard level != newLevel || target != nil else { return }
+        if newLevel != .all {
+            prefetcher.stop()
+            window.cancel()
+        }
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.18) : .smooth(duration: 0.28)) {
+            level = newLevel
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            if let target {
+                proxy.scrollTo(target, anchor: anchor)
+            } else {
+                proxy.scrollTo("library.top", anchor: .top)
+            }
+            if newLevel == .all {
+                window.invalidate()
+                requestWindow(immediate: true)
+            }
         }
     }
 }

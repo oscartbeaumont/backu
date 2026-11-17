@@ -6,6 +6,9 @@ struct PhotoTile: View {
     /// Fixed side in points for the edge-to-edge Library grid. Search and
     /// People leave it nil and keep their intrinsic square tiles.
     var side: CGFloat?
+    /// Natural width / height when the tile is full-width (Photos' one-column
+    /// zoom level). Ignored when `side` is set.
+    var aspectRatio: CGFloat?
     /// Exact thumbnail size in pixels for the current density.
     var targetSize: CGSize?
     var backupState: AppModel.BackupState?
@@ -24,7 +27,7 @@ struct PhotoTile: View {
     private var resolvedTargetSize: CGSize {
         if let targetSize { return targetSize }
         let width: CGFloat = 700 / CGFloat(max(columns, 1))
-        return CGSize(width: width, height: width)
+        return CGSize(width: width, height: width / max(aspectRatio ?? 1, 0.1))
     }
 
     private var resolvedBackupState: AppModel.BackupState {
@@ -44,7 +47,7 @@ struct PhotoTile: View {
                         .transition(.opacity)
                 }
             }
-            .modifier(TileSizing(side: side))
+            .modifier(TileSizing(side: side, aspectRatio: aspectRatio))
             .clipped()
             .contentShape(Rectangle())
             .overlay(alignment: .bottomLeading) {
@@ -216,11 +219,16 @@ private struct TilePlaceholder: View {
 
 private struct TileSizing: ViewModifier {
     var side: CGFloat?
+    var aspectRatio: CGFloat?
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if let side {
             content.frame(width: side, height: side)
+        } else if let aspectRatio {
+            content
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .frame(maxWidth: .infinity)
         } else {
             content.aspectRatio(1, contentMode: .fit)
         }

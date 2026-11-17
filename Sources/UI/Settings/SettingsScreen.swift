@@ -466,6 +466,7 @@ struct SettingsScreen: View {
                     .font(.subheadline)
                 Spacer()
                 Picker("Grid size", selection: $settings.gridColumns) {
+                    Text("Full width").tag(1)
                     Text("Large").tag(2)
                     Text("Medium").tag(3)
                     Text("Small").tag(4)

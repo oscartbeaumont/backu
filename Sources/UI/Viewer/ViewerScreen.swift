@@ -248,28 +248,31 @@ struct ViewerScreen: View {
     private var topBar: some View {
         HStack(spacing: 10) {
             Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .bold))
+                Image(systemName: closeSymbol)
+                    .font(.system(size: 16, weight: .bold))
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .accessibilityLabel("Close")
 
-            VStack(alignment: .leading, spacing: 1) {
+            Spacer(minLength: 8)
+
+            VStack(spacing: 1) {
                 Text(photo?.takenAt?.dayLabel ?? "Photo")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 17, weight: .semibold))
                 if let taken = photo?.takenAt {
                     Text(taken.timeLabel)
-                        .font(.caption2)
+                        .font(.system(size: 13))
                         .opacity(0.7)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 14)
             .padding(.vertical, 6)
-            .glassSurface(14)
+            .frame(minHeight: 44)
+            .glassCapsule()
 
-            Spacer()
+            Spacer(minLength: 8)
 
             if let photo {
                 Button {
@@ -286,6 +289,14 @@ struct ViewerScreen: View {
                 .accessibilityLabel(photo.isFavorite ? "Remove favorite" : "Favorite")
             }
         }
+    }
+
+    private var closeSymbol: String {
+        #if os(iOS)
+        return "chevron.left"
+        #else
+        return "xmark"
+        #endif
     }
 
     private var bottomBar: some View {

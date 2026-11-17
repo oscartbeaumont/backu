@@ -71,7 +71,7 @@ final class AppSettings {
         includeScreenshots = defaults.object(forKey: Keys.screenshots) as? Bool ?? false
         faceRecognitionEnabled = defaults.object(forKey: Keys.faces) as? Bool ?? true
         let columns = defaults.object(forKey: Keys.columns) as? Int ?? 3
-        gridColumns = min(max(columns, 2), 8)
+        gridColumns = min(max(columns, 1), 8)
         showRemoteOnlyPhotos = defaults.object(forKey: Keys.remoteOnly) as? Bool ?? true
         hasCompletedOnboarding = defaults.object(forKey: Keys.onboarded) as? Bool ?? false
     }
