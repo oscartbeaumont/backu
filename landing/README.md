@@ -50,18 +50,22 @@ domain <https://backu.app> through a `custom_domain` route.
 
 `main` is `dist/server/server.js`, the web `Request` → `Response` handler. The
 Worker uses the `nodejs_compat` flag because Solid's server runtime imports
-`node:async_hooks`.
+`node:async_hooks`. The apex custom domain is configured in `wrangler.jsonc` as
+a `custom_domain` route.
 
 ### CI
 
 `.github/workflows/deploy-landing.yml` type-checks, builds and deploys on every
-push to `main` that touches `landing/`. Add these repository secrets once:
+push to `main` that touches `landing/`:
 
 - `CLOUDFLARE_ACCOUNT_ID` — `f8b7c4b3e3ed4fb3d04a4264e21dd18e`
-- `CLOUDFLARE_API_TOKEN` — a token with **Workers Scripts: Edit**
+- `CLOUDFLARE_API_TOKEN` — a scoped token with Workers scripts/routes access
+  for `backu.app`
 
-Until the token is present, the deploy step is skipped and the workflow still
-verifies the build. A local `wrangler login` session can also deploy.
+Both are configured for this repository. The token expires on 17 November
+2027; rotate it before then. Until a token is present, the deploy step is
+skipped and the workflow still verifies the build. A local `wrangler login`
+session can also deploy.
 
 Pull requests that touch `landing/` upload a preview version with a
 `pr-<number>` alias and comment its `workers.dev` URL on the PR. Preview
