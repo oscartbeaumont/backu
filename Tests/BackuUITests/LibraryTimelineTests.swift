@@ -51,6 +51,14 @@ final class LibraryTimelineTests: XCTestCase {
         sleep(1)
         attach(app, "timeline-01b-all-scrolled")
 
+        // The switcher itself must open the Months timeline directly.
+        app.buttons["library.level.months"].tap()
+        let firstMonth = app.buttons.matching(identifier: "library.monthCard").firstMatch
+        XCTAssertTrue(firstMonth.waitForExistence(timeout: 10), "Months level showed no month cards")
+        attach(app, "timeline-01c-months-direct")
+        app.buttons["library.level.all"].tap()
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "All level did not return")
+
         // Years is the widest view. It must contain at least one year card.
         app.buttons["library.level.years"].tap()
         let yearCard = app.buttons.matching(identifier: "library.yearCard").firstMatch
