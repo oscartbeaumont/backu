@@ -25,8 +25,8 @@ from the real app on those device classes. Regenerate them with the
 The privacy policy and support pages are served by the Solid landing in
 `landing/` at:
 
-- https://backu-landing.oscartbeaumont.workers.dev/privacy
-- https://backu-landing.oscartbeaumont.workers.dev/support
+- https://backu.app/privacy
+- https://backu.app/support
 
 The bundle identifier is `dev.oscartbeaumont.backu`; the app record and TestFlight
 upload steps are in `AppStore/ReleaseChecklist.md`.

@@ -19,3 +19,6 @@ Tests/Fixtures/marketing/raw/
 Tests/Fixtures/marketing/library/
 Tests/Fixtures/performance/library/
 Tests/Fixtures/performance/raw/
+
+# Cloudflare CLI cache
+.cloudflare/

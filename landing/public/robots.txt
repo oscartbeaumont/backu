@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://backu-landing.oscartbeaumont.workers.dev/sitemap.xml
+Sitemap: https://backu.app/sitemap.xml

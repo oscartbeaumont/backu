@@ -38,15 +38,15 @@ local production checks; Cloudflare runs the web-standard handler instead.
 
 ## Deploy
 
-The site is deployed to Cloudflare Workers as `backu-landing`, with the static
-client assets served by Workers Static Assets:
+The site is deployed to Cloudflare Workers as `backu`, with the static client
+assets served by Workers Static Assets:
 
 ```sh
 npx wrangler deploy
 ```
 
-Configuration lives in `wrangler.jsonc`. Production URL:
-<https://backu-landing.oscartbeaumont.workers.dev>
+Configuration lives in `wrangler.jsonc`. The Worker is served at the apex custom
+domain <https://backu.app> through a `custom_domain` route.
 
 `main` is `dist/server/server.js`, the web `Request` → `Response` handler. The
 Worker uses the `nodejs_compat` flag because Solid's server runtime imports
@@ -63,7 +63,7 @@ push to `main` that touches `landing/`. Add these repository secrets once:
 Until the token is present, the deploy step is skipped and the workflow still
 verifies the build. A local `wrangler login` session can also deploy.
 
-If the site moves to a custom domain, add the route in `wrangler.jsonc`, set
+To move the site again, update the route in `wrangler.jsonc`, set
 `VITE_SITE_URL` at build time, update `public/robots.txt` and
 `public/sitemap.xml`, and update the App Store URLs in
 `AppStore/metadata/en-US/{marketing,privacy,support}_url.txt`.
