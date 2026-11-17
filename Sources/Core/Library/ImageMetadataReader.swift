@@ -70,15 +70,4 @@ enum ImageMetadataReader {
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
-
-    static func thumbnailJPEG(url: URL, maxPixel: Int, quality: CGFloat = 0.8) -> Data? {
-        guard let cgImage = uprightCGImage(url: url, maxPixel: maxPixel) else { return nil }
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
-            return nil
-        }
-        CGImageDestinationAddImage(destination, cgImage, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
-    }
 }

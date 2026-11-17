@@ -635,11 +635,15 @@ final class BackupEngine {
                 )
             }
 
-            if let thumb = await Self.makeThumbnail(url: exported.url) {
+            if let preview = await Self.makePreview(url: exported.url) {
                 let digest = sha ?? ""
-                let thumbName = String(digest.prefix(20)) + ".jpg"
+                let thumbName = String(digest.prefix(20)) + "." + preview.format.fileExtension
                 let thumbKey = S3Client.join(server.normalizedPrefix, ".backu/thumbs/\(thumbName)")
-                try? await client.putObject(key: thumbKey, data: thumb, contentType: "image/jpeg")
+                try? await client.putObject(
+                    key: thumbKey,
+                    data: preview.data,
+                    contentType: preview.format.contentType
+                )
                 photo.remoteThumbnailKey = thumbKey
             }
 
@@ -825,9 +829,9 @@ final class BackupEngine {
         }.value
     }
 
-    nonisolated static func makeThumbnail(url: URL) async -> Data? {
+    nonisolated static func makePreview(url: URL) async -> EncodedPreview? {
         await Task.detached(priority: .utility) {
-            ImageMetadataReader.thumbnailJPEG(url: url, maxPixel: 900)
+            PreviewCodec.encode(url: url)
         }.value
     }
 

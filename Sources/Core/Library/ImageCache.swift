@@ -240,7 +240,13 @@ enum RemoteAssetLoader {
         guard let key else { return nil }
 
         let safeName = SigV4Signer.sha256Hex(Data((server.id.uuidString + key).utf8))
-        let extensionName = thumbnail ? "jpg" : BackupEngine.fileExtension(for: photo)
+        // Older buckets hold JPEG previews, newer ones hold HEIC. Use the key's
+        // real extension for both the cache file and ImageIO's type sniffing
+        // (ImageIO reads the bytes, so the name only has to be truthful).
+        let extensionName = thumbnail
+            ? (PreviewFormat.from(key: key)?.fileExtension
+                ?? (key.pathExtensionLower.isEmpty ? "jpg" : key.pathExtensionLower))
+            : BackupEngine.fileExtension(for: photo)
         let cacheURL = AppPaths.imageCache.appendingPathComponent("\(safeName).\(extensionName)")
 
         if let image = ImageUtilities.image(from: cacheURL) {
