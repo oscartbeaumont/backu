@@ -3,29 +3,22 @@ version: 2
 # Backu has no third-party packages today: everything ships from the SDK and the
 # S3 client is hand-rolled. Keeping the grouped Actions updates wired up means
 # bumping checkout/setup-python arrives as one reviewable PR instead of a stream.
-updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+multi-ecosystem-groups:
+  backu-deps:
     schedule:
       interval: "weekly"
       day: "monday"
       time: "07:00"
       timezone: "Australia/Sydney"
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    multi-ecosystem-group: "backu-deps"
+    patterns: ["*"]
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci"
-    groups:
-      github-actions:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-      github-actions-major:
-        patterns:
-          - "*"
-        update-types:
-          - "major"
 
   # Enable this when Backu takes its first Swift Package dependency; Dependabot
   # needs a Package.swift before it can read the graph.
