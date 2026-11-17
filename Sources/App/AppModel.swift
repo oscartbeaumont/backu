@@ -90,6 +90,7 @@ final class AppModel {
 
     private var libraryObserverTask: Task<Void, Never>?
     private var lastKnownChange = Date.distantPast
+    private var remoteSyncDismissTask: Task<Void, Never>?
 
     init(loadFromDisk: Bool = true) {
         #if DEBUG
@@ -376,7 +377,7 @@ final class AppModel {
         lastCloudSyncAt = Date()
         isSyncingRemote = false
         if imported > 0 {
-            remoteSyncMessage = "\(imported) photo\(imported == 1 ? "" : "s") found in your buckets"
+            showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in your buckets")
             catalog.saveSoon()
         }
     }
@@ -392,11 +393,40 @@ final class AppModel {
             catalog.mergePersonRecords(result.people)
             let imported = catalog.importRemotePhotos(result.photos)
             if imported > 0 {
-                remoteSyncMessage = "\(imported) photo\(imported == 1 ? "" : "s") found in \(server.name)"
+                showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in \(server.name)")
             }
         } catch {
             // Non-fatal: an empty bucket has no index yet.
         }
+    }
+
+    /// Imports are deduplicated by the catalog, so the same photos never
+    /// produce a second announcement. The banner clears itself after a few
+    /// seconds instead of sitting above the grid until dismissed.
+    private var lastRemoteAnnouncement: (message: String, at: Date)?
+
+    func showRemoteSyncMessage(_ message: String) {
+        if remoteSyncMessage != message {
+            if let last = lastRemoteAnnouncement,
+               last.message == message,
+               Date().timeIntervalSince(last.at) < 120 {
+                return
+            }
+            lastRemoteAnnouncement = (message, Date())
+            remoteSyncMessage = message
+        }
+        remoteSyncDismissTask?.cancel()
+        remoteSyncDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4.5))
+            guard !Task.isCancelled else { return }
+            self?.remoteSyncMessage = nil
+        }
+    }
+
+    func dismissRemoteSyncMessage() {
+        remoteSyncDismissTask?.cancel()
+        remoteSyncDismissTask = nil
+        remoteSyncMessage = nil
     }
 
     // MARK: - Photo helpers

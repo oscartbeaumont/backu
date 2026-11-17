@@ -21,7 +21,9 @@ struct LibraryScanOptions: Sendable {
 final class PhotoLibraryService: @unchecked Sendable {
     static let shared = PhotoLibraryService()
 
-    private let imageManager = PHImageManager.default()
+    /// Shared with the prefetcher: a `PHCachingImageManager` only serves
+    /// preheated images to requests made through the same instance.
+    let imageManager = PHCachingImageManager()
     private let resourceManager = PHAssetResourceManager.default()
 
     static var authorizationStatus: PHAuthorizationStatus {
@@ -101,14 +103,20 @@ final class PhotoLibraryService: @unchecked Sendable {
 
     // MARK: - Images
 
-    func thumbnail(for localIdentifier: String, targetSize: CGSize) async -> PlatformImage? {
+    /// `onDegraded` receives PhotoKit's fast, lower-resolution pass so the grid
+    /// can paint immediately; the returned image is the final one.
+    func thumbnail(
+        for localIdentifier: String,
+        targetSize: CGSize,
+        onDegraded: (@Sendable (PlatformImage) -> Void)? = nil
+    ) async -> PlatformImage? {
         guard let asset = asset(for: localIdentifier) else { return nil }
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
-        return await requestImage(asset: asset, targetSize: targetSize, options: options)
+        return await requestImage(asset: asset, targetSize: targetSize, options: options, onDegraded: onDegraded)
     }
 
     func fullImage(for localIdentifier: String, maxPixel: CGFloat = 2400) async -> PlatformImage? {        guard let asset = asset(for: localIdentifier) else { return nil }
@@ -124,12 +132,20 @@ final class PhotoLibraryService: @unchecked Sendable {
         return await requestImage(asset: asset, targetSize: size, options: options)
     }
 
-    private func requestImage(asset: PHAsset, targetSize: CGSize, options: PHImageRequestOptions) async -> PlatformImage? {
+    private func requestImage(
+        asset: PHAsset,
+        targetSize: CGSize,
+        options: PHImageRequestOptions,
+        onDegraded: (@Sendable (PlatformImage) -> Void)? = nil
+    ) async -> PlatformImage? {
         await withCheckedContinuation { continuation in
             let gate = ContinuationGate()
             imageManager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFit, options: options) { image, info in
                 let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if degraded { return }
+                if degraded {
+                    if let image { onDegraded?(image) }
+                    return
+                }
                 let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
                 if cancelled && image == nil { gate.resume { continuation.resume(returning: nil) } }
                 gate.resume { continuation.resume(returning: image) }

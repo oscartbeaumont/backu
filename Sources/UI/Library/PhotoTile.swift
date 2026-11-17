@@ -2,41 +2,51 @@ import SwiftUI
 
 struct PhotoTile: View {
     let photo: PhotoItem
-    var columns: Int
+    var columns: Int = 3
+    /// Fixed side in points for the edge-to-edge Library grid. Search and
+    /// People leave it nil and keep their intrinsic square tiles.
+    var side: CGFloat?
+    /// Exact thumbnail size in pixels for the current density.
+    var targetSize: CGSize?
+    var backupState: AppModel.BackupState?
+    var dateText: String?
     var cornerRadius: CGFloat = Theme.tileRadius
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
     @Environment(\.viewerZoomNamespace) private var zoomNamespace
     @Environment(\.viewerZoomSourceActive) private var zoomSourceActive
     @State private var image: PlatformImage?
+    @State private var isFinal = false
+    @State private var imageID = 0
+    @State private var loadedPhotoID: String?
     @State private var isHovering = false
 
-    private var targetSize: CGSize {
+    private var resolvedTargetSize: CGSize {
+        if let targetSize { return targetSize }
         let width: CGFloat = 700 / CGFloat(max(columns, 1))
         return CGSize(width: width, height: width)
     }
 
+    private var resolvedBackupState: AppModel.BackupState {
+        backupState ?? app.photoBackupState(photo)
+    }
+
     var body: some View {
         Button(action: onOpen) {
-            Color.clear
-                .aspectRatio(1, contentMode: .fit)
-                .overlay {
-                    ZStack {
-                        Rectangle().fill(.quaternary)
-                        if let image {
-                            Image(platformImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .transition(.opacity)
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.secondary)
-                        }
-                    }
+            ZStack {
+                Color.clear
+                TilePlaceholder()
+                if let image {
+                    Image(platformImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .id(imageID)
+                        .transition(.opacity)
                 }
-                .clipped()
-                .contentShape(Rectangle())
+            }
+            .modifier(TileSizing(side: side))
+            .clipped()
+            .contentShape(Rectangle())
             .overlay(alignment: .bottomLeading) {
                 if photo.isVideo {
                     videoBadge
@@ -51,7 +61,7 @@ struct PhotoTile: View {
                             .padding(4)
                             .background(Circle().fill(.black.opacity(0.35)))
                     }
-                    if app.photoBackupState(photo) == .needsUpdate {
+                    if resolvedBackupState == .needsUpdate {
                         Image(systemName: "arrow.triangle.2.circlepath.icloud")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(.white)
@@ -80,9 +90,7 @@ struct PhotoTile: View {
         .buttonStyle(.plain)
         .zoomTransitionSource(id: photo.id, in: zoomSourceActive ? zoomNamespace : nil)
         .onHover { isHovering = $0 }
-        .task(id: photo.id) {
-            image = await app.images.thumbnail(for: photo, size: targetSize)
-        }
+        .task(id: photo.id) { await load() }
         .contextMenu {
             Button {
                 app.toggleFavorite(photo.id)
@@ -103,12 +111,61 @@ struct PhotoTile: View {
             }
         }
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(isFinal ? "Ready" : "Loading")
         .accessibilityIdentifier("library.tile")
+        #if DEBUG
+        .onAppear { TileLoadProbe.shared.appeared(photo.id, blank: image == nil, final: isFinal) }
+        .onDisappear { TileLoadProbe.shared.disappeared(photo.id) }
+        .onChange(of: image == nil) { _, isBlank in
+            if !isBlank { TileLoadProbe.shared.painted(photo.id) }
+        }
+        .onChange(of: isFinal) { _, ready in
+            if ready { TileLoadProbe.shared.finished(photo.id) }
+        }
+        #endif
+    }
+
+    /// Already-decoded thumbnails paint in the same transaction, so a tile
+    /// returning into view never flashes its placeholder. PhotoKit's degraded
+    /// pass then swaps in as soon as it arrives; the final image fades over it.
+    private func load() async {
+        let size = resolvedTargetSize
+        if loadedPhotoID != photo.id {
+            loadedPhotoID = photo.id
+            image = nil
+            isFinal = false
+        }
+        if let final = app.images.cachedFinalThumbnail(for: photo, size: size) {
+            image = final
+            isFinal = true
+            return
+        }
+        if image == nil, let quick = app.images.cachedThumbnail(for: photo, size: size) {
+            image = quick
+            imageID += 1
+        }
+        let loaded = await app.images.thumbnail(for: photo, size: size) { degraded in
+            guard !isFinal else { return }
+            withAnimation(.easeOut(duration: 0.12)) {
+                image = degraded
+                imageID += 1
+            }
+        }
+        guard let loaded else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            image = loaded
+            imageID += 1
+            isFinal = true
+        }
     }
 
     private var accessibilityLabel: String {
         var parts = [photo.isVideo ? "Video" : "Photo"]
-        if let date = photo.takenAt { parts.append(date.dayLabel) }
+        if let dateText {
+            parts.append(dateText)
+        } else if let date = photo.takenAt {
+            parts.append(date.dayLabel)
+        }
         if !photo.faces.isEmpty { parts.append("\(photo.faces.count) people") }
         return parts.joined(separator: ", ")
     }
@@ -138,6 +195,35 @@ struct PhotoTile: View {
             return String(format: "%d:%02d", minutes, seconds)
         }
         return "0:\(String(format: "%02d", seconds))"
+    }
+}
+
+/// The loading surface: a calm two-tone wash instead of a spinner per tile.
+/// It stays still while scrolling — no flashing, no repeating animation.
+private struct TilePlaceholder: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.055))
+            .overlay {
+                LinearGradient(
+                    colors: [.white.opacity(0.14), .clear, .black.opacity(0.05)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+    }
+}
+
+private struct TileSizing: ViewModifier {
+    var side: CGFloat?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let side {
+            content.frame(width: side, height: side)
+        } else {
+            content.aspectRatio(1, contentMode: .fit)
+        }
     }
 }
 

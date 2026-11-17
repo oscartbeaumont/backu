@@ -23,6 +23,12 @@ final class TimelineLabelState {
     private var lastTouch = Date.distantPast
     private var idleTask: Task<Void, Never>?
 
+    /// Assigning the same value would still invalidate every view that reads
+    /// `isCollapsed`, so scrolling only pushes real transitions.
+    func setCollapsed(_ value: Bool) {
+        if isCollapsed != value { isCollapsed = value }
+    }
+
     func touch() {
         lastTouch = Date()
         if !isRailVisible { isRailVisible = true }
@@ -54,6 +60,32 @@ final class TimelineLabelState {
     func cancel() {
         idleTask?.cancel()
         idleTask = nil
+    }
+}
+
+/// A subtle blurred wash behind the status bar once the large title has
+/// scrolled away. It sits below the floating pill and buttons, so the month
+/// label and controls stay legible without moving.
+struct StatusBarScrim: View {
+    var topInset: CGFloat
+    var isVisible: Bool
+
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .frame(height: max(topInset, 8) + 10)
+            .mask {
+                LinearGradient(
+                    colors: [.black, .black.opacity(0.92), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .ignoresSafeArea(edges: .top)
+            .opacity(isVisible ? 1 : 0)
+            .animation(.easeOut(duration: 0.18), value: isVisible)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -243,15 +275,14 @@ struct LibraryTopBar: View {
 
             Spacer(minLength: 8)
 
-            GlassEffectContainer(spacing: 10) {
-                HStack(spacing: 10) {
-                    gridSizeMenu
-                        .glassEffectID("grid", in: backupNamespace)
+            HStack(spacing: 10) {
+                gridSizeMenu
+                GlassEffectContainer(spacing: 10) {
                     backupControl
                         .glassEffectID("backup", in: backupNamespace)
                 }
+                .animation(backupMotion, value: app.backup.isRunning)
             }
-            .animation(backupMotion, value: app.backup.isRunning)
             .sensoryFeedback(trigger: app.backup.isRunning) { _, running in
                 running ? .impact(weight: .medium) : .success
             }

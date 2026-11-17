@@ -101,6 +101,7 @@ struct ViewerScreen: View {
             pullDown = 0
             isPastDismissThreshold = false
         }
+        .task(id: selection) { prefetchNeighbours() }
         .sheet(isPresented: $showPanel) {
             if let photo, let panel {
                 PhotoInfoSheet(photoID: photo.id, initialPanel: panel)
@@ -118,6 +119,16 @@ struct ViewerScreen: View {
     private func close() {
         pullDown = 0
         app.viewer = nil
+    }
+
+    /// Keeps the two photos on either side warm at low priority. Changing page
+    /// cancels everything outside the new window.
+    private func prefetchNeighbours() {
+        let lower = max(0, index - 2)
+        let upper = min(ids.count, index + 3)
+        guard lower < upper else { return }
+        let photos = ids[lower..<upper].compactMap { app.catalog.photo(id: $0) }
+        app.images.prefetchViewerPreviews(for: photos, size: CGSize(width: 1200, height: 1200))
     }
 
     // MARK: Chrome
@@ -299,6 +310,7 @@ struct ViewerPage: View {
     @Environment(AppModel.self) private var app
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: PlatformImage?
+    @State private var imageID = 0
     @State private var isLoading = true
     @State private var failure: String?
     @State private var scale: CGFloat = 1
@@ -381,9 +393,13 @@ struct ViewerPage: View {
     private func pageImage(_ image: PlatformImage) -> some View {
         if scale > 1 {
             baseImage(image)
+                .id(imageID)
+                .transition(.opacity)
                 .gesture(panGesture)
         } else {
             baseImage(image)
+                .id(imageID)
+                .transition(.opacity)
         }
     }
 
@@ -432,17 +448,42 @@ struct ViewerPage: View {
         }
         isLoading = true
         failure = nil
-        image = await app.images.fullImage(for: photo)
-        isLoading = false
-        if image == nil {
-            failure = photo.isRemoteOnly
-                ? "Could not download this photo from \(serverName)."
-                : "This photo is not available on this device."
-        }
         scale = 1
         offset = .zero
         lastScale = 1
         lastOffset = .zero
+
+        // The grid thumbnail is already decoded: paint it in the same frame so
+        // the viewer opens on the photo instead of a spinner.
+        if image == nil {
+            if let quick = app.images.cachedPreview(for: photo) {
+                image = quick
+                imageID += 1
+            }
+        }
+
+        let mediumSize = CGSize(width: 1200, height: 1200)
+        if let medium = await app.images.thumbnail(for: photo, size: mediumSize) {
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                image = medium
+                imageID += 1
+            }
+        }
+
+        let full = await app.images.fullImage(for: photo)
+        guard !Task.isCancelled else { return }
+        if let full {
+            withAnimation(.easeOut(duration: 0.25)) {
+                image = full
+                imageID += 1
+            }
+        } else if image == nil {
+            failure = photo.isRemoteOnly
+                ? "Could not download this photo from \(serverName)."
+                : "This photo is not available on this device."
+        }
+        isLoading = false
     }
 
     private var magnification: some Gesture {

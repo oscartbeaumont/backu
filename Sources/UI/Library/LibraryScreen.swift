@@ -38,38 +38,105 @@ struct TimelineIndex {
 @MainActor
 final class TimelineMetrics {
     var frame: CGRect = .zero
+    var scrollTop: CGFloat = 0
+}
+
+/// One row of the cached grid. Built once per catalog/filter change so a tile
+/// never has to ask the catalog for its backup state or format a date.
+struct LibraryItem: Identifiable {
+    var photo: PhotoItem
+    var backupState: AppModel.BackupState
+    var dateText: String?
+
+    var id: String { photo.id }
+}
+
+struct LibrarySummary: Equatable {
+    var count = 0
+    var backedUp = 0
+    var pending = 0
+}
+
+/// Throttles prefetch-window changes. Scrolling is reported per tick, but the
+/// prefetcher re-arms at most every ~80 ms, so a fling stays cheap while a slow
+/// scroll still keeps the next screens warm.
+@MainActor
+final class ScrollWindow {
+    private var applied: Range<Int>?
+    private var pending: Range<Int>?
+    private var task: Task<Void, Never>?
+    private var lastAppliedAt = Date.distantPast
+    private let interval: TimeInterval = 0.08
+
+    func request(
+        _ range: Range<Int>,
+        immediate: Bool = false,
+        apply: @escaping @MainActor (Range<Int>) -> Void
+    ) {
+        if applied == range { return }
+        if immediate || Date().timeIntervalSince(lastAppliedAt) >= interval {
+            applyNow(range, apply)
+            return
+        }
+        pending = range
+        guard task == nil else { return }
+        task = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard let self, !Task.isCancelled, let next = self.pending else { return }
+            self.applyNow(next, apply)
+        }
+    }
+
+    private func applyNow(_ range: Range<Int>, _ apply: @MainActor (Range<Int>) -> Void) {
+        task?.cancel()
+        task = nil
+        pending = nil
+        applied = range
+        lastAppliedAt = Date()
+        apply(range)
+    }
+
+    func invalidate() {
+        applied = nil
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        pending = nil
+    }
 }
 
 struct LibraryScreen: View {
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
 
     @State private var filter: LibraryFilter = .all
     @State private var showAddServer = false
-    @State private var scrollTop: CGFloat = 0
+    @State private var items: [LibraryItem] = []
+    @State private var photos: [PhotoItem] = []
+    @State private var summary = LibrarySummary()
     @State private var index = TimelineIndex()
     @State private var metrics = TimelineMetrics()
     @State private var label = TimelineLabelState()
+    @State private var window = ScrollWindow()
+    @State private var prefetcher = ThumbnailPrefetcher()
+    @State private var lastRow = -1
+    @State private var viewWidth: CGFloat = 0
+    @State private var viewHeight: CGFloat = 0
     @State private var pinchBaseColumns: Int?
     @State private var pinchPreviewColumns: Int?
     @State private var pinchHaptic = 0
 
     private let calendar = Calendar(identifier: .gregorian)
 
-    private var photos: [PhotoItem] {
-        var photos = app.catalog.photos
-        if !app.settings.showRemoteOnlyPhotos {
-            photos = photos.filter { $0.isLocal }
-        }
-        switch filter {
-        case .all: break
-        case .favorites: photos = photos.filter(\.isFavorite)
-        case .videos: photos = photos.filter(\.isVideo)
-        case .pending: photos = photos.filter { !$0.isBackedUp }
-        }
-        return photos
-    }
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMMM yyyy"
+        return formatter
+    }()
 
     /// Columns added on top of the stored preference for roomier layouts.
     private var columnExtra: Int {
@@ -89,17 +156,19 @@ struct LibraryScreen: View {
         #endif
     }
 
+    private var gridSpacing: CGFloat { 2 }
+
     var body: some View {
-        #if os(iOS)
         GeometryReader { proxy in
-            timeline(topInset: proxy.safeAreaInsets.top, availableHeight: proxy.size.height)
+            timeline(
+                width: proxy.size.width,
+                topInset: proxy.safeAreaInsets.top,
+                availableHeight: proxy.size.height
+            )
         }
-        #else
-        timeline(topInset: 0, availableHeight: 900)
-        #endif
     }
 
-    private func timeline(topInset: CGFloat, availableHeight: CGFloat) -> some View {
+    private func timeline(width: CGFloat, topInset: CGFloat, availableHeight: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -110,19 +179,20 @@ struct LibraryScreen: View {
                     header(topInset: topInset)
                     filterBar(proxy: proxy)
 
-                    if app.backup.isRunning {
+                    if app.backup.isRunning || app.backup.lastError != nil {
                         BackupBanner()
                             .padding(.horizontal, 16)
                             .padding(.bottom, 12)
                     }
                     if app.remoteSyncMessage != nil {
                         remoteBanner
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     }
 
-                    if photos.isEmpty {
+                    if items.isEmpty {
                         emptyState
                     } else {
-                        photoGrid
+                        photoGrid(width: width)
                     }
 
                     Color.clear.frame(height: 10)
@@ -137,13 +207,16 @@ struct LibraryScreen: View {
             .onGeometryChange(for: CGFloat.self) { view in
                 view.frame(in: .global).minY
             } action: { value in
-                scrollTop = value
+                metrics.scrollTop = value
                 updateTimeline()
+            }
+            .overlay(alignment: .top) {
+                StatusBarScrim(topInset: topInset, isVisible: label.isCollapsed)
             }
             .overlay(alignment: .top) {
                 LibraryTopBar(
                     label: label,
-                    pendingCount: pendingCount
+                    pendingCount: summary.pending
                 ) {
                     showAddServer = true
                 }
@@ -158,17 +231,43 @@ struct LibraryScreen: View {
                 }
                 .padding(.trailing, 6)
             }
+            #if DEBUG
+            .overlay(alignment: .bottomTrailing) { TileLoadProbeView() }
+            #endif
+            .onAppear {
+                self.viewWidth = width
+                self.viewHeight = availableHeight
+            }
+            .onChange(of: width) { _, value in
+                viewWidth = value
+                window.invalidate()
+                requestWindow(immediate: true)
+            }
+            .onChange(of: availableHeight) { _, value in
+                viewHeight = value
+                requestWindow()
+            }
+            .animation(.backuGentle, value: app.remoteSyncMessage)
         }
         .task {
-            rebuildTimeline()
+            rebuildContent()
             label.touch()
         }
-        .onChange(of: app.settings.showRemoteOnlyPhotos) { _, _ in rebuildTimeline() }
-        .onChange(of: app.catalog.photos.count) { _, _ in rebuildTimeline() }
-        .onChange(of: app.backup.lastRunAt) { _, _ in
-            if filter == .pending { rebuildTimeline() }
+        .onChange(of: app.catalog.version) { _, _ in rebuildContent() }
+        .onChange(of: filter) { _, _ in rebuildContent() }
+        .onChange(of: app.settings.showRemoteOnlyPhotos) { _, _ in rebuildContent() }
+        .onChange(of: app.settings.gridColumns) { _, _ in
+            window.invalidate()
+            requestWindow(immediate: true)
         }
-        .onDisappear { label.cancel() }
+        .onChange(of: app.backup.lastRunAt) { _, _ in
+            if filter == .pending { rebuildContent() } else { rebuildItems() }
+        }
+        .onDisappear {
+            label.cancel()
+            window.cancel()
+            prefetcher.stop()
+        }
         .sheet(isPresented: $showAddServer) {
             AddServerFlow()
                 .environment(app)
@@ -199,14 +298,9 @@ struct LibraryScreen: View {
         if app.isScanning { return "Scanning your photo library…" }
         if !app.hasPhotoAccess { return "Photo access is off" }
         guard !app.catalog.photos.isEmpty else { return "No photos yet" }
-        guard !photos.isEmpty else { return "No \(filter.rawValue.lowercased()) photos" }
-        let backedUp = photos.filter(\.isBackedUp).count
+        guard summary.count > 0 else { return "No \(filter.rawValue.lowercased()) photos" }
         let noun = filter == .all ? "item" : filter.rawValue.lowercased()
-        return "\(photos.count) \(noun)\(photos.count == 1 ? "" : "s") · \(backedUp) backed up"
-    }
-
-    private var pendingCount: Int {
-        app.catalog.photos.filter { !$0.isBackedUp || $0.sidecarDirtyAt != nil }.count
+        return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up"
     }
 
     // MARK: Filters
@@ -222,7 +316,6 @@ struct LibraryScreen: View {
                                 filter = option
                                 proxy.scrollTo("library.top", anchor: .top)
                             }
-                            rebuildTimeline()
                         }
                     }
                 }
@@ -245,7 +338,7 @@ struct LibraryScreen: View {
                 .lineLimit(2)
             Spacer(minLength: 0)
             Button {
-                app.remoteSyncMessage = nil
+                app.dismissRemoteSyncMessage()
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
@@ -293,19 +386,40 @@ struct LibraryScreen: View {
 
     // MARK: Continuous grid
 
-    private var photoGrid: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: gridSpacing), count: columns),
+    private func tileSide(width: CGFloat) -> CGFloat {
+        guard width > 1 else { return 1 }
+        let count = CGFloat(max(columns, 1))
+        return max(1, (width - gridSpacing * (count - 1)) / count)
+    }
+
+    private func thumbnailPixels(side: CGFloat) -> CGSize {
+        let scale = max(displayScale, 1)
+        return CGSize(width: side * scale, height: side * scale)
+    }
+
+    private func photoGrid(width: CGFloat) -> some View {
+        let side = tileSide(width: width)
+        let pixels = thumbnailPixels(side: side)
+        return LazyVGrid(
+            columns: Array(repeating: GridItem(.fixed(side), spacing: gridSpacing), count: columns),
             spacing: gridSpacing
         ) {
-            ForEach(photos) { photo in
-                PhotoTile(photo: photo, columns: columns, cornerRadius: 0) {
-                    app.viewer = app.photosForViewer(startingAt: photo.id, within: photos)
+            ForEach(items) { item in
+                PhotoTile(
+                    photo: item.photo,
+                    columns: columns,
+                    side: side,
+                    targetSize: pixels,
+                    backupState: item.backupState,
+                    dateText: item.dateText,
+                    cornerRadius: 0
+                ) {
+                    app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
                 }
-                .id(photo.id)
+                .id(item.photo.id)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onGeometryChange(for: CGRect.self) { view in
             view.frame(in: .global)
         } action: { frame in
@@ -314,8 +428,6 @@ struct LibraryScreen: View {
             label.touch()
         }
     }
-
-    private var gridSpacing: CGFloat { 2 }
 
     // MARK: Pinch to resize
 
@@ -351,9 +463,56 @@ struct LibraryScreen: View {
         }
     }
 
-    // MARK: Timeline labels
+    // MARK: Content
 
-    private func rebuildTimeline() {
+    /// Filtering and the timeline index are derived state: build them once per
+    /// catalog revision instead of on every body evaluation.
+    private func rebuildContent() {
+        var filtered = app.catalog.photos
+        if !app.settings.showRemoteOnlyPhotos {
+            filtered.removeAll { !$0.isLocal }
+        }
+        switch filter {
+        case .all: break
+        case .favorites: filtered.removeAll { !$0.isFavorite }
+        case .videos: filtered.removeAll { !$0.isVideo }
+        case .pending: filtered.removeAll { $0.isBackedUp && $0.sidecarDirtyAt == nil }
+        }
+
+        photos = filtered
+        index = timelineIndex(for: filtered)
+        rebuildItems()
+        lastRow = -1
+        updateTimeline()
+        window.invalidate()
+        requestWindow(immediate: true)
+    }
+
+    /// Re-reads backup state without recomputing the filter or the timeline.
+    private func rebuildItems() {
+        var backedUp = 0
+        var pending = 0
+        var built: [LibraryItem] = []
+        built.reserveCapacity(photos.count)
+        for photo in photos {
+            let state = app.photoBackupState(photo)
+            if photo.isBackedUp { backedUp += 1 }
+            if !photo.isBackedUp || photo.sidecarDirtyAt != nil { pending += 1 }
+            built.append(LibraryItem(
+                photo: photo,
+                backupState: state,
+                dateText: photo.takenAt.map { Self.dayFormatter.string(from: $0) }
+            ))
+        }
+        var pendingTotal = 0
+        for photo in app.catalog.photos where !photo.isBackedUp || photo.sidecarDirtyAt != nil {
+            pendingTotal += 1
+        }
+        items = built
+        summary = LibrarySummary(count: photos.count, backedUp: backedUp, pending: pendingTotal)
+    }
+
+    private func timelineIndex(for photos: [PhotoItem]) -> TimelineIndex {
         var dates: [Date?] = []
         var anchors: [YearAnchor] = []
         dates.reserveCapacity(photos.count)
@@ -368,30 +527,68 @@ struct LibraryScreen: View {
                 previousYear = year
             }
         }
-        index = TimelineIndex(dates: dates, anchors: anchors)
-        updateTimeline()
+        return TimelineIndex(dates: dates, anchors: anchors)
     }
 
+    // MARK: Scroll pipeline
+
+    /// Called on every scroll tick. It only does arithmetic and, when the row
+    /// changes, updates the small label state — never the grid.
     private func updateTimeline() {
         let frame = metrics.frame
-        guard frame.width > 0, !index.dates.isEmpty else {
-            label.update(month: nil, year: nil)
-            label.isCollapsed = false
-            return
-        }
-
-        let tile = (frame.width - gridSpacing * CGFloat(columns - 1)) / CGFloat(columns)
-        let rowHeight = max(tile + gridSpacing, 1)
-        let travelled = scrollTop - frame.minY
+        guard frame.width > 0, !index.dates.isEmpty, viewHeight > 0 else { return }
+        let side = tileSide(width: frame.width)
+        let rowHeight = max(side + gridSpacing, 1)
+        let travelled = metrics.scrollTop - frame.minY
         let row = max(0, Int(floor(travelled / rowHeight)))
+
+        label.setCollapsed(travelled >= 0)
+        requestWindow(firstRow: row, rowHeight: rowHeight)
+
+        guard row != lastRow else { return }
+        lastRow = row
+        guard row * columns < index.dates.count else { return }
         let position = min(row * columns, index.dates.count - 1)
-
-        label.isCollapsed = travelled >= 0
-
         guard let date = index.dates[position] else { return }
         let parts = calendar.dateComponents([.year, .month], from: date)
         guard let month = calendar.date(from: parts) else { return }
         label.update(month: month, year: parts.year)
+    }
+
+    private func requestWindow(firstRow: Int? = nil, rowHeight: CGFloat? = nil, immediate: Bool = false) {
+        guard !photos.isEmpty, viewWidth > 1, viewHeight > 1 else { return }
+        let frame = metrics.frame
+        guard frame.width > 0 else { return }
+        let side = tileSide(width: viewWidth)
+        let height = max(rowHeight ?? (side + gridSpacing), 1)
+        let row: Int
+        if let firstRow {
+            row = firstRow
+        } else {
+            let travelled = max(0, metrics.scrollTop - frame.minY)
+            row = max(0, Int(floor(travelled / height)))
+        }
+        let visibleRows = max(1, Int(ceil(viewHeight / height)) + 1)
+        let totalRows = max(1, (photos.count + columns - 1) / columns)
+        let lowerRow = max(0, min(totalRows - 1, row))
+        let upperRow = min(totalRows, lowerRow + visibleRows)
+        let lower = min(photos.count, lowerRow * columns)
+        let upper = min(photos.count, upperRow * columns)
+        guard lower < upper else { return }
+
+        let pixels = thumbnailPixels(side: side)
+        let snapshot = photos
+        let rowCount = columns
+        window.request(lower..<upper, immediate: immediate) { range in
+            prefetcher.update(
+                photos: snapshot,
+                visibleRange: range,
+                itemsPerRow: rowCount,
+                visibleRows: visibleRows,
+                targetPixelSize: pixels,
+                images: app.images
+            )
+        }
     }
 
     private func jump(to year: Int, using proxy: ScrollViewProxy) {
@@ -406,32 +603,22 @@ struct BackupBanner: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        if let error = app.backup.lastError {
             HStack(spacing: 10) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(Theme.accent)
-                    .symbolEffect(.pulse, options: .repeating, isActive: app.backup.isRunning)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(app.backup.status)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text("\(app.backup.completedCount) of \(app.backup.totalCount) · \(formattedBytes(app.backup.transferredBytes))")
-                        .font(.caption)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(error)
+                    .font(.footnote)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+                if app.backup.isRunning {
+                    Text("\(Int(app.backup.progress * 100))%")
+                        .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Text("\(Int(app.backup.progress * 100))%")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .contentTransition(.numericText())
             }
-            ProgressBar(value: app.backup.progress)
+            .padding(12)
+            .contentCard(radius: 14)
         }
-        .padding(14)
-        .contentCard(radius: 16)
-    }
-
-    private func formattedBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }
