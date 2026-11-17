@@ -394,7 +394,7 @@ struct SettingsScreen: View {
                 .controlSize(.small)
             #endif
 
-        case .denied, .restricted:
+        case .denied:
             Button("Open Settings") {
                 PhotoAccess.openSystemSettings()
             }
@@ -402,6 +402,11 @@ struct SettingsScreen: View {
             .buttonStyle(.glass)
             .controlSize(.small)
             .accessibilityIdentifier("settings.photoAccess.settings")
+
+        case .restricted:
+            Text("Restricted")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
         case .authorized:
             Button("Settings") {

@@ -390,18 +390,23 @@ struct LibraryScreen: View {
                     Task { await app.requestMorePhotos() }
                 }
             } else if !app.hasPhotoAccess {
-                let denied = app.authorization == .denied || app.authorization == .restricted
+                let restricted = app.authorization == .restricted
+                let denied = app.authorization == .denied
                 EmptyStateView(
                     symbol: "photo.on.rectangle.angled",
-                    title: denied ? "Photo access is off" : "Your library is private",
-                    message: denied
-                        ? "iOS will not ask again. Allow photo access for Backu in Settings to show your library and back up new photos."
-                        : "Backu needs access to show your photos, build the search index and back them up. Nothing leaves the device until you add a server.",
-                    actionTitle: denied ? "Open Settings" : "Allow Photo Access"
+                    title: restricted
+                        ? "Photo access is restricted"
+                        : (denied ? "Photo access is off" : "Your library is private"),
+                    message: restricted
+                        ? "Photo access is restricted on this device. Ask the person who manages it to allow Backu."
+                        : (denied
+                           ? "iOS will not ask again. Allow photo access for Backu in Settings to show your library and back up new photos."
+                           : "Backu needs access to show your photos, build the search index and back them up. Nothing leaves the device until you add a server."),
+                    actionTitle: restricted ? nil : (denied ? "Open Settings" : "Allow Photo Access")
                 ) {
                     if denied {
                         PhotoAccess.openSystemSettings()
-                    } else {
+                    } else if !restricted {
                         Task { await app.requestPhotoAccess() }
                     }
                 }
