@@ -113,14 +113,14 @@ optional.
 "Stream" means the decoder can produce a usable image before the last byte
 arrives.
 
-| Format | ImageIO incremental decode | First whole frame in ImageIO | Notes |
+| Format | Partial image before EOF? | First whole frame in ImageIO | Notes |
 |---|---|---|---|
 | JPEG baseline | Yes, but only top-down | at 100 % | partial image is a strip, not a frame |
 | Progressive JPEG | Yes | 1/8 frame at **1.9–7.4 %** of the file | first DC scan |
 | PNG | Yes, top-down | at 100 % | |
-| HEIC | **No** | 100 % | ImageIO returns nothing until complete |
+| HEIC | **No** | 100 % | the incremental source returns nothing until every byte is in |
 | AVIF | **No** | 100 % | |
-| JPEG XL | **No** | 100 % | ImageIO has no incremental JXL path |
+| JPEG XL | **No** | 100 % | same: the first image appears only once the object is complete |
 
 With libjxl (the only way to get a JXL preview):
 
