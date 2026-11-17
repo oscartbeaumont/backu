@@ -43,6 +43,7 @@ final class TimelineMetrics {
 struct LibraryScreen: View {
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var filter: LibraryFilter = .all
     @State private var showAddServer = false
@@ -50,6 +51,9 @@ struct LibraryScreen: View {
     @State private var index = TimelineIndex()
     @State private var metrics = TimelineMetrics()
     @State private var label = TimelineLabelState()
+    @State private var pinchBaseColumns: Int?
+    @State private var pinchPreviewColumns: Int?
+    @State private var pinchHaptic = 0
 
     private let calendar = Calendar(identifier: .gregorian)
 
@@ -67,12 +71,21 @@ struct LibraryScreen: View {
         return photos
     }
 
+    /// Columns added on top of the stored preference for roomier layouts.
+    private var columnExtra: Int {
+        #if os(macOS)
+        return 3
+        #else
+        return sizeClass == .compact ? 0 : 2
+        #endif
+    }
+
     private var columns: Int {
         let base = app.settings.gridColumns
         #if os(macOS)
-        return min(8, base + 3)
+        return min(8, base + columnExtra)
         #else
-        return sizeClass == .compact ? base : min(8, base + 2)
+        return sizeClass == .compact ? base : min(8, base + columnExtra)
         #endif
     }
 
@@ -160,6 +173,9 @@ struct LibraryScreen: View {
             AddServerFlow()
                 .environment(app)
         }
+        .simultaneousGesture(pinchToResize)
+        .sensoryFeedback(.selection, trigger: pinchHaptic)
+        .sensoryFeedback(.selection, trigger: app.settings.gridColumns)
     }
 
     // MARK: Header
@@ -300,6 +316,40 @@ struct LibraryScreen: View {
     }
 
     private var gridSpacing: CGFloat { 2 }
+
+    // MARK: Pinch to resize
+
+    /// Photos' two-finger resize. The column count is previewed with a haptic
+    /// while pinching and committed once on release, so the lazy grid only
+    /// reflows one time instead of on every frame.
+    private var pinchToResize: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.01)
+            .onChanged { value in
+                if pinchBaseColumns == nil { pinchBaseColumns = columns }
+                guard let base = pinchBaseColumns, base > 0 else { return }
+                let target = min(8, max(2, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
+                if target != pinchPreviewColumns {
+                    pinchPreviewColumns = target
+                    pinchHaptic += 1
+                }
+            }
+            .onEnded { value in
+                let base = pinchBaseColumns ?? columns
+                pinchBaseColumns = nil
+                pinchPreviewColumns = nil
+                guard base > 0 else { return }
+                let target = min(8, max(2, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
+                guard target != base else { return }
+                applyColumns(target)
+            }
+    }
+
+    private func applyColumns(_ target: Int) {
+        let base = min(8, max(2, target - columnExtra))
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.16) : .smooth(duration: 0.3)) {
+            app.settings.gridColumns = base
+        }
+    }
 
     // MARK: Timeline labels
 

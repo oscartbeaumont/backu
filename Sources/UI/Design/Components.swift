@@ -98,6 +98,7 @@ struct FilterChip: View {
         }
         .buttonStyle(PressableButtonStyle())
         .glassSurface(22, tint: isSelected ? Theme.accent : nil, interactive: true)
+        .animation(.backuSnappy, value: isSelected)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

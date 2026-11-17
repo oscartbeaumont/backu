@@ -57,25 +57,54 @@ final class TimelineLabelState {
     }
 }
 
-/// A small glass pill that names the month at the top of the grid.
+/// A small glass pill that names the month at the top of the grid. The label
+/// crossfades and nudges in the direction the timeline is travelling so a
+/// scroll feels continuous rather than teleporting.
 struct MonthPill: View {
     var date: Date
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayed: Date
+    @State private var forward = true
+
+    init(date: Date) {
+        self.date = date
+        _displayed = State(initialValue: date)
+    }
+
     private var label: String {
-        date.formatted(.dateTime.month(.wide).year())
+        displayed.formatted(.dateTime.month(.wide).year())
     }
 
     var body: some View {
-        Text(label)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 13)
-            .frame(height: 34)
-            .glassCapsule()
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(label)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityIdentifier("library.monthPill")
+        ZStack {
+            Text(label)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.primary)
+                .id(label)
+                .transition(pillTransition)
+        }
+        .padding(.horizontal, 13)
+        .frame(height: 34)
+        .glassCapsule()
+        .animation(reduceMotion ? .easeInOut(duration: 0.15) : .smooth(duration: 0.3), value: displayed)
+        .onChange(of: date) { old, new in
+            forward = new < old
+            displayed = new
+        }
+        .onAppear { displayed = date }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(date.formatted(.dateTime.month(.wide).year()))
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("library.monthPill")
+    }
+
+    private var pillTransition: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: forward ? 10 : -10)),
+            removal: .opacity.combined(with: .offset(y: forward ? -10 : 10))
+        )
     }
 }
 
@@ -88,6 +117,7 @@ struct YearRail: View {
     var onSelect: (Int) -> Void
 
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isShown: Bool { label.isRailVisible || label.isScrubbing || voiceOverEnabled }
 
@@ -154,10 +184,10 @@ struct YearRail: View {
             }
             .accessibilityIdentifier("library.yearRail")
             .opacity(isShown ? 1 : 0)
-            .scaleEffect(isShown ? 1 : 0.94, anchor: .trailing)
+            .scaleEffect(isShown || reduceMotion ? 1 : 0.94, anchor: .trailing)
             .allowsHitTesting(isShown)
             .accessibilityHidden(!isShown)
-            .animation(.easeOut(duration: 0.22), value: isShown)
+            .animation(reduceMotion ? .easeOut(duration: 0.16) : .easeOut(duration: 0.22), value: isShown)
         }
     }
 
@@ -192,15 +222,23 @@ struct YearRail: View {
 /// gone) and the glass grid-size / backup controls.
 struct LibraryTopBar: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var label: TimelineLabelState
     var pendingCount: Int
     var onAddServer: () -> Void
+    @Namespace private var backupNamespace
+
+    private var backupMotion: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.34, extraBounce: 0.03)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             if label.isCollapsed, let month = label.month {
                 MonthPill(date: month)
-                    .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .leading)))
+                    .transition(reduceMotion
+                        ? .opacity
+                        : .opacity.combined(with: .scale(scale: 0.92, anchor: .leading)))
             }
 
             Spacer(minLength: 8)
@@ -208,8 +246,14 @@ struct LibraryTopBar: View {
             GlassEffectContainer(spacing: 10) {
                 HStack(spacing: 10) {
                     gridSizeMenu
+                        .glassEffectID("grid", in: backupNamespace)
                     backupControl
+                        .glassEffectID("backup", in: backupNamespace)
                 }
+            }
+            .animation(backupMotion, value: app.backup.isRunning)
+            .sensoryFeedback(trigger: app.backup.isRunning) { _, running in
+                running ? .impact(weight: .medium) : .success
             }
         }
         .padding(.horizontal, 16)
@@ -241,17 +285,8 @@ struct LibraryTopBar: View {
     @ViewBuilder
     private var backupControl: some View {
         if app.backup.isRunning {
-            Button {
-                app.backup.cancel()
-            } label: {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 42, height: 42)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .tint(.red)
-            .accessibilityLabel("Stop backup")
+            backupProgressPill
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else if app.servers.servers.isEmpty {
             Button(action: onAddServer) {
                 Label("Add storage", systemImage: "externaldrive.badge.plus")
@@ -261,12 +296,14 @@ struct LibraryTopBar: View {
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.capsule)
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else if pendingCount == 0 {
             Image(systemName: "checkmark.icloud.fill")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(Theme.mint)
                 .frame(width: 42, height: 42)
                 .accessibilityLabel("All \(app.catalog.photos.count) photos backed up")
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         } else {
             Button {
                 app.startBackup()
@@ -278,6 +315,39 @@ struct LibraryTopBar: View {
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
             .accessibilityLabel("Back up \(pendingCount) photos to \(app.backupServer?.name ?? "storage")")
+            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
         }
+    }
+
+    /// The floating backup control grows into a live progress pill while a run
+    /// is in flight, then shrinks back into its idle state.
+    private var backupProgressPill: some View {
+        Button {
+            app.backup.cancel()
+        } label: {
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.primary.opacity(0.16), lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: max(0.03, app.backup.progress))
+                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(reduceMotion ? nil : .smooth(duration: 0.45), value: app.backup.progress)
+                }
+                .frame(width: 18, height: 18)
+
+                Text("\(app.backup.completedCount)/\(app.backup.totalCount)")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: app.backup.completedCount)
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 42)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .accessibilityLabel("Backing up \(app.backup.completedCount) of \(app.backup.totalCount). Stop backup")
     }
 }

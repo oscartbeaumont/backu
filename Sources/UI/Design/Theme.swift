@@ -145,3 +145,58 @@ extension Animation {
     static var backuSnappy: Animation { .snappy(duration: 0.28, extraBounce: 0.02) }
     static var backuGentle: Animation { .smooth(duration: 0.35) }
 }
+
+/// The namespace shared by every grid tile and the viewer, so whichever screen
+/// pushed the viewer can zoom back into the tile it came from.
+private struct ViewerZoomNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+/// False for the tabs that are not on screen, so a photo that exists in both
+/// the library and the search results only registers one transition source.
+private struct ViewerZoomSourceActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var viewerZoomNamespace: Namespace.ID? {
+        get { self[ViewerZoomNamespaceKey.self] }
+        set { self[ViewerZoomNamespaceKey.self] = newValue }
+    }
+
+    var viewerZoomSourceActive: Bool {
+        get { self[ViewerZoomSourceActiveKey.self] }
+        set { self[ViewerZoomSourceActiveKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Marks a grid tile as the source of the viewer's zoom transition.
+    @ViewBuilder
+    func zoomTransitionSource(id: String, in namespace: Namespace.ID?) -> some View {
+        #if os(iOS)
+        if let namespace {
+            matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
+    /// Expands a pushed viewer out of (and back into) the tile it came from.
+    /// Reduce Motion falls back to the system's default push.
+    @ViewBuilder
+    func viewerZoomTransition(id: String, in namespace: Namespace.ID?, reduceMotion: Bool) -> some View {
+        #if os(iOS)
+        if let namespace, !reduceMotion {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}

@@ -6,6 +6,8 @@ struct PhotoTile: View {
     var cornerRadius: CGFloat = Theme.tileRadius
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
+    @Environment(\.viewerZoomNamespace) private var zoomNamespace
+    @Environment(\.viewerZoomSourceActive) private var zoomSourceActive
     @State private var image: PlatformImage?
     @State private var isHovering = false
 
@@ -76,6 +78,7 @@ struct PhotoTile: View {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
+        .zoomTransitionSource(id: photo.id, in: zoomSourceActive ? zoomNamespace : nil)
         .onHover { isHovering = $0 }
         .task(id: photo.id) {
             image = await app.images.thumbnail(for: photo, size: targetSize)

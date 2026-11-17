@@ -3,6 +3,9 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var columnVisibilityBeforeViewer: NavigationSplitViewVisibility?
+    @Namespace private var viewerNamespace
 
     var body: some View {
         @Bindable var app = app
@@ -15,13 +18,14 @@ struct RootView: View {
                 splitRoot
                 #else
                 if horizontalSizeClass == .compact {
-                    tabRoot
+                    compactRoot
                 } else {
                     splitRoot
                 }
                 #endif
             }
         }
+        .environment(\.viewerZoomNamespace, viewerNamespace)
         .background(Theme.pageBackground)
         .animation(.backuSnappy, value: app.showOnboarding)
         #if os(macOS)
@@ -29,11 +33,6 @@ struct RootView: View {
             ViewerScreen(presentation: presentation)
                 .environment(app)
                 .frame(minWidth: 940, minHeight: 720)
-        }
-        #else
-        .fullScreenCover(item: $app.viewer) { presentation in
-            ViewerScreen(presentation: presentation)
-                .environment(app)
         }
         #endif
         .alert("Something went wrong", isPresented: Binding(
@@ -46,42 +45,81 @@ struct RootView: View {
         }
     }
 
+    /// The viewer is pushed above the tab bar so it covers the whole screen and
+    /// the tab bar needs no visibility juggling on the way back.
+    #if os(iOS)
+    private var compactRoot: some View {
+        @Bindable var app = app
+        return NavigationStack {
+            tabRoot
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(item: $app.viewer) { presentation in
+                    ViewerScreen(presentation: presentation)
+                        .environment(app)
+                }
+        }
+    }
+
     private var tabRoot: some View {
         @Bindable var app = app
         return TabView(selection: $app.activeTab) {
             Tab(AppTab.library.title, systemImage: AppTab.library.symbol, value: .library) {
                 NavigationStack { LibraryScreen() }
+                    .environment(\.viewerZoomSourceActive, app.activeTab == .library)
             }
             Tab(AppTab.search.title, systemImage: AppTab.search.symbol, value: .search) {
                 NavigationStack { SearchScreen() }
+                    .environment(\.viewerZoomSourceActive, app.activeTab == .search)
             }
             Tab(AppTab.people.title, systemImage: AppTab.people.symbol, value: .people) {
                 NavigationStack { PeopleScreen() }
+                    .environment(\.viewerZoomSourceActive, app.activeTab == .people)
             }
             Tab(AppTab.settings.title, systemImage: AppTab.settings.symbol, value: .settings) {
                 NavigationStack { SettingsScreen() }
             }
         }
         .tint(Theme.accent)
+        .tabBarMinimizeBehavior(.never)
     }
+    #endif
 
     private var splitRoot: some View {
         @Bindable var app = app
-        return NavigationSplitView {
+        return NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(selection: $app.activeTab)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 236, max: 280)
         } detail: {
             NavigationStack {
-                switch app.activeTab {
-                case .library: LibraryScreen()
-                case .search: SearchScreen()
-                case .people: PeopleScreen()
-                case .settings: SettingsScreen()
+                Group {
+                    switch app.activeTab {
+                    case .library: LibraryScreen()
+                    case .search: SearchScreen()
+                    case .people: PeopleScreen()
+                    case .settings: SettingsScreen()
+                    }
+                }
+                .navigationDestination(item: $app.viewer) { presentation in
+                    ViewerScreen(presentation: presentation)
+                        .environment(app)
                 }
             }
         }
         .navigationSplitViewStyle(.balanced)
         .tint(Theme.accent)
+        #if os(iOS)
+        // Photos gives the viewer the whole screen on iPad. Collapsing to the
+        // detail column when a photo opens keeps the zoom transition full-bleed.
+        .onChange(of: app.viewer == nil) { _, isClosed in
+            if isClosed {
+                columnVisibility = columnVisibilityBeforeViewer ?? .all
+                columnVisibilityBeforeViewer = nil
+            } else {
+                columnVisibilityBeforeViewer = columnVisibility
+                columnVisibility = .detailOnly
+            }
+        }
+        #endif
     }
 }
 
