@@ -53,6 +53,11 @@ Worker uses the `nodejs_compat` flag because Solid's server runtime imports
 `node:async_hooks`. The apex custom domain is configured in `wrangler.jsonc` as
 a `custom_domain` route.
 
+The production `workers.dev` route is disabled (`workers_dev: false`) so the
+site is only indexed at `backu.app`. Version URLs stay enabled
+(`preview_urls: true`) for PR previews; they are not linked from the production
+site.
+
 ### CI
 
 `.github/workflows/deploy-landing.yml` type-checks, builds and deploys on every
