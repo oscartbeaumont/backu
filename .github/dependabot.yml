@@ -10,15 +10,15 @@ multi-ecosystem-groups:
       day: "monday"
       time: "07:00"
       timezone: "Australia/Sydney"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
 
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     multi-ecosystem-group: "backu-deps"
     patterns: ["*"]
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "ci"
 
   # Enable this when Backu takes its first Swift Package dependency; Dependabot
   # needs a Package.swift before it can read the graph.
