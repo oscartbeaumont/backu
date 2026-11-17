@@ -582,7 +582,10 @@ final class BackupEngine {
             }
 
             updateItem(itemID) { $0.phase = .analyzing }
-            if settings.faceRecognitionEnabled && photo.analyzedAt == nil {
+            // The candidate list is built before the first destination runs, so
+            // re-read the catalog to avoid analysing the same photo once per
+            // bucket.
+            if settings.faceRecognitionEnabled, catalog.photo(id: photo.id)?.analyzedAt == nil {
                 if let image = await Self.uprightImage(url: exported.url) {
                     let outcome = await analyzer.analyze(image: image, embeddingStore: faceStore)
                     catalog.applyFaceAnalysis(photoID: photo.id, faces: outcome.faces, metadata: metadata)
