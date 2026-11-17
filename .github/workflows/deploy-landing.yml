@@ -54,7 +54,10 @@ jobs:
             --preview-alias "pr-$PR_NUMBER" \
             --message "PR #$PR_NUMBER" \
             | tee "$RUNNER_TEMP/preview.log"
-          url="$(grep -oE 'https://[^ ]+\.workers\.dev[^ ]*' "$RUNNER_TEMP/preview.log" | head -1)"
+          url="$(sed -n 's/^Version Preview Alias URL: //p' "$RUNNER_TEMP/preview.log" | head -1 | tr -d '\r')"
+          if [ -z "$url" ]; then
+            url="$(sed -n 's/^Version Preview URL: //p' "$RUNNER_TEMP/preview.log" | head -1 | tr -d '\r')"
+          fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Comment preview URL
         if: steps.preview.outputs.url != ''
