@@ -1,0 +1,183 @@
+{
+  "codecs" : [
+    {
+      "bytesPerTile" : 30484.916666666668,
+      "cell" : 384,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.26121758333333334,
+      "encodeMillis" : 26.086166,
+      "encodedBytes" : 1097457,
+      "level" : "sweep",
+      "name" : "grid 384 jpeg q62",
+      "quality" : 0.62,
+      "tilesPerSheet" : 36
+    },
+    {
+      "bytesPerTile" : 40566.833333333336,
+      "cell" : 384,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.25606016666666664,
+      "encodeMillis" : 31.772708,
+      "encodedBytes" : 1460406,
+      "level" : "sweep",
+      "name" : "grid 384 jpeg q75",
+      "quality" : 0.75,
+      "tilesPerSheet" : 36
+    },
+    {
+      "bytesPerTile" : 12539.109375,
+      "cell" : 256,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.10865559375,
+      "encodeMillis" : 18.779167,
+      "encodedBytes" : 802503,
+      "level" : "sweep",
+      "name" : "grid 256 jpeg q62",
+      "quality" : 0.62,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 19617.444444444445,
+      "cell" : 384,
+      "codec" : "heic",
+      "decodeMillisPerTile" : 0.7194085555555555,
+      "encodeMillis" : 53.906833,
+      "encodedBytes" : 706228,
+      "level" : "sweep",
+      "name" : "grid 384 heic q62",
+      "quality" : 0.62,
+      "tilesPerSheet" : 36
+    },
+    {
+      "bytesPerTile" : 16271.111111111111,
+      "cell" : 384,
+      "codec" : "avif",
+      "decodeMillisPerTile" : 0.7506527777777777,
+      "encodeMillis" : 91.608834,
+      "encodedBytes" : 585760,
+      "level" : "sweep",
+      "name" : "grid 384 avif q62",
+      "quality" : 0.62,
+      "tilesPerSheet" : 36
+    },
+    {
+      "bytesPerTile" : 2431.328125,
+      "cell" : 128,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.0361875,
+      "encodeMillis" : 4.684541,
+      "encodedBytes" : 155605,
+      "level" : "sweep",
+      "name" : "preview 128 jpeg q45",
+      "quality" : 0.45,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 1501.484375,
+      "cell" : 96,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.01380859375,
+      "encodeMillis" : 2.486666,
+      "encodedBytes" : 96095,
+      "level" : "sweep",
+      "name" : "preview 96 jpeg q45",
+      "quality" : 0.45,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 780.78125,
+      "cell" : 64,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.010599609375,
+      "encodeMillis" : 1.271333,
+      "encodedBytes" : 49970,
+      "level" : "sweep",
+      "name" : "preview 64 jpeg q45",
+      "quality" : 0.45,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 502.734375,
+      "cell" : 64,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.007380203125,
+      "encodeMillis" : 1.046417,
+      "encodedBytes" : 32175,
+      "level" : "sweep",
+      "name" : "preview 64 jpeg q30",
+      "quality" : 0.3,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 430.5625,
+      "cell" : 64,
+      "codec" : "heic",
+      "decodeMillisPerTile" : 0.02716340625,
+      "encodeMillis" : 14.027875,
+      "encodedBytes" : 27556,
+      "level" : "sweep",
+      "name" : "preview 64 heic q35",
+      "quality" : 0.35,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 320.59375,
+      "cell" : 64,
+      "codec" : "avif",
+      "decodeMillisPerTile" : 0.055599609375,
+      "encodeMillis" : 32.943334,
+      "encodedBytes" : 20518,
+      "level" : "sweep",
+      "name" : "preview 64 avif q35",
+      "quality" : 0.35,
+      "tilesPerSheet" : 64
+    },
+    {
+      "bytesPerTile" : 24849.777777777777,
+      "cell" : 384,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 0.23703586111111116,
+      "encodeMillis" : 21.398792000000004,
+      "encodedBytes" : 894592,
+      "level" : "individual",
+      "name" : "individual-384-jpeg-q62",
+      "quality" : 0.62,
+      "tilesPerSheet" : 36
+    },
+    {
+      "bytesPerTile" : 165991.25,
+      "cell" : 900,
+      "codec" : "jpeg",
+      "decodeMillisPerTile" : 1.5212511666666666,
+      "encodeMillis" : 115.174001,
+      "encodedBytes" : 5975685,
+      "level" : "individual",
+      "name" : "individual-900-jpeg-q80",
+      "quality" : 0.8,
+      "tilesPerSheet" : 36
+    }
+  ],
+  "generatedAt" : "2026-11-17T17:25:29Z",
+  "library" : {
+    "current-900-jpeg-q80" : {
+      "perTileBytes" : 183711.78666666665,
+      "totalBytes" : 55113536
+    },
+    "grid" : {
+      "perTileBytes" : 17425.933333333334,
+      "totalBytes" : 5227780
+    },
+    "preview" : {
+      "perTileBytes" : 665.8533333333334,
+      "totalBytes" : 199756
+    }
+  },
+  "notes" : [
+
+  ],
+  "photos" : 300,
+  "profile" : "shaped",
+  "scenarios" : [
+
+  ]
+}

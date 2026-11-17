@@ -1,0 +1,159 @@
+{
+  "codecs" : [
+
+  ],
+  "generatedAt" : "2026-11-17T17:26:36Z",
+  "library" : {
+    "current-900-jpeg-q80" : {
+      "perTileBytes" : 183711.78666666665,
+      "totalBytes" : 55113536
+    },
+    "individual-384-jpeg-q62" : {
+      "perTileBytes" : 28427.616666666665,
+      "totalBytes" : 8528285
+    }
+  },
+  "notes" : [
+    "individual 384 encode: 0.9 ms\/photo",
+    "uploaded 618 objects in 7315 ms"
+  ],
+  "photos" : 300,
+  "profile" : "localhost",
+  "scenarios" : [
+    {
+      "allTilesMillis" : 35.908916,
+      "bytes" : 2200359,
+      "decodeMillisPerTile" : 0,
+      "detail" : "15 × 900 px individual JPEGs, 3 concurrent",
+      "firstTileMillis" : 4.067541,
+      "name" : "cold first screen — current",
+      "requests" : 15,
+      "runs" : [
+        37.752417,
+        35.657459,
+        35.908916
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 374.81183400000003,
+      "bytes" : 26943954,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 × 900 px individual JPEGs, 3 concurrent",
+      "firstTileMillis" : 5.148917,
+      "name" : "fast scroll 10 screens — current",
+      "requests" : 150,
+      "runs" : [
+        371.159,
+        375.443167,
+        374.81183400000003
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 9.122290999999999,
+      "bytes" : 331157,
+      "decodeMillisPerTile" : 0,
+      "detail" : "15 × 384 px individual JPEGs, 6 concurrent",
+      "firstTileMillis" : 3.110208,
+      "name" : "cold first screen — right-sized",
+      "requests" : 15,
+      "runs" : [
+        12.964500000000001,
+        7.778833,
+        9.122290999999999
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 79.127625,
+      "bytes" : 4161397,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 × 384 px individual JPEGs, 6 concurrent",
+      "firstTileMillis" : 2.3200410000000002,
+      "name" : "fast scroll 10 screens — right-sized",
+      "requests" : 150,
+      "runs" : [
+        76.218625,
+        79.77695899999999,
+        79.127625
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 51.693833000000005,
+      "bytes" : 547262,
+      "decodeMillisPerTile" : 0,
+      "detail" : "one 6×6 HEIC sheet, 36 tiles",
+      "firstTileMillis" : 51.642583,
+      "name" : "cold first screen — grid atlas",
+      "requests" : 1,
+      "runs" : [
+        116.72420799999999,
+        51.693833000000005,
+        44.152417
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 229.48487500000002,
+      "bytes" : 3121685,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 tiles from 5 HEIC sheets",
+      "firstTileMillis" : 60.185916999999996,
+      "name" : "fast scroll 10 screens — grid atlas",
+      "requests" : 5,
+      "runs" : [
+        209.500833,
+        229.48487500000002,
+        261.357208
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 5.543374999999999,
+      "bytes" : 21810,
+      "decodeMillisPerTile" : 0,
+      "detail" : "one 6×6 preview sheet, 64 px cells",
+      "firstTileMillis" : 5.480874999999999,
+      "name" : "cold first screen — preview atlas",
+      "requests" : 1,
+      "runs" : [
+        7.959542,
+        5.543374999999999,
+        5.4346250000000005
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 16.577583,
+      "bytes" : 118525,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 previews from 5 sheets",
+      "firstTileMillis" : 4.6705000000000005,
+      "name" : "fast scroll 10 screens — preview atlas",
+      "requests" : 5,
+      "runs" : [
+        14.383999999999999,
+        16.577583,
+        18.984167
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 24.622208999999998,
+      "bytes" : 199756,
+      "decodeMillisPerTile" : 0,
+      "detail" : "300 previews from 9 sheets",
+      "firstTileMillis" : 4.82825,
+      "name" : "bulk preview pull (whole library)",
+      "requests" : 9,
+      "runs" : [
+        29.031208,
+        24.622208999999998,
+        20.888916000000002
+      ],
+      "tiles" : 300
+    }
+  ]
+}

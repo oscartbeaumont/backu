@@ -74,6 +74,7 @@ final class AppModel {
     let faceStore: FaceEmbeddingStore
     let places: PlaceResolver
     let images: ImageCache
+    let atlases = AtlasStore()
 
     var authorization: PHAuthorizationStatus = PhotoLibraryService.authorizationStatus
     var isScanning = false
@@ -114,6 +115,15 @@ final class AppModel {
     }
 
     private func installImageLoaders() {
+        images.atlasStore = atlases
+        images.atlasClient = { [weak self] serverID in
+            guard let self else { return nil }
+            guard let server = self.servers.server(id: serverID) else { return nil }
+            return self.servers.client(for: server)
+        }
+        images.atlasPrefix = { [weak self] serverID in
+            self?.servers.server(id: serverID)?.normalizedPrefix ?? ""
+        }
         images.remoteThumbnailLoader = { [weak self] photo, size in
             guard let self else { return nil }
             guard let server = self.servers.server(id: photo.copies.first?.serverID ?? photo.serverID),
@@ -502,6 +512,7 @@ final class AppModel {
         for server in servers.servers { servers.remove(server) }
         settings.backupServerIDs = []
         images.clearMemory()
+        atlases.clearAll()
         Task { await faceStore.deleteAll() }
         try? FileManager.default.removeItem(at: AppPaths.imageCache)
         try? FileManager.default.removeItem(at: AppPaths.thumbnailCache)
@@ -537,6 +548,7 @@ final class AppModel {
         }
         lastCloudSyncAt = Date()
         isSyncingRemote = false
+        prefetchRemotePreviews()
         if imported > 0 {
             showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in your buckets")
             catalog.saveSoon()
@@ -556,8 +568,42 @@ final class AppModel {
             if imported > 0 {
                 showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in \(server.name)")
             }
+            prefetchRemotePreviews()
         } catch {
             // Non-fatal: an empty bucket has no index yet.
+        }
+    }
+
+    private var previewPrefetchTask: Task<Void, Never>?
+
+    /// Pulls the low-resolution atlas for every remote-only photo once per
+    /// session. At 64 px a sheet is ~20 KB for 36 photos, so a 100k library is
+    /// a few tens of megabytes and after it lands the grid can scroll the
+    /// whole library with no network at all. Metered links are left alone
+    /// unless the person already allowed cellular backups.
+    func prefetchRemotePreviews() {
+        guard previewPrefetchTask == nil else { return }
+        let photos = catalog.photos.filter(\.isRemoteOnly)
+        guard photos.count >= 30 else { return }
+        let byServer = Dictionary(grouping: photos) { $0.serverID ?? $0.copies.first?.serverID }
+        previewPrefetchTask = Task(priority: .utility) { [weak self] in
+            // Let NWPathMonitor deliver its first path: starting before it
+            // does would treat a cellular link as "unknown" and pull anyway.
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            defer { self.previewPrefetchTask = nil }
+            let snapshot = TransferNetworkMonitor.shared.current()
+            if snapshot.isExpensive && !self.settings.backupOnCellular { return }
+            for (serverID, group) in byServer {
+                if Task.isCancelled { return }
+                guard let server = self.servers.server(id: serverID),
+                      let client = self.servers.client(for: server) else { continue }
+                await self.atlases.preloadPreviews(
+                    photos: group,
+                    client: client,
+                    prefix: server.normalizedPrefix
+                )
+            }
         }
     }
 

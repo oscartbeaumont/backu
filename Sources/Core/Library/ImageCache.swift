@@ -20,6 +20,14 @@ final class ImageCache {
     var remoteThumbnailLoader: ((PhotoItem, CGSize) async -> PlatformImage?)?
     var remoteImageLoader: ((PhotoItem) async -> PlatformImage?)?
 
+    /// Immutable thumbnail atlases for remote-only photos. Local PhotoKit
+    /// assets never touch it: Photos already caches and prefetches those.
+    var atlasStore: AtlasStore?
+    /// Resolves the S3 client for the server that owns a photo.
+    var atlasClient: ((UUID?) -> S3Client?)?
+    /// The folder prefix inside that server's bucket; sheets live under it.
+    var atlasPrefix: ((UUID?) -> String)?
+
     private final class Box {
         let image: PlatformImage
         init(_ image: PlatformImage) { self.image = image }
@@ -55,7 +63,55 @@ final class ImageCache {
     func cachedThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
         let cacheKey = key(for: photo, size: size)
         if let final = thumbnails.object(forKey: cacheKey) { return final.image }
-        return degradedThumbnails.object(forKey: cacheKey)?.image
+        if let degraded = degradedThumbnails.object(forKey: cacheKey)?.image { return degraded }
+        // A preview atlas cell is already decoded with its sheet: this is the
+        // paint that makes a fast scroll show pictures instead of placeholders.
+        return atlasStore?.cachedTile(for: photo, level: .preview)
+    }
+
+    func cachedAtlasPreview(for photo: PhotoItem) -> PlatformImage? {
+        atlasStore?.cachedTile(for: photo, level: .preview)
+    }
+
+    /// Starts fetching the grid sheets for a scroll window. Called by the
+    /// prefetcher instead of one request per tile.
+    func prepareAtlas(photos: [PhotoItem], level: ThumbnailAtlas.Level) {
+        guard let atlasStore else { return }
+        let byServer = Dictionary(grouping: photos.filter(\.isRemoteOnly)) { photo in
+            photo.serverID ?? photo.copies.first?.serverID
+        }
+        for (serverID, group) in byServer {
+            atlasStore.prepare(
+                photos: group,
+                level: level,
+                client: atlasClient?(serverID),
+                prefix: atlasPrefix?(serverID) ?? ""
+            )
+        }
+    }
+
+    /// True when this photo has an atlas pointer. The prefetcher uses it to
+    /// choose between sheets and per-photo thumbnails; a bucket half-migrated
+    /// to atlases still prefetches the photos that have none.
+    func hasAtlas(for photo: PhotoItem) -> Bool {
+        atlasStore?.pointer(for: photo) != nil
+    }
+
+    func atlasTile(for photo: PhotoItem, size: CGSize) async -> PlatformImage? {
+        guard let atlasStore, let client = atlasClient?(photo.serverID ?? photo.copies.first?.serverID) else {
+            return nil
+        }
+        // A 384 px cell is exact on an iPhone grid. On an iPad the tile is
+        // wider than one cell, so the sharper per-photo thumbnail wins.
+        let wanted = max(size.width, size.height)
+        guard wanted <= CGFloat(ThumbnailAtlas.Level.grid.layout.cell) * 1.5 else { return nil }
+        let serverID = photo.serverID ?? photo.copies.first?.serverID
+        return await atlasStore.tile(
+            for: photo,
+            level: .grid,
+            client: client,
+            prefix: atlasPrefix?(serverID) ?? ""
+        )
     }
 
     func cachedFinalThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
@@ -116,10 +172,23 @@ final class ImageCache {
                     }
                 }
             }
-        } else if let loader = remoteThumbnailLoader {
-            image = await loader(photo, size)
         } else {
-            image = nil
+            // Remote-only: paint the preview atlas immediately, then upgrade to
+            // the grid sheet. Only when neither exists does the 900 px
+            // per-photo thumbnail get fetched.
+            if let preview = atlasStore?.cachedTile(for: photo, level: .preview) {
+                onDegraded?(preview)
+            }
+            if let tile = await atlasTile(for: photo, size: size) {
+                image = tile
+            } else if let loader = remoteThumbnailLoader {
+                #if DEBUG
+                print("BACKU-DEBUG atlas-fallback id=\(photo.id) size=\(size) pointer=\(atlasStore?.pointer(for: photo) != nil) client=\(atlasClient?(photo.serverID ?? photo.copies.first?.serverID) != nil)")
+                #endif
+                image = await loader(photo, size)
+            } else {
+                image = nil
+            }
         }
 
         if let image {

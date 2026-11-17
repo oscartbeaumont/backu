@@ -524,6 +524,25 @@ final class CatalogStore {
         }
     }
 
+    /// Records the immutable atlas group and cell for photos that just had
+    /// their sheets published. Batched: one observable bump for a whole group
+    /// instead of 36.
+    func recordAtlas(serverID: UUID, group: String, assignments: [String: Int]) {
+        var changed = 0
+        for (photoID, cell) in assignments {
+            guard let index = photos.firstIndex(where: { $0.id == photoID }),
+                  let copyIndex = photos[index].copies.firstIndex(where: { $0.serverID == serverID })
+            else { continue }
+            photos[index].copies[copyIndex].atlasGroup = group
+            photos[index].copies[copyIndex].atlasCell = cell
+            photoByID[photoID] = photos[index]
+            changed += 1
+        }
+        guard changed > 0 else { return }
+        bump()
+        saveSoon()
+    }
+
     /// Once this device uploads a photo and learns its SHA-256, fold any
     /// bucket-only entry for the same bytes into the local photo instead of
     /// showing the same picture twice.

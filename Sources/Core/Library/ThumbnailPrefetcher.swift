@@ -139,7 +139,16 @@ final class ThumbnailPrefetcher {
         remoteSize = targetPixelSize
         remoteWindow = window
 
-        let wanted = Set(window.filter(\.isRemoteOnly).map(\.id))
+        // Atlases turn a screen of 15 requests into one sheet. Photos that
+        // predate the atlas (or whose publish was interrupted) keep the
+        // per-photo pump, so a half-migrated bucket still warms everything.
+        let remote = window.filter(\.isRemoteOnly)
+        let atlasPhotos = remote.filter { images.hasAtlas(for: $0) }
+        if !atlasPhotos.isEmpty {
+            images.prepareAtlas(photos: atlasPhotos, level: .grid)
+            images.prepareAtlas(photos: atlasPhotos, level: .preview)
+        }
+        let wanted = Set(remote.filter { !images.hasAtlas(for: $0) }.map(\.id))
         for (id, task) in remoteTasks where !wanted.contains(id) {
             task.cancel()
             remoteTasks[id] = nil

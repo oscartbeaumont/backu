@@ -67,6 +67,22 @@ struct PhotoCopy: Codable, Hashable, Sendable {
     var etag: String?
     /// Content hash of the original bytes, when known. Used for deduplication.
     var sha256: String?
+    /// Immutable atlas group holding this photo's grid and preview cells. The
+    /// group id is a content hash, so a pointer never needs invalidating.
+    var atlasGroup: String? = nil
+    /// Cell index inside `atlasGroup` (0..<36).
+    var atlasCell: Int? = nil
+
+    var atlasPointer: AtlasPointer? {
+        guard let atlasGroup, let atlasCell else { return nil }
+        return AtlasPointer(group: atlasGroup, cell: atlasCell)
+    }
+}
+
+/// A photo's position inside an immutable atlas group.
+struct AtlasPointer: Codable, Hashable, Sendable {
+    var group: String
+    var cell: Int
 }
 
 /// One asset in the local catalog. It can be backed by the photo library, by a

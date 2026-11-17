@@ -1,0 +1,159 @@
+{
+  "codecs" : [
+
+  ],
+  "generatedAt" : "2026-11-17T17:29:33Z",
+  "library" : {
+    "current-900-jpeg-q80" : {
+      "perTileBytes" : 183711.78666666665,
+      "totalBytes" : 55113536
+    },
+    "individual-384-jpeg-q62" : {
+      "perTileBytes" : 28427.616666666665,
+      "totalBytes" : 8528285
+    }
+  },
+  "notes" : [
+    "individual 384 encode: 0.8 ms\/photo",
+    "uploaded 618 objects in 113201 ms"
+  ],
+  "photos" : 300,
+  "profile" : "mobile",
+  "scenarios" : [
+    {
+      "allTilesMillis" : 1051.4871249999999,
+      "bytes" : 2200359,
+      "decodeMillisPerTile" : 0,
+      "detail" : "15 × 900 px individual JPEGs, 3 concurrent",
+      "firstTileMillis" : 154.006459,
+      "name" : "cold first screen — current",
+      "requests" : 15,
+      "runs" : [
+        1051.4871249999999,
+        1084.1497499999998,
+        1037.7555419999999
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 11894.441167,
+      "bytes" : 26943954,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 × 900 px individual JPEGs, 3 concurrent",
+      "firstTileMillis" : 147.41199999999998,
+      "name" : "fast scroll 10 screens — current",
+      "requests" : 150,
+      "runs" : [
+        11955.5635,
+        11894.441167,
+        11842.706
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 297.474709,
+      "bytes" : 331157,
+      "decodeMillisPerTile" : 0,
+      "detail" : "15 × 384 px individual JPEGs, 6 concurrent",
+      "firstTileMillis" : 93.18962499999999,
+      "name" : "cold first screen — right-sized",
+      "requests" : 15,
+      "runs" : [
+        296.49491700000004,
+        297.474709,
+        311.522292
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 2507.3618340000003,
+      "bytes" : 4161397,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 × 384 px individual JPEGs, 6 concurrent",
+      "firstTileMillis" : 92.483334,
+      "name" : "fast scroll 10 screens — right-sized",
+      "requests" : 150,
+      "runs" : [
+        2507.3618340000003,
+        2502.236084,
+        2511.902208
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 635.775916,
+      "bytes" : 547262,
+      "decodeMillisPerTile" : 0,
+      "detail" : "one 6×6 HEIC sheet, 36 tiles",
+      "firstTileMillis" : 635.7375830000001,
+      "name" : "cold first screen — grid atlas",
+      "requests" : 1,
+      "runs" : [
+        676.390625,
+        623.9249169999999,
+        635.775916
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 865.983541,
+      "bytes" : 3121685,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 tiles from 5 HEIC sheets",
+      "firstTileMillis" : 594.200791,
+      "name" : "fast scroll 10 screens — grid atlas",
+      "requests" : 5,
+      "runs" : [
+        865.983541,
+        895.3243749999999,
+        850.3629999999999
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 115.133875,
+      "bytes" : 21810,
+      "decodeMillisPerTile" : 0,
+      "detail" : "one 6×6 preview sheet, 64 px cells",
+      "firstTileMillis" : 115.0965,
+      "name" : "cold first screen — preview atlas",
+      "requests" : 1,
+      "runs" : [
+        115.133875,
+        100.66529200000001,
+        120.193709
+      ],
+      "tiles" : 15
+    },
+    {
+      "allTilesMillis" : 144.045333,
+      "bytes" : 118525,
+      "decodeMillisPerTile" : 0,
+      "detail" : "150 previews from 5 sheets",
+      "firstTileMillis" : 134.29108300000001,
+      "name" : "fast scroll 10 screens — preview atlas",
+      "requests" : 5,
+      "runs" : [
+        184.68537500000002,
+        144.045333,
+        111.880416
+      ],
+      "tiles" : 150
+    },
+    {
+      "allTilesMillis" : 208.49258400000002,
+      "bytes" : 199756,
+      "decodeMillisPerTile" : 0,
+      "detail" : "300 previews from 9 sheets",
+      "firstTileMillis" : 96.360542,
+      "name" : "bulk preview pull (whole library)",
+      "requests" : 9,
+      "runs" : [
+        218.741541,
+        207.47845800000002,
+        208.49258400000002
+      ],
+      "tiles" : 300
+    }
+  ]
+}
