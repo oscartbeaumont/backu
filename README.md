@@ -8,7 +8,7 @@
 
 Backu is a native iPhone, iPad and Mac app that backs your photo library up to any S3-compatible storage, then lets you browse, search and organise it from a library that feels like the Photos app. There is no Backu account and no server in the middle: the app talks straight to the bucket you own.
 
-Landing: [backu.app](https://backu.app)
+Landing: [backu.otbeaumont.me](https://backu.otbeaumont.me)
 
 <p align="center">
   <img src="Media/library.png" width="220" alt="Library grid">
@@ -172,7 +172,7 @@ npm run build
 npx wrangler deploy  # production Worker
 ```
 
-Production: <https://backu.app>. See
+Production: <https://backu.otbeaumont.me>. See
 `landing/README.md` for the deploy and custom-domain notes.
 
 ## Testing notes

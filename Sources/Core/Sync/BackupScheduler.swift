@@ -6,7 +6,7 @@ import BackgroundTasks
 
 /// Schedules best-effort automatic backups while Backu is not in the foreground.
 enum BackupScheduler {
-    static let identifier = "dev.oscartbeaumont.backu.backup"
+    static let identifier = "me.otbeaumont.backu.backup"
 
     #if os(iOS)
     /// The handler receives a one-shot completion. The scheduler guards against

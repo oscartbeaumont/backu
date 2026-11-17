@@ -1,6 +1,6 @@
 name: Backu
 options:
-  bundleIdPrefix: dev.oscartbeaumont
+  bundleIdPrefix: me.otbeaumont
   deploymentTarget:
     iOS: "26.0"
     macOS: "26.0"
@@ -33,7 +33,7 @@ targets:
           - "Resources/Backu.entitlements"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu
+        PRODUCT_BUNDLE_IDENTIFIER: me.otbeaumont.backu
         PRODUCT_NAME: Backu
         INFOPLIST_FILE: Sources/Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -60,7 +60,7 @@ targets:
       - path: Sources/Core
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu.tests
+        PRODUCT_BUNDLE_IDENTIFIER: me.otbeaumont.backu.tests
         GENERATE_INFOPLIST_FILE: YES
 
   BackuUITests:
@@ -72,5 +72,5 @@ targets:
       - target: Backu
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.oscartbeaumont.backu.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: me.otbeaumont.backu.uitests
         GENERATE_INFOPLIST_FILE: YES

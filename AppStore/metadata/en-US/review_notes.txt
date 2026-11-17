@@ -7,6 +7,9 @@ Backup requires an S3-compatible bucket (AWS S3, Backblaze B2, Cloudflare R2, Mi
 PRIVACY
 No developer server is involved. Photos, tags and face boxes go only to the bucket the user configures; face feature vectors stay on-device. There is no analytics, advertising or tracking SDK. The in-app Support card opens GitHub Sponsors in the browser; it is a donation link for an open-source project, not a purchase of digital content.
 
+LOCAL NETWORK
+If the user enters an S3-compatible endpoint on their LAN, iOS shows the standard Local Network permission prompt. The app does not scan or discover devices; it only connects to the address the user enters. If the user only uses a public endpoint, no local-network prompt appears.
+
 BACKGROUND MODES
 "fetch" and "processing" are used only to continue an automatic photo backup (BGProcessingTask) and to keep background URLSession uploads moving.
 

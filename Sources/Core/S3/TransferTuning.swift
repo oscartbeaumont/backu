@@ -43,7 +43,7 @@ final class TransferNetworkMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var snapshot: NetworkSnapshot = .unknown
     private var started = false
-    private let queue = DispatchQueue(label: "dev.oscartbeaumont.backu.transfer-network", qos: .utility)
+    private let queue = DispatchQueue(label: "me.otbeaumont.backu.transfer-network", qos: .utility)
 
     #if canImport(Network)
     private var monitor: NWPathMonitor?
@@ -484,7 +484,7 @@ final class TransferTuningStore: @unchecked Sendable {
     /// `UserDefaults` can block for milliseconds; never charge that to the
     /// transfer that just finished. Writes are serialised and last-write-wins.
     private let persistenceQueue = DispatchQueue(
-        label: "dev.oscartbeaumont.backu.transfer-tuning-persist",
+        label: "me.otbeaumont.backu.transfer-tuning-persist",
         qos: .utility
     )
 

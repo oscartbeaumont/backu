@@ -82,6 +82,13 @@ export default function Support() {
             appliances do).
           </p>
 
+          <h3>Can I use storage on my own network?</h3>
+          <p>
+            Yes. Enter the server's LAN address (for example
+            <code>http://192.168.1.20:9000</code>). When you connect, iOS asks for Local Network
+            access; allow it. Backu never scans your network — it only talks to the address you enter.
+          </p>
+
           <h3>Can I use more than one bucket?</h3>
           <p>
             Yes. Tick several destinations in Settings → Backup. Every selected bucket receives its own

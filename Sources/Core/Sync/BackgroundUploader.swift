@@ -9,7 +9,7 @@ import UIKit
 /// small metadata writes go through the regular client instead.
 final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let shared = BackgroundUploader()
-    static let sessionIdentifier = "dev.oscartbeaumont.backu.uploads"
+    static let sessionIdentifier = "me.otbeaumont.backu.uploads"
 
     /// Set by the app delegate so iOS can resume events after relaunch.
     static var backgroundCompletionHandler: (() -> Void)?
@@ -227,7 +227,7 @@ extension Notification.Name {
     /// Posted on the main queue after the background URLSession has delivered
     /// every event, so the app can reconcile uploads that finished while it was
     /// suspended and hand the completion handler back to iOS.
-    static let backupUploaderDidFinishEvents = Notification.Name("dev.oscartbeaumont.backu.uploader-finished-events")
+    static let backupUploaderDidFinishEvents = Notification.Name("me.otbeaumont.backu.uploader-finished-events")
 }
 
 enum DeviceInfo {

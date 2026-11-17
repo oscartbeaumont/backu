@@ -8,7 +8,7 @@ import os
 /// Finds faces and pets with Vision and turns each into a feature print so the
 /// app can group them into people on-device.
 struct FaceAnalyzer: Sendable {
-    private let logger = Logger(subsystem: "dev.oscartbeaumont.backu", category: "faces")
+    private let logger = Logger(subsystem: "me.otbeaumont.backu", category: "faces")
 
     /// Ignore faces smaller than this fraction of the image's short edge.
     var minimumFaceFraction: Double = 0.035

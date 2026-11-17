@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DEVICE="${BACKU_SIM:-iPhone 17 Pro}"
-BUNDLE="dev.oscartbeaumont.backu"
+BUNDLE="me.otbeaumont.backu"
 PORT="${BACKU_PORT:-9000}"
 DATA_DIR="${BACKU_BUCKET_DIR:-/private/tmp/backu-s3}"
 

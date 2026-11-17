@@ -101,7 +101,7 @@ final class CatalogStore {
         CatalogSnapshot(version: 1, savedAt: Date(), lastScanAt: lastScanAt, photos: photos, people: people)
     }
 
-    private static let writeQueue = DispatchQueue(label: "dev.oscartbeaumont.backu.catalog-write", qos: .utility)
+    private static let writeQueue = DispatchQueue(label: "me.otbeaumont.backu.catalog-write", qos: .utility)
 
     private static func write(_ snapshot: CatalogSnapshot) {
         writeQueue.sync {

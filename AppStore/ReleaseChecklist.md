@@ -6,13 +6,13 @@
   Development identity for team **68994Z5PT3**, and the privacy manifest and
   orientations validate. The archive is at `/tmp/backu-release/Backu.xcarchive`
   during local work (not committed).
-- Exporting an **App Store** IPA currently fails with `No Accounts` and
-  `No profiles for 'dev.oscartbeaumont.backu' were found`: xcodebuild has no
-  App Store Connect session, and the account has no Apple Distribution
-  certificate or App Store profile yet. `xcodebuild` in this environment cannot
-  create them without an API key.
-- No App Store Connect app record exists yet, so an upload would be rejected by
-  bundle ID anyway.
+- Exporting an **App Store** IPA currently fails with `No Accounts` and no
+  distribution profile for **`me.otbeaumont.backu`**: xcodebuild has no App
+  Store Connect session, and the account has no Apple Distribution certificate
+  or App Store profile yet. `xcodebuild` in this environment cannot create them
+  without an API key.
+- No App Store Connect app record exists yet for `me.otbeaumont.backu`, so an
+  upload would be rejected by bundle ID anyway.
 - The listing assets, privacy manifest, screenshots, privacy/support pages and
   the manual TestFlight workflow are ready.
 
@@ -35,17 +35,26 @@ account and cannot be done by an automated agent.
       Agreement and the Free Apps agreement.
 - [ ] Complete the **Paid Apps** tax and banking sections if the app will ever be
       paid. Free apps still need the agreements accepted.
+- [ ] Create an **explicit App ID** named `me.otbeaumont.backu` in
+      Certificates, Identifiers & Profiles → Identifiers. Do **not** use a
+      wildcard and do **not** enable extra capabilities. Photo-library access
+      and background tasks use Info.plist keys, not App ID capabilities.
 - [ ] Create the app record in App Store Connect:
   - Platform: **iOS**
   - Name: `Backu` (if taken, `Backu — Photo Backup`)
   - Primary language: English (Australia or U.S.)
-  - Bundle ID: `dev.oscartbeaumont.backu`
+  - Bundle ID: `me.otbeaumont.backu`
   - SKU: `backu-ios-1`
-- [ ] The bundle ID can be registered automatically by Xcode's automatic
-      signing; otherwise register it in Certificates, Identifiers & Profiles.
-- [ ] Create an **App Store Connect API key** with the **App Manager** role:
-      Users and Access → Integrations → App Store Connect API → Team Keys.
-      Download the `.p8` once; note the Key ID and Issuer ID.
+- [ ] If you already created an app record with a different bundle ID, create
+      a **new** app record for `me.otbeaumont.backu`. App Store Connect cannot
+      change the bundle ID of an existing record.
+- [ ] Create an **App Store Connect API key** with the **App Manager** role
+      (**Admin** if automatic signing cannot create the distribution
+      certificate): Users and Access → Integrations → App Store Connect API →
+      Team Keys. Download the `.p8` once; note the Key ID and Issuer ID.
+- [ ] **Local network:** nothing to request on the App ID. The app includes
+      `NSLocalNetworkUsageDescription`; iOS shows its standard Local Network
+      prompt only when a user enters a LAN endpoint such as MinIO or Synology.
 
 ## 2. Repository secrets (owner)
 
@@ -98,6 +107,9 @@ IPA and uploads it with `altool`. `SKIP_UPLOAD=1` stops after the IPA.
 - [ ] Install from TestFlight on a device with photos and an S3 bucket, and run
       through: add server → Test Connection → automatic backup → browse →
       name a person/pet → search → open a remote photo from another device.
+- [ ] If testing a LAN server (MinIO, Synology, another Mac), enter its
+      `http://192.168.x.x:9000` endpoint, allow the Local Network prompt, and
+      confirm Test Connection and backup work.
 
 ## 4. App Store listing (owner, using the prepared files)
 

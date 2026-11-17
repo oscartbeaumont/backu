@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum Keychain {
-    private static let service = "dev.oscartbeaumont.backu.credentials"
+    private static let service = "me.otbeaumont.backu.credentials"
 
     static func save(_ credentials: S3Credentials, for serverID: UUID) -> Bool {
         guard let data = try? JSONEncoder().encode(credentials) else { return false }

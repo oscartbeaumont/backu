@@ -12,7 +12,7 @@
   },
   "routes": [
     {
-      "pattern": "backu.app",
+      "pattern": "backu.otbeaumont.me",
       "custom_domain": true
     }
   ],

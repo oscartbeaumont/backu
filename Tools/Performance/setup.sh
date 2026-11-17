@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."
 DEVICE_NAME="${BACKU_PERF_DEVICE:-Backu Perf}"
 DEVICE_TYPE="${BACKU_PERF_DEVICE_TYPE:-com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro}"
 RUNTIME="${BACKU_PERF_RUNTIME:-com.apple.CoreSimulator.SimRuntime.iOS-26-5}"
-BUNDLE_ID="dev.oscartbeaumont.backu"
+BUNDLE_ID="me.otbeaumont.backu"
 FIXTURE_DIR="Tests/Fixtures/performance/library"
 DERIVED="${BACKU_PERF_DERIVED:-/private/tmp/backu-perf-derived}"
 
