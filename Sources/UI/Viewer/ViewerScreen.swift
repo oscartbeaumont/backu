@@ -29,6 +29,10 @@ struct ViewerScreen: View {
         presentation.photoIDs
     }
 
+    private var photos: [PhotoItem] {
+        ids.compactMap { app.catalog.photo(id: $0) }
+    }
+
     private var index: Int {
         ids.firstIndex(of: selection) ?? 0
     }
@@ -45,20 +49,33 @@ struct ViewerScreen: View {
             Color.black.ignoresSafeArea()
 
             #if os(iOS)
-            TabView(selection: $selection) {
-                ForEach(ids, id: \.self) { id in
-                    ViewerPage(
-                        photoID: id,
-                        chromeVisible: $chromeVisible,
-                        pullDown: $pullDown,
-                        onWillDismiss: { isDismissing = true },
-                        onDismiss: close
-                    )
-                    .tag(id)
+            // A UIKit pager owns paging, pinch, pan and taps. SwiftUI's
+            // `TabView(.page)` keeps a page view controller whose gestures
+            // fought the per-page zoom handling and swallowed fast flicks.
+            Group {
+                if reduceMotion {
+                    pager
+                        .offset(y: pullDown)
+                        .scaleEffect(1 - dismissProgress * 0.2)
+                        .opacity(1 - dismissProgress * 0.45)
+                } else {
+                    pager
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
+            // Reduce Motion removes the zoom transition (and its built-in
+            // swipe-down), so the fade fallback gets its own recogniser.
+            .gesture(
+                VerticalDismissGesture(
+                    isEnabled: reduceMotion,
+                    onChanged: { translation in
+                        pullDown = translation > 0 ? translation : 0
+                    },
+                    onEnded: { predicted in
+                        finishPull(predicted: predicted)
+                    }
+                )
+            )
             #else
             ViewerPage(
                 photoID: selection,
@@ -76,6 +93,20 @@ struct ViewerScreen: View {
             #endif
 
             chrome
+
+            #if DEBUG
+            ViewerInteractionProbeView()
+            #endif
+
+            // A stable, always-present accessibility value so VoiceOver (and
+            // the UI tests) can tell which photo in the roll is showing.
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Photo position")
+                .accessibilityValue("\(index + 1) of \(ids.count)")
+                .accessibilityIdentifier("viewer.page")
+                .allowsHitTesting(false)
         }
         .background(Color.black)
         .preferredColorScheme(.dark)
@@ -120,6 +151,43 @@ struct ViewerScreen: View {
         pullDown = 0
         app.viewer = nil
     }
+
+    #if os(iOS)
+    private var pager: some View {
+        ViewerPager(
+            photos: photos,
+            selection: $selection,
+            app: app,
+            reduceMotion: reduceMotion,
+            onSingleTap: {
+                withAnimation(reduceMotion ? .easeInOut(duration: 0.2) : .backuGentle) {
+                    chromeVisible.toggle()
+                }
+            }
+        )
+    }
+
+    /// Reduce Motion dismiss fallback: the system zoom transition is absent, so
+    /// a vertical drag shrinks and fades the viewer instead.
+    private func finishPull(predicted: CGFloat) {
+        let shouldDismiss = pullDown > dismissThreshold
+            || (predicted > 260 && pullDown > 40)
+        if shouldDismiss {
+            isDismissing = true
+            withAnimation(.easeOut(duration: reduceMotion ? 0.1 : 0.14)) {
+                pullDown = 0
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(170))
+                close()
+            }
+        } else {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.16) : .spring(response: 0.34, dampingFraction: 0.82)) {
+                pullDown = 0
+            }
+        }
+    }
+    #endif
 
     /// Keeps the two photos on either side warm at low priority. Changing page
     /// cancels everything outside the new window.
@@ -301,6 +369,7 @@ struct ViewerScreen: View {
     }
 }
 
+#if os(macOS)
 struct ViewerPage: View {
     let photoID: String
     @Binding var chromeVisible: Bool
@@ -558,6 +627,7 @@ struct ViewerPage: View {
         }
     }
 }
+#endif
 
 
 
