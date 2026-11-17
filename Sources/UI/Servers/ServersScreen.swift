@@ -140,6 +140,7 @@ struct ServerCard: View {
             .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
         }
         .buttonStyle(PressableButtonStyle())
+        .accessibilityIdentifier("server.card")
         .contextMenu {
             Button {
                 onOpen()
@@ -170,6 +171,10 @@ struct ServerDetailScreen: View {
     @State private var verification: S3Client.Verification?
     @State private var verifyError: String?
     @State private var confirmRemove = false
+    @State private var prefixDraft = ""
+    @State private var prefixLoaded = false
+    @State private var pendingPrefix: String?
+    @State private var confirmPrefixChange = false
 
     private var server: ServerConfig? { app.servers.server(id: serverID) }
 
@@ -179,6 +184,7 @@ struct ServerDetailScreen: View {
                 VStack(spacing: 14) {
                     header(server)
                     connectionCard(server)
+                    prefixCard(server)
                     usageCard(server)
                     actionsCard(server)
                     dangerCard(server)
@@ -193,6 +199,25 @@ struct ServerDetailScreen: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .onAppear {
+            guard !prefixLoaded, let server else { return }
+            prefixDraft = server.normalizedPrefix
+            prefixLoaded = true
+        }
+        .confirmationDialog("Change the bucket prefix?", isPresented: $confirmPrefixChange, titleVisibility: .visible) {
+            Button("Change Prefix") {
+                if let server, let pendingPrefix {
+                    applyPrefixChange(server, prefix: pendingPrefix)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingPrefix = nil
+                if let server { prefixDraft = server.normalizedPrefix }
+            }
+        } message: {
+            let target = pendingPrefix ?? ""
+            Text("Photos already uploaded stay at their current paths. New photos and the index will use \(target.isEmpty ? "the bucket root" : "“\(target)/”").")
+        }
         .confirmationDialog("Remove \(server?.name ?? "server")?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove Server", role: .destructive) {
                 if let server { app.removeServer(server) }
@@ -228,7 +253,7 @@ struct ServerDetailScreen: View {
             infoRow("Bucket", server.bucket)
             infoRow("Endpoint", server.resolvedEndpoint?.absoluteString ?? "Not set")
             infoRow("Region", server.region)
-            infoRow("Folder", server.folderDescription)
+            infoRow("Prefix", server.folderDescription)
             infoRow("Access key", mask(server.accessKeyID))
             infoRow("Addressing", server.pathStyle ? "Path style" : "Virtual host")
 
@@ -270,6 +295,95 @@ struct ServerDetailScreen: View {
         }
         .padding(16)
         .glassSurface()
+    }
+
+    private func prefixCard(_ server: ServerConfig) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Bucket prefix", systemImage: "folder")
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 10) {
+                TextField("Optional — bucket root", text: $prefixDraft)
+                    .textFieldStyle(.plain)
+                    .font(.caption.monospaced())
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.asciiCapable)
+                    #endif
+                    .accessibilityIdentifier("server.prefix.field")
+                    .accessibilityLabel("Bucket prefix")
+                    .accessibilityHint("Optional. Leave empty to store photos at the bucket root.")
+                    .submitLabel(.done)
+                    .onSubmit {
+                        if prefixChanged { requestPrefixChange(server) }
+                    }
+
+                if prefixChanged {
+                    Button("Cancel") {
+                        prefixDraft = server.normalizedPrefix
+                        pendingPrefix = nil
+                    }
+                    .font(.caption.weight(.medium))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+
+                    Button("Save") {
+                        requestPrefixChange(server)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.glassProminent)
+                    .tint(Theme.accent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("server.prefix.save")
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.quaternary.opacity(0.45)))
+
+            Text("Optional. Leave empty to store photos at the bucket root. Existing uploads keep their paths; new photos and the index use this prefix.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if server.normalizedPrefix.isEmpty {
+                Label("Using the bucket root", systemImage: "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.mint)
+            }
+        }
+        .padding(16)
+        .glassSurface()
+    }
+
+    private var prefixChanged: Bool {
+        guard let server else { return false }
+        return normalizedPrefix(prefixDraft) != server.normalizedPrefix
+    }
+
+    private func normalizedPrefix(_ raw: String) -> String {
+        raw.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+    }
+
+    private func requestPrefixChange(_ server: ServerConfig) {
+        let value = normalizedPrefix(prefixDraft)
+        let hasUploads = app.catalog.photos.contains { $0.copy(on: server.id) != nil }
+        pendingPrefix = value
+        if hasUploads {
+            confirmPrefixChange = true
+        } else {
+            applyPrefixChange(server, prefix: value)
+        }
+    }
+
+    private func applyPrefixChange(_ server: ServerConfig, prefix: String) {
+        var updated = server
+        updated.prefix = prefix
+        prefixDraft = prefix
+        pendingPrefix = nil
+        Task { _ = await app.updateServer(updated, credentials: nil) }
+        app.scheduleBackgroundBackup()
     }
 
     private func usageCard(_ server: ServerConfig) -> some View {

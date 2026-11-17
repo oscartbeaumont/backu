@@ -239,7 +239,12 @@ struct AddServerFlow: View {
                 }
             }
 
-            FormField(label: "Folder", placeholder: "Backu", text: $draft.prefix)
+            FormField(label: "Prefix", placeholder: "Optional", text: $draft.prefix)
+            Text("Optional. Leave empty to store photos at the bucket root; otherwise Backu uses this folder inside the bucket.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 94)
 
             DisclosureGroup(isExpanded: $showAdvanced) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -356,7 +361,7 @@ struct AddServerFlow: View {
             region: draft.effectiveRegion,
             bucket: draft.bucket.trimmingCharacters(in: .whitespacesAndNewlines),
             accessKeyID: draft.accessKeyID.trimmingCharacters(in: .whitespacesAndNewlines),
-            prefix: draft.prefix,
+            prefix: draft.normalizedPrefix,
             pathStyle: draft.pathStyle
         )
     }
@@ -499,6 +504,11 @@ struct ServerDraft {
     var sessionToken = ""
     var prefix = "Backu"
     var pathStyle = false
+
+    /// Empty means the bucket root; surrounding slashes and spaces are noise.
+    var normalizedPrefix: String {
+        prefix.trimmingCharacters(in: CharacterSet(charactersIn: " /"))
+    }
 
     var derivedEndpoint: String? {
         let override = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)

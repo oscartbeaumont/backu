@@ -3,7 +3,7 @@ Backu is a private, native photo backup and library app for iPhone, iPad and Mac
 BACK UP WITHOUT A SUBSCRIPTION
 • Upload originals, videos and screenshots with a stable folder layout.
 • Automatic backup in the background, with optional Wi-Fi-only transfers.
-• Choose different servers and folders for different backups.
+• Choose different servers and folders for different backups, or skip the folder to use the bucket root.
 • Select several buckets at once and every photo is copied to each one for redundancy.
 • Every upload is verified with a SHA-256 hash and a readable JSON sidecar that carries tags, people, camera details and location.
 • S3 multipart uploads, parallel transfers, retries and adaptive part sizing keep large videos moving.

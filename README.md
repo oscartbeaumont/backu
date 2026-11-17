@@ -21,7 +21,7 @@ Backu is a native iPhone, iPad and Mac app that backs your photo library up to a
 
 ## What it does
 
-- **Any S3 bucket, one or many.** Amazon S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology, or anything else that speaks the S3 API. Select one backup destination or several; every selected bucket gets its own copy of every photo.
+- **Any S3 bucket, one or many.** Amazon S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology, or anything else that speaks the S3 API. Select one backup destination or several; every selected bucket gets its own copy of every photo. Each server accepts an optional folder prefix, or you can leave it empty to write at the bucket root.
 - **Photos-style library.** Square grid with month sections, pinch-free zoom levels, a native full-screen viewer with double-tap zoom, favourite, details, and a Liquid Glass chrome layer.
 - **Real backup, not a sync.** Originals are uploaded with a stable key layout, a SHA-256 of the bytes, and a readable JSON sidecar. Videos, Live Photos' stills, and screenshots are included (videos/screenshots can be turned off).
 - **Fast, stable transfers.** S3 multipart uploads and parallel range downloads, adaptive part sizes and connection counts from the link and measured throughput, exponential backoff with jitter, and a crash journal for interrupted multipart uploads.
@@ -34,7 +34,7 @@ Backu is a native iPhone, iPad and Mac app that backs your photo library up to a
 ## Storage layout
 
 ```
-<folder>/
+<folder>/                                       optional prefix; omit for the bucket root
   Photos/2025/06/IMG_4821-d282635d.jpg          original bytes, unchanged
   Photos/2025/06/IMG_4821-d282635d.jpg.json     sidecar: tags, people, faces, EXIF, GPS, SHA-256
   .backu/thumbs/<sha-prefix>.jpg                small previews for other devices

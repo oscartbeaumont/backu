@@ -203,6 +203,43 @@ final class BackuUITests: XCTestCase {
         app.buttons["Save"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 15), "Did not land in the library")
         attach(app, "14-library-connected")
+
+        // The bucket prefix is optional. Open the saved server, clear it, and
+        // confirm the server reports the bucket root.
+        let settingsTab = app.tabBars.buttons["Settings"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 8), "Settings tab missing")
+        sleep(2)
+        settingsTab.tap()
+        if !app.staticTexts["Settings"].waitForExistence(timeout: 5) {
+            settingsTab.tap()
+        }
+        XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 8), "Settings did not open")
+        let serversRow = app.buttons.matching(identifier: "settings.servers").firstMatch
+        XCTAssertTrue(serversRow.waitForExistence(timeout: 8), "Servers row missing")
+        serversRow.tap()
+        let serverCard = app.buttons.matching(identifier: "server.card").firstMatch
+        XCTAssertTrue(serverCard.waitForExistence(timeout: 8), "Server card missing")
+        serverCard.tap()
+
+        let prefixField = app.textFields["server.prefix.field"]
+        XCTAssertTrue(prefixField.waitForExistence(timeout: 8), "Prefix field missing")
+        for _ in 0..<3 where !prefixField.isHittable { app.swipeUp() }
+        prefixField.tap()
+        for _ in 0..<2 {
+            let value = (prefixField.value as? String) ?? ""
+            let text = value == "Optional — bucket root" ? "" : value
+            guard !text.isEmpty else { break }
+            prefixField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: text.count))
+        }
+        let savePrefix = app.buttons.matching(identifier: "server.prefix.save").firstMatch
+        XCTAssertTrue(savePrefix.waitForExistence(timeout: 5), "Prefix save button missing")
+        for _ in 0..<4 where !savePrefix.isHittable { app.swipeUp() }
+        XCTAssertTrue(savePrefix.isHittable, "Prefix save button is covered")
+        savePrefix.tap()
+        let confirmPrefix = app.buttons["Change Prefix"]
+        if confirmPrefix.waitForExistence(timeout: 2) { confirmPrefix.tap() }
+        XCTAssertTrue(app.staticTexts["Bucket root"].firstMatch.waitForExistence(timeout: 8), "Prefix did not clear")
+        attach(app, "15-server-prefix")
     }
 
     /// Captures the five listing screenshots from a marketing-only library.
