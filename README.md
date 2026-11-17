@@ -122,6 +122,18 @@ real storage.
 The landing page and App Store privacy/support pages live in `landing/`. See
 [`landing/README.md`](landing/README.md) to work on them.
 
+### Releasing
+
+Releases are cut from **Actions → Release → Run workflow**. Choose a
+patch/minor/major bump (or enter an explicit version), pick iOS, macOS or both,
+and run it. The workflow bumps `MARKETING_VERSION` in `project.yml`, uploads the
+TestFlight build, and only after that succeeds pushes the version commit/tag and
+publishes a GitHub Release with generated notes. The manual **TestFlight**
+workflow remains available for ad-hoc builds.
+
+The repository needs `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID` and
+`ASC_PRIVATE_KEY`; see [`AppStore/ReleaseChecklist.md`](AppStore/ReleaseChecklist.md).
+
 ## Contributing
 
 Contributions are welcome — open an issue, send a pull request, or try the next

@@ -1,0 +1,190 @@
+name: Release
+
+# Manual release from main. The workflow:
+#   1. computes the next marketing version and writes it into project.yml
+#   2. archives, signs and uploads the requested platform(s) to TestFlight
+#   3. pushes the version-bump commit and tag only after the upload succeeds
+#   4. creates a GitHub Release with generated notes
+#
+# Required repository secrets (same as the TestFlight workflow):
+#   APPLE_TEAM_ID, ASC_KEY_ID, ASC_ISSUER_ID, ASC_PRIVATE_KEY
+#
+# The App Store Connect key needs the Admin role so automatic cloud signing can
+# create the distribution certificate and profile.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump (ignored for the very first release)
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: Explicit marketing version (optional, e.g. 1.2.0)
+        required: false
+        default: ""
+      platform:
+        description: TestFlight platform to publish
+        type: choice
+        options:
+          - ios
+          - macos
+          - both
+        default: ios
+      draft:
+        description: Create the GitHub Release as a draft
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Bump, upload and publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out main with tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: true
+
+      - name: Check App Store Connect secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          missing=0
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then echo "missing secret $name"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute next version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$EXPLICIT_VERSION" ]; then
+            NEXT="$(./scripts/bump-version.sh "$BUMP" "$EXPLICIT_VERSION")"
+          else
+            NEXT="$(./scripts/bump-version.sh "$BUMP")"
+          fi
+          TAG="v$NEXT"
+          BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
+          {
+            echo "version=$NEXT"
+            echo "tag=$TAG"
+            echo "build=$BUILD_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing Backu $NEXT (TestFlight build $BUILD_NUMBER)"
+
+      - name: Create release commit and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git add project.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "Release $TAG"
+          else
+            echo "project.yml already contains $VERSION; tagging the current commit."
+          fi
+          git tag -a "$TAG" -m "Backu $TAG"
+          git log -1 --oneline
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Write App Store Connect key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Upload iOS to TestFlight
+        if: inputs.platform == 'ios' || inputs.platform == 'both'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          MARKETING_VERSION: ${{ steps.version.outputs.version }}
+          PLATFORM: ios
+        run: ./scripts/testflight.sh
+
+      - name: Upload macOS to TestFlight
+        if: inputs.platform == 'macos' || inputs.platform == 'both'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          MARKETING_VERSION: ${{ steps.version.outputs.version }}
+          PLATFORM: macos
+        run: ./scripts/testflight.sh
+
+      # Publish git state only after every requested upload has succeeded. A
+      # failed TestFlight build therefore leaves main and the tag untouched.
+      - name: Push release commit and tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git push origin HEAD:refs/heads/main
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          args=(--title "Backu $TAG" --generate-notes --verify-tag)
+          if [ "$DRAFT" = "true" ]; then
+            args+=(--draft)
+          fi
+          gh release create "$TAG" "${args[@]}"
+
+      - name: Write release summary
+        if: always()
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          {
+            echo "## Backu $VERSION"
+            echo
+            echo "- Tag: \`$TAG\`"
+            echo "- TestFlight build: \`$BUILD_NUMBER\`"
+            echo "- Platforms: \`$PLATFORM\`"
+            echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"

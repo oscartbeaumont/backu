@@ -14,7 +14,7 @@
 - No App Store Connect app record exists yet for `me.otbeaumont.backu`, so an
   upload would be rejected by bundle ID anyway.
 - The listing assets, privacy manifest, screenshots, privacy/support pages and
-  the manual TestFlight workflow are ready.
+  the manual TestFlight and automated Release workflows are ready.
 
 **To finish, the account owner needs to do two things:** create the app record,
 and provide an App Store Connect API key (Admin) so the archive can be
@@ -104,6 +104,25 @@ MARKETING_VERSION=1.0 \
 
 `scripts/testflight.sh` archives with automatic signing, exports an App Store
 IPA and uploads it with `altool`. `SKIP_UPLOAD=1` stops after the IPA.
+
+### Automated release (preferred)
+
+Once the secrets are set, use **Actions → Release → Run workflow**:
+
+- `bump`: `patch`, `minor` or `major`. The first release (no `v*` tag yet) keeps
+  the current `MARKETING_VERSION`, so a fresh repository starts at `1.0.0`.
+- `version` (optional): an explicit `1.2.3` version, overriding the bump.
+- `platform`: `ios`, `macos` or `both`.
+- `draft`: create the GitHub Release as a draft first.
+
+The workflow computes the version, updates `project.yml`, uploads the TestFlight
+build, and only then pushes the `Release vX.Y.Z` commit and tag. Finally it
+creates a GitHub Release with generated notes. A failed archive or upload
+leaves `main` and the tag untouched.
+
+The workflow pushes with the repository's `GITHUB_TOKEN`. If `main` is
+protected, allow GitHub Actions to bypass the rule (or grant it push access),
+otherwise the upload can succeed but the git/release step will fail.
 
 ## 3. First build on TestFlight (owner)
 

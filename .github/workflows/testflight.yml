@@ -1,7 +1,10 @@
 name: TestFlight
 
-# Manual only. Requires the App Store Connect app record to exist, plus these
-# repository secrets:
+# Manual, ad-hoc TestFlight upload. For a versioned release (version bump, tag
+# and GitHub Release) use the Release workflow instead.
+#
+# Requires the App Store Connect app record to exist, plus these repository
+# secrets:
 #   APPLE_TEAM_ID       Apple Developer team ID
 #   ASC_KEY_ID          App Store Connect API key ID (Admin role)
 #   ASC_ISSUER_ID       App Store Connect issuer ID
@@ -15,13 +18,13 @@ on:
   workflow_dispatch:
     inputs:
       build_number:
-        description: Build number (must be unique in App Store Connect)
+        description: Build number (optional; defaults to a UTC timestamp)
         required: false
         default: ""
       marketing_version:
-        description: Marketing version shown on the App Store
+        description: Marketing version (optional; defaults to project.yml)
         required: false
-        default: "1.0"
+        default: ""
       platform:
         description: Platform to publish
         type: choice
@@ -76,7 +79,7 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
-          BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
-          MARKETING_VERSION: ${{ inputs.marketing_version || '1.0' }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
           PLATFORM: ${{ inputs.platform || 'ios' }}
         run: ./scripts/testflight.sh

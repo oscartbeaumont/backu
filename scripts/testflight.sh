@@ -11,8 +11,8 @@
 #   ASC_KEY_PATH         path to AuthKey_<KEY>.p8
 #
 # Optional:
-#   BUILD_NUMBER         defaults to 1; use a unique increasing value per upload
-#   MARKETING_VERSION    defaults to the project value (1.0)
+#   BUILD_NUMBER         defaults to a UTC timestamp; must increase per upload
+#   MARKETING_VERSION    defaults to MARKETING_VERSION in project.yml
 #   PLATFORM             ios (default) or macos
 #   SKIP_UPLOAD=1        build and export only, do not upload
 #   KEYCHAIN_PATH        keychain to unlock in CI (optional)
@@ -27,7 +27,10 @@ cd "$(dirname "$0")/.."
 : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID (App Store Connect issuer ID)}"
 : "${ASC_KEY_PATH:?set ASC_KEY_PATH (path to AuthKey_<id>.p8)}"
 
-BUILD_NUMBER="${BUILD_NUMBER:-1}"
+BUILD_NUMBER="${BUILD_NUMBER:-$(date -u +%Y%m%d%H%M%S)}"
+if [ -z "${MARKETING_VERSION:-}" ]; then
+  MARKETING_VERSION="$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"([^"]+)".*/\1/p' project.yml | head -n 1)"
+fi
 MARKETING_VERSION="${MARKETING_VERSION:-1.0}"
 PLATFORM="${PLATFORM:-ios}"
 
