@@ -164,20 +164,31 @@ struct YearRail: View {
         return railHeight / CGFloat(anchors.count)
     }
 
+    private var yearFontSize: CGFloat {
+        min(11, max(7, rowHeight - 8))
+    }
+
+    private func yearLabel(_ anchor: YearAnchor) -> Text {
+        let highlighted = anchor.year == label.highlightedYear
+        let font = Font.system(
+            size: yearFontSize,
+            weight: highlighted ? .bold : .medium,
+            design: .rounded
+        )
+        let color = highlighted ? Theme.accent : Color.secondary
+        return Text(String(anchor.year))
+            .font(font)
+            .monospacedDigit()
+            .foregroundColor(color)
+    }
+
     var body: some View {
         if anchors.isEmpty {
             EmptyView()
         } else {
             VStack(spacing: 0) {
                 ForEach(anchors) { anchor in
-                    Text(String(anchor.year))
-                        .font(.system(
-                            size: min(11, max(7, rowHeight - 8)),
-                            weight: anchor.year == label.highlightedYear ? .bold : .medium,
-                            design: .rounded
-                        ))
-                        .monospacedDigit()
-                        .foregroundStyle(anchor.year == label.highlightedYear ? Theme.accent : Color.secondary)
+                    yearLabel(anchor)
                         .frame(width: 32, height: rowHeight)
                 }
             }
