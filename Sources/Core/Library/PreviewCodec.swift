@@ -11,10 +11,11 @@ import UniformTypeIdentifiers
 /// deployment targets.
 ///
 /// The measurements in `Tools/CompressionBench` show HEIC at 900 px and
-/// quality 0.8 is ~47 % smaller than JPEG q0.8 at ~1.9 dB lower PSNR (~40 dB,
+/// quality 0.8 is ~47 % smaller than JPEG q0.8 at ~1 dB lower PSNR (~41.6 dB,
 /// visually transparent at preview size), while using the hardware HEVC
 /// encoder and decoder. AVIF saves another 16 % of the bytes but costs roughly
-/// six times more encode CPU per preview, a poor trade for a background upload.
+/// eight times HEIC's encode CPU per preview, a poor trade for a background
+/// upload.
 enum PreviewFormat: String, CaseIterable, Sendable {
     case heic
     case jpeg
