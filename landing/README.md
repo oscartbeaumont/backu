@@ -63,6 +63,10 @@ push to `main` that touches `landing/`. Add these repository secrets once:
 Until the token is present, the deploy step is skipped and the workflow still
 verifies the build. A local `wrangler login` session can also deploy.
 
+Pull requests that touch `landing/` upload a preview version with a
+`pr-<number>` alias and comment its `workers.dev` URL on the PR. Preview
+versions do not receive the `backu.app` custom domain.
+
 To move the site again, update the route in `wrangler.jsonc`, set
 `VITE_SITE_URL` at build time, update `public/robots.txt` and
 `public/sitemap.xml`, and update the App Store URLs in
