@@ -41,6 +41,27 @@ final class LibraryTimelineTests: XCTestCase {
         return app
     }
 
+    /// The bottom bar is conditional: timeline mode shows the level switcher,
+    /// the Library circle reveals the tab bar, and tapping Library goes back.
+    func testBottomBarSwitchesBetweenTimelineAndTabs() throws {
+        let app = launch()
+        let tiles = app.buttons.matching(identifier: "library.tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 25), "No photo tiles")
+
+        XCTAssertTrue(app.buttons["library.level.all"].exists, "Timeline switcher missing")
+        XCTAssertTrue(app.buttons["tabs.show"].exists, "Library circle missing")
+        XCTAssertFalse(app.buttons["tab.people"].exists, "Tab bar is showing in timeline mode")
+        attach(app, "timeline-bar-01-levels")
+
+        app.buttons["tabs.show"].tap()
+        XCTAssertTrue(app.buttons["tab.people"].waitForExistence(timeout: 5), "Tab bar did not appear")
+        attach(app, "timeline-bar-02-tabs")
+
+        app.buttons["tab.library"].tap()
+        XCTAssertTrue(app.buttons["library.level.all"].waitForExistence(timeout: 5), "Timeline did not return")
+        attach(app, "timeline-bar-03-back-to-levels")
+    }
+
     func testTimelineLevelsAndDrillDown() throws {
         let app = launch()
         let tiles = app.buttons.matching(identifier: "library.tile")
