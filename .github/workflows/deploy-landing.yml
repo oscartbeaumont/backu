@@ -97,7 +97,7 @@ jobs:
         run: npm run build
       - name: Deploy
         if: env.CLOUDFLARE_API_TOKEN != ''
-        run: npx cf deploy --message "Deploy ${GITHUB_SHA:0:12}"
+        run: npx cf deploy --prebuilt --message "Deploy ${GITHUB_SHA:0:12}"
       - name: Cloudflare token missing
         if: env.CLOUDFLARE_API_TOKEN == ''
         run: |

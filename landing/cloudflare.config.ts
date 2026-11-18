@@ -1,16 +1,15 @@
 import { defineConfig } from "cf/config";
 
 /**
- * The landing page: the Solid SSR output in `dist/server` served behind the
- * client bundle, which `@solidjs/vite-plugin` and `wrangler.config.ts` place in
- * `dist/client`.
+ * The landing page: Solid's start-mode SSR handler, served by the Worker, with
+ * the client bundle that `@cloudflare/vite-plugin` builds alongside it.
  */
 export default defineConfig({
   worker: {
     name: "backu",
     compatibilityDate: "2026-11-17",
     compatibilityFlags: ["nodejs_compat"],
-    entrypoint: "dist/server/server.js",
+    entrypoint: "virtual:solid-ssr-handler",
     workersDev: false,
     previewUrls: true,
     observability: {
