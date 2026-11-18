@@ -921,8 +921,13 @@ struct LibraryScreen: View {
         photos = filtered
         rebuildItems()
         updateTimeline()
-        window.invalidate()
-        requestWindow(immediate: true)
+        if level == .all {
+            window.invalidate()
+            requestWindow(immediate: true)
+        } else {
+            window.cancel()
+            prefetcher.stop()
+        }
     }
 
     private func libraryDate(_ photo: PhotoItem) -> Date? {
