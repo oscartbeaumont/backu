@@ -177,7 +177,7 @@ private struct ScaledSystemFont: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.font(PlatformFont.named(size: points, weight: weight, design: design))
+        content.font(PlatformFont.make(size: points, weight: weight, design: design))
     }
 }
 
@@ -198,7 +198,7 @@ extension View {
 /// SwiftUI only offers arbitrary point sizes through the platform font types,
 /// so the two are bridged here once instead of at every call site.
 private enum PlatformFont {
-    static func named(size: CGFloat, weight: Font.Weight, design: Font.Design) -> Font {
+    static func make(size: CGFloat, weight: Font.Weight, design: Font.Design) -> Font {
         #if canImport(UIKit)
         var font = UIFont.systemFont(ofSize: size, weight: weight.uiWeight)
         if let design = design.uiDesign, let descriptor = font.fontDescriptor.withDesign(design) {
