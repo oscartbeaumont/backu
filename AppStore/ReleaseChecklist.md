@@ -120,6 +120,14 @@ build, and only then pushes the `Release vX.Y.Z` commit and tag. Finally it
 creates a GitHub Release with generated notes. A failed archive or upload
 leaves `main` and the tag untouched.
 
+After the release is published it also adds the build to the TestFlight group
+named by the repository variable `TESTFLIGHT_GROUP` (default `Internal`). That
+step polls Apple until the build finishes processing, then calls the App Store
+Connect API. **Internal groups do not go through Beta App Review**, so internal
+distribution is fully automatic; only an external group needs Apple's review.
+Set `TESTFLIGHT_GROUP` to an external group name only if you want the workflow
+to submit the build for review (the wait is then Apple's, not the runner's).
+
 The workflow pushes with the repository's `GITHUB_TOKEN`. If `main` is
 protected, allow GitHub Actions to bypass the rule (or grant it push access),
 otherwise the upload can succeed but the git/release step will fail.
@@ -130,9 +138,11 @@ otherwise the upload can succeed but the git/release step will fail.
 - [ ] Answer the export-compliance question if asked: the app uses only
       exempt HTTPS and `ITSAppUsesNonExemptEncryption` is already `false`.
 - [ ] Add yourself to **Internal Testing**. Internal testers can install
-      immediately.
+      immediately, with no Beta App Review. The Release workflow does this
+      automatically once the build is `VALID`.
 - [ ] For external testing, create a group and submit the build to **Beta App
-      Review**; TestFlight metadata is already in `AppStore/metadata`.
+      Review**; TestFlight metadata is already in `AppStore/metadata`. External
+      review is the only part that cannot be predicted or automated.
 - [ ] Install from TestFlight on a device with photos and an S3 bucket, and run
       through: add server → Test Connection → automatic backup → browse →
       name a person/pet → search → open a remote photo from another device.

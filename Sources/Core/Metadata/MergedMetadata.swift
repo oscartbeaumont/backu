@@ -115,6 +115,13 @@ struct MergedMetadata: Sendable {
     var photoTombstones: [String: Version] = [:]
     var personTombstones: [String: Version] = [:]
     var deletedHashes: [String: Version] = [:]
+    /// Derived: person -> number of faces pointing at them. Maintained on
+    /// apply so an incremental sync does not rescan every photo, and rebuilt
+    /// once when a snapshot is decoded.
+    private var faceCounts: [UUID: Int] = [:]
+    /// Derived: SHA-256 -> entity ids. Lets an incremental sync find the peer
+    /// entities that share bytes without scanning the library.
+    private var photosByHash: [String: Set<String>] = [:]
 
     init() {}
 
@@ -177,6 +184,7 @@ struct MergedMetadata: Sendable {
             return changes
         }
         let existing = photos[record.id]
+        let previousCounts = existing.map(Self.personCounts) ?? [:]
         var entity = existing ?? MergedPhoto(photo: incoming)
         var mutated = existing == nil
 
@@ -221,13 +229,69 @@ struct MergedMetadata: Sendable {
 
         if mutated {
             photos[record.id] = entity
+            updateHashIndex(id: record.id, old: existing?.photo.sha256, new: entity.photo.sha256)
+            let newCounts = Self.personCounts(in: entity)
+            adjustFaceCounts(from: previousCounts, to: newCounts)
             changes.changedPhotos.insert(record.id)
+            // A face move changes the derived count on both people. Mark them
+            // so an incremental sync updates the catalog without scanning.
+            for personID in Set(previousCounts.keys).union(newCounts.keys) {
+                changes.changedPeople.insert(personID.uuidString)
+            }
         }
         if let tombstone = photoTombstones[record.id], tombstone <= version {
             photoTombstones.removeValue(forKey: record.id)
             changes.changedPhotos.insert(record.id)
         }
         return changes
+    }
+
+    private static func personCounts(in entity: MergedPhoto) -> [UUID: Int] {
+        var counts: [UUID: Int] = [:]
+        for merged in entity.faces.values {
+            guard let personID = merged.face?.personID else { continue }
+            counts[personID, default: 0] += 1
+        }
+        return counts
+    }
+
+    private mutating func adjustFaceCounts(from old: [UUID: Int], to new: [UUID: Int]) {
+        guard old != new else { return }
+        for (personID, count) in old {
+            let remaining = (faceCounts[personID] ?? 0) - count
+            if remaining > 0 { faceCounts[personID] = remaining } else { faceCounts.removeValue(forKey: personID) }
+        }
+        for (personID, count) in new {
+            faceCounts[personID, default: 0] += count
+        }
+    }
+
+    private mutating func updateHashIndex(id: String, old: String?, new: String?) {
+        if old == new { return }
+        if let old {
+            photosByHash[old]?.remove(id)
+            if photosByHash[old]?.isEmpty == true { photosByHash.removeValue(forKey: old) }
+        }
+        if let new {
+            photosByHash[new, default: []].insert(id)
+        }
+    }
+
+    mutating func rebuildDerivedIndexes() {
+        faceCounts.removeAll(keepingCapacity: true)
+        photosByHash.removeAll(keepingCapacity: true)
+        for (id, entity) in photos {
+            for (personID, count) in Self.personCounts(in: entity) {
+                faceCounts[personID, default: 0] += count
+            }
+            if let sha = entity.photo.sha256 {
+                photosByHash[sha, default: []].insert(id)
+            }
+        }
+    }
+
+    func faceCount(for personID: UUID) -> Int {
+        faceCounts[personID] ?? 0
     }
 
     /// Returns true when the tag map actually changed.
@@ -268,6 +332,14 @@ struct MergedMetadata: Sendable {
         var changes = MetadataChangeSet()
         if let existing = photos[record.id], existing.maxVersion > version {
             return changes
+        }
+        if let existing = photos[record.id] {
+            let removedCounts = Self.personCounts(in: existing)
+            adjustFaceCounts(from: removedCounts, to: [:])
+            updateHashIndex(id: record.id, old: existing.photo.sha256, new: nil)
+            for personID in removedCounts.keys {
+                changes.changedPeople.insert(personID.uuidString)
+            }
         }
         photos.removeValue(forKey: record.id)
         if version > (photoTombstones[record.id] ?? Version.zero) {
@@ -431,31 +503,28 @@ struct MergedMetadata: Sendable {
         photos.reserveCapacity(changes.changedPhotos.count)
         // Deterministic order matters when two entities share a SHA-256: the
         // catalog merges by hash, so the same input must produce the same last
-        // writer on every device.
+        // writer on every device. Emit one merged item per SHA.
+        var emittedHashes = Set<String>()
         for id in changes.changedPhotos.sorted() {
-            guard let entity = self.photos[id] else { continue }
+            guard var entity = self.photos[id] else { continue }
+            if let sha = entity.photo.sha256 {
+                guard emittedHashes.insert(sha).inserted else { continue }
+                for peer in (photosByHash[sha] ?? []).sorted() where peer != id {
+                    if let other = self.photos[peer] { entity = entity.merging(other) }
+                }
+            }
             photos.append(Self.item(for: entity, serverID: serverID).0)
         }
 
         var people: [Person] = []
         var deletedPeople: Set<UUID> = []
         if !changes.changedPeople.isEmpty || !changes.removedPeople.isEmpty {
-            // A person's face count spans every photo, so this is the one
-            // O(library) part of an incremental sync — and it only runs when a
-            // person actually changed.
-            var counts: [UUID: Int] = [:]
-            for entity in self.photos.values {
-                for face in entity.faces.values {
-                    guard let personID = face.face?.personID,
-                          changes.changedPeople.contains(personID.uuidString)
-                    else { continue }
-                    counts[personID, default: 0] += 1
-                }
-            }
             people.reserveCapacity(changes.changedPeople.count)
             for key in changes.changedPeople.sorted() {
                 guard let entity = self.people[key] else { continue }
-                people.append(entity.person.person(faceCount: counts[entity.person.id] ?? 0))
+                people.append(
+                    entity.person.person(faceCount: faceCounts[entity.person.id] ?? 0)
+                )
             }
             for key in changes.removedPeople {
                 if let id = UUID(uuidString: key) { deletedPeople.insert(id) }

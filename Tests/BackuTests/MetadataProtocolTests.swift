@@ -494,6 +494,89 @@ final class MetadataProtocolTests: XCTestCase {
         XCTAssertEqual(headAfter, Data("not a head".utf8), "An unreadable head must never be replaced")
     }
 
+    // MARK: - Garbage collection
+
+    func testGarbageCollectionRemovesOnlyCoveredOldSegments() async throws {
+        let store = InMemoryMetadataStore()
+        let id = UUID()
+        let a = service("writer-a", id: id)
+        let cat = CatalogStore(loadFromDisk: false)
+        let item = photo("asset:1", serverID: id)
+        cat.mergeScanned([item])
+        for index in 0..<4 {
+            cat.addTag("t\(index)", to: item.id)
+            try await publish(cat, a, store)
+        }
+        _ = try await a.sync(store: store)
+        await a.compactIfNeeded(store: store, force: true)
+
+        // Newer than the snapshot: not covered by its watermark.
+        cat.setFavorite(item.id, isFavorite: true)
+        try await publish(cat, a, store)
+        _ = try await a.sync(store: store)
+
+        let snapshotKeys = await store.keys(under: ".backu/meta/v2/snap/")
+        let snapshotKey = try XCTUnwrap(snapshotKeys.first)
+        let now = Date()
+        let old = now.addingTimeInterval(-30 * 86_400)
+        for key in await store.keys(under: ".backu/meta/v2/log/writer-a/") {
+            await store.setLastModified(key, old)
+        }
+        await store.setLastModified(snapshotKey, old)
+
+        let deleted = await a.collectGarbage(
+            store: store,
+            retention: 7 * 86_400,
+            now: now
+        )
+        XCTAssertEqual(deleted, 4, "Only segments covered by the head watermark")
+        let remaining = await store.keys(under: ".backu/meta/v2/log/writer-a/")
+        XCTAssertEqual(remaining.count, 1)
+        let snapshotBody = await store.data(for: snapshotKey)
+        XCTAssertNotNil(snapshotBody)
+
+        // A reader still sees every tag (from the snapshot) and the favourite
+        // (from the one uncovered segment).
+        let b = service("writer-b")
+        let outcome = try await b.sync(store: store)
+        XCTAssertEqual(Set(outcome.photos.first?.tags ?? []), ["t0", "t1", "t2", "t3"])
+        XCTAssertEqual(outcome.photos.first?.isFavorite, true)
+    }
+
+    func testGarbageCollectionKeepsTheHeadSnapshot() async throws {
+        let store = InMemoryMetadataStore()
+        let id = UUID()
+        let a = service("writer-a", id: id)
+        let cat = CatalogStore(loadFromDisk: false)
+        let item = photo("asset:1", serverID: id)
+        cat.mergeScanned([item])
+        try await publish(cat, a, store)
+        _ = try await a.sync(store: store)
+        await a.compactIfNeeded(store: store, force: true)
+
+        cat.addTag("beach", to: item.id)
+        try await publish(cat, a, store)
+        _ = try await a.sync(store: store)
+        await a.compactIfNeeded(store: store, force: true)
+
+        let snapshots = await store.keys(under: ".backu/meta/v2/snap/")
+        XCTAssertEqual(snapshots.count, 2)
+        let headRaw = await store.data(for: MetadataLayout.headKey)
+        let headData = try XCTUnwrap(headRaw)
+        let head = try JSONFile.decoder.decode(MetadataHead.self, from: headData)
+        let headSnapshot = try XCTUnwrap(head.snapshot)
+
+        let now = Date()
+        let old = now.addingTimeInterval(-30 * 86_400)
+        for key in snapshots {
+            await store.setLastModified(key, old)
+        }
+        _ = await a.collectGarbage(store: store, retention: 7 * 86_400, now: now)
+
+        let remaining = await store.keys(under: ".backu/meta/v2/snap/")
+        XCTAssertEqual(remaining, [headSnapshot])
+    }
+
     // MARK: - Compaction races
 
     func testStaleCompactionCannotMoveTheHeadBackwards() async throws {

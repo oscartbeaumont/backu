@@ -9,11 +9,45 @@ enum MetadataGetResult: Sendable {
     case missing
 }
 
+struct MetadataListEntry: Sendable {
+    var key: String
+    var size: Int64
+    var lastModified: Date?
+}
+
 struct MetadataListPage: Sendable {
-    var keys: [String] = []
+    var entries: [MetadataListEntry] = []
     var commonPrefixes: [String] = []
     var nextToken: String?
     var isTruncated: Bool = false
+
+    var keys: [String] { entries.map(\.key) }
+
+    init(
+        entries: [MetadataListEntry] = [],
+        commonPrefixes: [String] = [],
+        nextToken: String? = nil,
+        isTruncated: Bool = false
+    ) {
+        self.entries = entries
+        self.commonPrefixes = commonPrefixes
+        self.nextToken = nextToken
+        self.isTruncated = isTruncated
+    }
+
+    init(
+        keys: [String],
+        commonPrefixes: [String] = [],
+        nextToken: String? = nil,
+        isTruncated: Bool = false
+    ) {
+        self.init(
+            entries: keys.map { MetadataListEntry(key: $0, size: 0, lastModified: nil) },
+            commonPrefixes: commonPrefixes,
+            nextToken: nextToken,
+            isTruncated: isTruncated
+        )
+    }
 }
 
 /// The outcome of a file-backed download. The body is on disk, not in memory.
@@ -33,6 +67,7 @@ enum MetadataDownloadResult: Sendable {
 protocol MetadataObjectStore: Sendable {
     func getObject(_ key: String, ifNoneMatch: String?) async throws -> MetadataGetResult
     func putObject(_ key: String, data: Data, contentType: String) async throws
+    func deleteObject(_ key: String) async throws
     func listObjects(
         prefix: String,
         delimiter: String?,
@@ -98,11 +133,19 @@ struct S3MetadataStore: MetadataObjectStore {
         )
     }
 
+    func deleteObject(_ key: String) async throws {
+        try await client.deleteObject(key: S3Client.join(prefix, key))
+    }
+
     /// Streams the body through URLSession to disk. The metadata snapshot is
     /// the one object big enough that buffering it doubles cold-start memory.
     func downloadObject(_ key: String, to url: URL) async throws -> MetadataDownloadResult {
         do {
-            try await client.downloadObjectStreaming(key: S3Client.join(prefix, key), to: url)
+            // The snapshot is the one large object in the journal. The regular
+            // downloader probes latency and fans out into parallel byte ranges
+            // above 8 MB, which is what makes a 13 MB cold start usable on a
+            // high-RTT link. It streams to disk throughout.
+            try await client.downloadObject(key: S3Client.join(prefix, key), to: url)
             return .downloaded(etag: nil)
         } catch let error as S3Error {
             if case let .http(status, _, _, _) = error, status == 404 { return .missing }
@@ -131,7 +174,13 @@ struct S3MetadataStore: MetadataObjectStore {
             return key.hasPrefix(join) ? String(key.dropFirst(join.count)) : key
         }
         return MetadataListPage(
-            keys: page.objects.map { relative($0.key) },
+            entries: page.objects.map {
+                MetadataListEntry(
+                    key: relative($0.key),
+                    size: $0.size,
+                    lastModified: $0.lastModified
+                )
+            },
             commonPrefixes: page.commonPrefixes.map { value in
                 let trimmed = relative(value.hasSuffix("/") ? String(value.dropLast()) : value)
                 return trimmed + "/"

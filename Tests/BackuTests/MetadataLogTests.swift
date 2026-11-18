@@ -163,6 +163,58 @@ final class MetadataMergeTests: XCTestCase {
         XCTAssertEqual(state.photos["p1"]?.tags.keys.sorted(), ["beach"])
     }
 
+    func testFaceMovesUpdateDerivedCountsIncrementally() {
+        let base = makePhoto(id: "p1", serverID: serverID)
+        let person = SharedPerson(person: Person(name: "Ada"))
+        let faceA = SharedFace(
+            face: PhotoFace(personID: person.id, rect: NormRect(x: 0.1, y: 0.1, width: 0.2, height: 0.2))
+        )
+        let faceB = SharedFace(
+            face: PhotoFace(personID: person.id, rect: NormRect(x: 0.5, y: 0.5, width: 0.2, height: 0.2))
+        )
+
+        var state = MergedMetadata()
+        state.apply([
+            makeRecord(.photoUpsert, id: "p1", hlc: 10, by: "a", photo: shared(base, serverID: serverID)),
+            makeRecord(.personUpsert, id: person.id.uuidString, hlc: 11, by: "a", person: person)
+        ])
+        var changes = state.apply([
+            makeRecord(.photoPatch, id: "p1", hlc: 20, by: "a", photo: shared(base, serverID: serverID), facesSet: [faceA, faceB])
+        ])
+        XCTAssertTrue(changes.changedPeople.contains(person.id.uuidString))
+        var incremental = state.materialize(serverID: serverID, changes: changes)
+        XCTAssertEqual(incremental.people.first?.faceCount, 2)
+
+        changes = state.apply([
+            makeRecord(.photoPatch, id: "p1", hlc: 30, by: "b", photo: shared(base, serverID: serverID), facesDelete: [faceB.id])
+        ])
+        incremental = state.materialize(serverID: serverID, changes: changes)
+        XCTAssertEqual(incremental.people.first?.faceCount, 1)
+
+        changes = state.apply([makeRecord(.photoDelete, id: "p1", hlc: 40, by: "a")])
+        incremental = state.materialize(serverID: serverID, changes: changes)
+        XCTAssertEqual(incremental.people.first?.faceCount, 0)
+    }
+
+    func testIncrementalSyncMergesDuplicateSHAEntities() {
+        let first = makePhoto(id: "asset:A", sha: "same", serverID: serverID)
+        var second = first
+        second.id = "asset:B"
+        second.tags = ["desktop"]
+
+        var state = MergedMetadata()
+        state.apply([
+            makeRecord(.photoUpsert, id: "asset:A", hlc: 10, by: "a", photo: shared(first, serverID: serverID), tagsAdd: ["phone"]),
+            makeRecord(.photoUpsert, id: "asset:B", hlc: 11, by: "b", photo: shared(second, serverID: serverID), tagsAdd: ["desktop"])
+        ])
+        let changes = state.apply([
+            makeRecord(.photoPatch, id: "asset:A", hlc: 20, by: "a", photo: shared(first, serverID: serverID), tagsAdd: ["beach"])
+        ])
+        let incremental = state.materialize(serverID: serverID, changes: changes)
+        XCTAssertEqual(incremental.photos.count, 1)
+        XCTAssertEqual(Set(incremental.photos[0].tags), ["phone", "desktop", "beach"])
+    }
+
     func testNewestFieldWinsRegardlessOfArrivalOrder() {
         let base = makePhoto(id: "p1", serverID: serverID)
         let older = makeRecord(

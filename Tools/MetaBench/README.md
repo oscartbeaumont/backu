@@ -190,3 +190,21 @@ around the ways a journal loses data:
 The same test file is the fastest place to reproduce a journal bug: no mock
 server, no network, no simulator.
 
+## Production pass
+
+- **Garbage collection.** After a compaction, a device (at most once a day)
+  deletes segments covered by the head snapshot's watermark and older than a
+  7-day retention window, plus superseded snapshots. Readers always start from
+  the head snapshot, so covered segments are redundant; the window protects a
+  sync that listed a segment just before collection.
+- **Parallel cold start.** The snapshot now downloads through the regular
+  ranged downloader, so a 13 MB snapshot is fetched over parallel byte ranges
+  above 8 MB instead of one stream. It still streams to disk.
+- **Incremental face counts.** The merged state maintains person→face counts
+  on apply, so a face move updates the People screen without scanning the
+  library. Counts are rebuilt once when a snapshot is decoded.
+- **One-trigger release.** The Release workflow uploads to TestFlight, creates
+  the tag and GitHub Release, then adds the build to the `TESTFLIGHT_GROUP`
+  repository variable (default `Internal`) through the App Store Connect API.
+  Internal groups skip Beta App Review; only external groups wait on Apple.
+

@@ -41,11 +41,12 @@ struct MetadataReplicationState: Codable, Sendable {
     var seedLastID: String?
     /// The batch currently sitting in the outbox. Advanced on the next start.
     var seedPendingLastID: String?
+    var lastGarbageCollection: Date?
 
     private enum CodingKeys: String, CodingKey {
         case writerID, sequence, headETag, generation, snapshotKey, headSnapshot, watermark
         case lastSyncAt, lastHLC, segmentsSinceSnapshot, editsSinceSnapshot
-        case isMigration, seeded, seedLastID, seedPendingLastID
+        case isMigration, seeded, seedLastID, seedPendingLastID, lastGarbageCollection
     }
 
     init(writerID: String) {
@@ -69,6 +70,7 @@ struct MetadataReplicationState: Codable, Sendable {
         seeded = try container.decodeIfPresent(Bool.self, forKey: .seeded) ?? false
         seedLastID = try container.decodeIfPresent(String.self, forKey: .seedLastID)
         seedPendingLastID = try container.decodeIfPresent(String.self, forKey: .seedPendingLastID)
+        lastGarbageCollection = try container.decodeIfPresent(Date.self, forKey: .lastGarbageCollection)
     }
 }
 
@@ -953,6 +955,79 @@ final class MetadataService {
         replication.segmentsSinceSnapshot = 0
         replication.editsSinceSnapshot = 0
         persist()
+
+        // A compacted snapshot makes every covered segment redundant for
+        // readers (they start from the head snapshot). Keep a retention window
+        // for in-flight syncs, then collect at most once a day.
+        let gcDue = replication.lastGarbageCollection
+            .map { Date().timeIntervalSince($0) > 86_400 } ?? true
+        if gcDue {
+            await collectGarbage(store: store)
+        }
+    }
+
+    /// Deletes segments covered by the current head snapshot and older than
+    /// `retention`, plus superseded snapshots. Only the head snapshot is
+    /// authoritative; a reader always fetches it before any segment, so covered
+    /// segments are never needed for correctness. The retention window avoids
+    /// breaking a sync that listed a segment just before it was collected.
+    @discardableResult
+    func collectGarbage(
+        store: MetadataObjectStore,
+        retention: TimeInterval = 7 * 24 * 3600,
+        now: Date = Date()
+    ) async -> Int {
+        guard let headResult = try? await store.getObject(MetadataLayout.headKey, ifNoneMatch: nil),
+              case let .found(headData, _) = headResult,
+              let head = try? JSONFile.decoder.decode(MetadataHead.self, from: headData),
+              let snapshot = head.snapshot
+        else { return 0 }
+        guard let snapshotResult = try? await store.getObject(snapshot, ifNoneMatch: nil),
+              case .found = snapshotResult
+        else { return 0 }
+
+        let cutoff = now.addingTimeInterval(-retention)
+        var deleted = 0
+
+        var token: String?
+        repeat {
+            guard let page = try? await store.listObjects(
+                prefix: MetadataLayout.logPrefix + "/",
+                delimiter: nil,
+                startAfter: nil,
+                continuationToken: token,
+                maxKeys: 1000
+            ) else { return deleted }
+            for entry in page.entries {
+                guard let parsed = MetadataLayout.parseSegment(entry.key),
+                      parsed.sequence <= (head.watermark[parsed.writer] ?? -1),
+                      let modified = entry.lastModified,
+                      modified < cutoff
+                else { continue }
+                if (try? await store.deleteObject(entry.key)) != nil { deleted += 1 }
+            }
+            token = page.isTruncated ? page.nextToken : nil
+        } while token != nil
+
+        var snapshotToken: String?
+        repeat {
+            guard let page = try? await store.listObjects(
+                prefix: MetadataLayout.snapshotPrefix + "/",
+                delimiter: nil,
+                startAfter: nil,
+                continuationToken: snapshotToken,
+                maxKeys: 1000
+            ) else { return deleted }
+            for entry in page.entries where entry.key != snapshot {
+                guard let modified = entry.lastModified, modified < cutoff else { continue }
+                if (try? await store.deleteObject(entry.key)) != nil { deleted += 1 }
+            }
+            snapshotToken = page.isTruncated ? page.nextToken : nil
+        } while snapshotToken != nil
+
+        replication.lastGarbageCollection = now
+        persist()
+        return deleted
     }
 
     // MARK: - Persistence
