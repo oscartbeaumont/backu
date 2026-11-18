@@ -131,7 +131,7 @@ struct PhotoTile: View {
                 Label("Details", systemImage: "info.circle")
             }
             Button {
-                app.activeTab = .search
+                app.showSearch = true
             } label: {
                 Label("Find Similar", systemImage: "magnifyingglass")
             }

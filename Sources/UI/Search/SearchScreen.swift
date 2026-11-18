@@ -6,6 +6,7 @@ struct SearchScreen: View {
     @State private var text = ""
     @State private var query = SearchQuery()
     @State private var showFilters = false
+    @FocusState private var searchFocused: Bool
 
     private var results: [PhotoItem] {
         var query = query
@@ -35,8 +36,14 @@ struct SearchScreen: View {
         ScrollView {
             VStack(spacing: 0) {
                 ScreenTitle("Search", subtitle: "On-device index · instant results") {
-                    GlassIconButton(symbol: "line.3.horizontal.decrease", label: "Filters", isActive: !query.isEmpty) {
-                        showFilters.toggle()
+                    HStack(spacing: 8) {
+                        GlassIconButton(symbol: "line.3.horizontal.decrease", label: "Filters", isActive: !query.isEmpty) {
+                            showFilters.toggle()
+                        }
+                        GlassIconButton(symbol: "xmark", label: "Close search") {
+                            app.showSearch = false
+                        }
+                        .accessibilityIdentifier("search.close")
                     }
                 }
 
@@ -62,6 +69,10 @@ struct SearchScreen: View {
         #endif
         .animation(.backuSnappy, value: isSearching)
         .animation(.backuSnappy, value: showFilters)
+        .task {
+            try? await Task.sleep(for: .milliseconds(250))
+            searchFocused = true
+        }
     }
 
     private var searchField: some View {
@@ -73,6 +84,7 @@ struct SearchScreen: View {
                 .textFieldStyle(.plain)
                 .accessibilityIdentifier("search.field")
                 .font(.body)
+                .focused($searchFocused)
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -277,6 +289,7 @@ struct SearchScreen: View {
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Button {
+                    app.showSearch = false
                     app.activeTab = .people
                 } label: {
                     Text("See all")

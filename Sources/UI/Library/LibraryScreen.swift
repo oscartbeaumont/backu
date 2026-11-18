@@ -345,7 +345,7 @@ struct LibraryScreen: View {
                         onDelete: { showDeleteConfirm = true }
                     )
                     .padding(.top, 6)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 8 + bottomBarClearance)
                 } else {
                     levelSwitcher(proxy: proxy)
                 }
@@ -452,6 +452,16 @@ struct LibraryScreen: View {
             || app.remoteSyncMessage != nil
     }
 
+    private var bottomBarClearance: CGFloat {
+        #if os(iOS)
+        // The custom bottom bar is a root safe-area inset; the library's own
+        // floating controls need to sit above it rather than overlap it.
+        return 66
+        #else
+        return 0
+        #endif
+    }
+
     private func levelSwitcher(proxy: ScrollViewProxy) -> some View {
         LibraryLevelSwitcher(
             level: Binding(
@@ -460,7 +470,7 @@ struct LibraryScreen: View {
             )
         )
         .padding(.top, 6)
-        .padding(.bottom, 8)
+        .padding(.bottom, 8 + bottomBarClearance)
     }
 
     private func filterPanelOverlay(topInset: CGFloat) -> some View {

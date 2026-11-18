@@ -5,7 +5,6 @@ import SwiftUI
 
 enum AppTab: String, CaseIterable, Identifiable, Hashable {
     case library
-    case search
     case people
     case settings
 
@@ -14,7 +13,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     var title: String {
         switch self {
         case .library: return "Library"
-        case .search: return "Search"
         case .people: return "People"
         case .settings: return "Settings"
         }
@@ -23,7 +21,6 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .library: return "photo.on.rectangle.angled"
-        case .search: return "magnifyingglass"
         case .people: return "person.crop.circle"
         case .settings: return "gearshape"
         }
@@ -80,6 +77,7 @@ final class AppModel {
     var lastScanMessage: String?
     var errorMessage: String?
     var activeTab: AppTab = .library
+    var showSearch = false
     var viewer: ViewerPresentation?
     var isSyncingRemote = false
     var remoteSyncMessage: String?

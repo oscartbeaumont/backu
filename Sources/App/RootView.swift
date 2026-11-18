@@ -45,6 +45,32 @@ struct RootView: View {
         } message: {
             Text(app.errorMessage ?? "")
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $app.showSearch, onDismiss: { app.viewer = nil }) {
+            searchCover
+        }
+        #else
+        .sheet(isPresented: $app.showSearch, onDismiss: { app.viewer = nil }) {
+            searchCover
+                .frame(minWidth: 760, minHeight: 640)
+        }
+        #endif
+    }
+
+    private var searchCover: some View {
+        @Bindable var app = app
+        return NavigationStack {
+            SearchScreen()
+                .environment(app)
+                .environment(\.viewerZoomSourceActive, true)
+                .environment(\.viewerZoomNamespace, viewerNamespace)
+                #if os(iOS)
+                .navigationDestination(item: $app.viewer) { presentation in
+                    ViewerScreen(presentation: presentation)
+                        .environment(app)
+                }
+                #endif
+        }
     }
 
     /// The viewer is pushed above the tab bar so it covers the whole screen and
@@ -67,22 +93,34 @@ struct RootView: View {
         return TabView(selection: $app.activeTab) {
             Tab(AppTab.library.title, systemImage: AppTab.library.symbol, value: .library) {
                 NavigationStack { LibraryScreen() }
+                    .toolbar(.hidden, for: .tabBar)
                     .environment(\.viewerZoomSourceActive, app.activeTab == .library)
-            }
-            Tab(AppTab.search.title, systemImage: AppTab.search.symbol, value: .search) {
-                NavigationStack { SearchScreen() }
-                    .environment(\.viewerZoomSourceActive, app.activeTab == .search)
             }
             Tab(AppTab.people.title, systemImage: AppTab.people.symbol, value: .people) {
                 NavigationStack { PeopleScreen() }
+                    .toolbar(.hidden, for: .tabBar)
                     .environment(\.viewerZoomSourceActive, app.activeTab == .people)
             }
             Tab(AppTab.settings.title, systemImage: AppTab.settings.symbol, value: .settings) {
                 NavigationStack { SettingsScreen() }
+                    .toolbar(.hidden, for: .tabBar)
             }
         }
         .tint(Theme.accent)
-        .tabBarMinimizeBehavior(.never)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbarVisibility(.hidden, for: .tabBar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if app.viewer == nil {
+                AppBottomBar(
+                    selection: $app.activeTab,
+                    onSearch: {
+                        app.showSearch = true
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.backuSnappy, value: app.viewer == nil)
     }
     #endif
 
@@ -96,7 +134,6 @@ struct RootView: View {
                 Group {
                     switch app.activeTab {
                     case .library: LibraryScreen()
-                    case .search: SearchScreen()
                     case .people: PeopleScreen()
                     case .settings: SettingsScreen()
                     }
@@ -125,6 +162,63 @@ struct RootView: View {
     }
 }
 
+/// Photos-style bottom bar: a glass capsule for the three library sections and
+/// a separate circular search button on the right.
+struct AppBottomBar: View {
+    @Binding var selection: AppTab
+    var onSearch: () -> Void
+    @Namespace private var namespace
+
+    var body: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 2) {
+                ForEach(AppTab.allCases) { tab in
+                    Button {
+                        withAnimation(.backuSnappy) { selection = tab }
+                    } label: {
+                        VStack(spacing: 2) {
+                            Image(systemName: tab.symbol)
+                                .font(.system(size: 18, weight: .semibold))
+                                .frame(height: 22)
+                            Text(tab.title)
+                                .font(.caption2.weight(.medium))
+                        }
+                        .foregroundStyle(selection == tab ? Theme.accent : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background {
+                            if selection == tab {
+                                Capsule()
+                                    .fill(Theme.accent.opacity(0.12))
+                                    .matchedGeometryEffect(id: "bottom.tab", in: namespace)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("tab.\(tab.rawValue)")
+                    .accessibilityAddTraits(selection == tab ? .isSelected : [])
+                }
+            }
+            .padding(3)
+            .glassCapsule(interactive: true)
+
+            Button(action: onSearch) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 56, height: 56)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Search")
+            .accessibilityIdentifier("search.open")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+    }
+}
+
 struct SidebarView: View {
     @Binding var selection: AppTab
     @Environment(AppModel.self) private var app
@@ -137,6 +231,23 @@ struct SidebarView: View {
     var body: some View {
         List {
             Section {
+                Button {
+                    app.showSearch = true
+                } label: {
+                    Label {
+                        Text("Search")
+                            .foregroundStyle(.primary)
+                    } icon: {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tab.search")
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.clear)
+                )
+
                 ForEach(AppTab.allCases) { tab in
                     Button {
                         selection = tab

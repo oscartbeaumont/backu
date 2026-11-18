@@ -13,6 +13,30 @@ final class BackuUITests: XCTestCase {
     }
 
     private func select(_ name: String, in app: XCUIApplication) {
+        if name == "Search" {
+            let search = app.buttons["search.open"]
+            if search.waitForExistence(timeout: 5) {
+                search.tap()
+                return
+            }
+            let sidebarSearch = app.buttons["tab.search"]
+            if sidebarSearch.waitForExistence(timeout: 2) {
+                sidebarSearch.tap()
+                return
+            }
+        }
+
+        let close = app.buttons["search.close"]
+        if close.exists {
+            close.tap()
+            sleep(1)
+        }
+
+        let custom = app.buttons["tab.\(name.lowercased())"]
+        if custom.waitForExistence(timeout: 5) {
+            custom.tap()
+            return
+        }
         let tab = app.tabBars.buttons[name]
         if tab.exists {
             tab.tap()
@@ -230,13 +254,7 @@ final class BackuUITests: XCTestCase {
 
         // The bucket prefix is optional. Open the saved server, clear it, and
         // confirm the server reports the bucket root.
-        let settingsTab = app.tabBars.buttons["Settings"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 8), "Settings tab missing")
-        sleep(2)
-        settingsTab.tap()
-        if !app.staticTexts["Settings"].waitForExistence(timeout: 5) {
-            settingsTab.tap()
-        }
+        select("Settings", in: app)
         XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 8), "Settings did not open")
         let serversRow = app.buttons.matching(identifier: "settings.servers").firstMatch
         XCTAssertTrue(serversRow.waitForExistence(timeout: 8), "Servers row missing")
