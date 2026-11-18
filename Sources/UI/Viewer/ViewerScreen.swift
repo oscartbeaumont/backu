@@ -494,11 +494,17 @@ struct ViewerPage: View {
         }
     }
 
+    /// macOS only: iOS pages through ViewerPager, which labels its own image.
+    private var photoLabel: String {
+        guard let date = photo?.takenAt else { return "Photo" }
+        return "Photo from \(date.dayLabel)"
+    }
+
     private func baseImage(_ image: PlatformImage, in size: CGSize) -> some View {
         Image(platformImage: image)
             .resizable()
             .scaledToFit()
-            .accessibilityHidden(true)
+            .accessibilityLabel(photoLabel)
             .scaleEffect(scale)
             .offset(offset)
             .gesture(magnification)
