@@ -193,6 +193,11 @@ struct PeopleScreen: View {
         } message: {
             Text("Backu will combine unnamed groups whose faces look alike. People you've already named are kept separate.")
         }
+        .task(id: mergeStatus) {
+            guard mergeStatus != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation(.backuSnappy) { mergeStatus = nil }
+        }
     }
 
     private var subtitle: String {
