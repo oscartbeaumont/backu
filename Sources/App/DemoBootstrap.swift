@@ -26,6 +26,7 @@ enum DemoBootstrap {
             var gridColumns: Int?
             var hasCompletedOnboarding: Bool?
             var showRemoteOnlyPhotos: Bool?
+            var atlasThumbnailsEnabled: Bool?
             /// Test-only: mark every bootstrapped server as a backup destination.
             var backupAllServers: Bool?
         }
@@ -47,6 +48,7 @@ enum DemoBootstrap {
             if let value = settings.faceRecognitionEnabled { app.settings.faceRecognitionEnabled = value }
             if let value = settings.gridColumns { app.settings.gridColumns = value }
             if let value = settings.showRemoteOnlyPhotos { app.settings.showRemoteOnlyPhotos = value }
+            if let value = settings.atlasThumbnailsEnabled { app.setAtlasThumbnailsEnabled(value) }
             if let value = settings.hasCompletedOnboarding { app.settings.hasCompletedOnboarding = value }
         }
 

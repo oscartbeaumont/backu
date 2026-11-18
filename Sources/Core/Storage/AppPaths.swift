@@ -43,6 +43,15 @@ enum AppPaths {
         return url
     }
 
+    /// Encoded atlas sheets. A whole library's 64 px previews are ~0.6 KB per
+    /// photo, so this cache is what makes scrolling immediate and offline for
+    /// remote-only photos; the 384 px sheets are evicted like any other cache.
+    static var atlasCache: URL {
+        let url = supportDirectory.appendingPathComponent("atlases", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     static var stagingDirectory: URL {
         let url = supportDirectory.appendingPathComponent("staging", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -64,7 +73,7 @@ enum AppPaths {
         for file in files ?? [] {
             try? FileManager.default.removeItem(at: file)
         }
-        for url in [embeddingsFile, thumbnailCache, imageCache] {
+        for url in [embeddingsFile, thumbnailCache, imageCache, atlasCache] {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             var mutable = url
@@ -72,6 +81,10 @@ enum AppPaths {
         }
         pruneDirectory(imageCache, maxBytes: 500 * 1024 * 1024)
         pruneDirectory(thumbnailCache, maxBytes: 250 * 1024 * 1024)
+        // Previews are the point of the cache, so it is sized to keep a very
+        // large library; the sheet bytes are already ~100× smaller than the
+        // thumbnails they replace.
+        pruneDirectory(atlasCache, maxBytes: 400 * 1024 * 1024)
         pruneStaleTransferScratch()
     }
 

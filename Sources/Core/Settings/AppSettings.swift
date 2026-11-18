@@ -33,6 +33,13 @@ final class AppSettings {
     var hasCompletedOnboarding: Bool {
         didSet { defaults.set(hasCompletedOnboarding, forKey: Keys.onboarded) }
     }
+    /// Experimental: pack remote-only thumbnails into content-addressed sheets.
+    /// Off by default while the format and the sync rules are being iterated on;
+    /// turning it on makes the next backup publish atlases for new photos and
+    /// backfills older ones at a bounded rate.
+    var atlasThumbnailsEnabled: Bool {
+        didSet { defaults.set(atlasThumbnailsEnabled, forKey: Keys.atlas) }
+    }
 
     private let defaults: UserDefaults
 
@@ -47,6 +54,7 @@ final class AppSettings {
         static let columns = "gridColumns"
         static let remoteOnly = "showRemoteOnlyPhotos"
         static let onboarded = "hasCompletedOnboarding"
+        static let atlas = "atlasThumbnailsEnabled"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -74,5 +82,6 @@ final class AppSettings {
         gridColumns = min(max(columns, 1), 8)
         showRemoteOnlyPhotos = defaults.object(forKey: Keys.remoteOnly) as? Bool ?? true
         hasCompletedOnboarding = defaults.object(forKey: Keys.onboarded) as? Bool ?? false
+        atlasThumbnailsEnabled = defaults.object(forKey: Keys.atlas) as? Bool ?? false
     }
 }

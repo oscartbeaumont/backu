@@ -182,6 +182,8 @@ final class BackupEngine {
 
     private var runTask: Task<Void, Never>?
     private var runStartedAt: Date?
+    /// Settings → Experimental, snapshotted when a run starts.
+    private var atlasEnabled = false
     private let library = PhotoLibraryService.shared
     private let journal = UploadJournal.shared
 
@@ -233,6 +235,7 @@ final class BackupEngine {
     ) {
         guard !isRunning, !destinations.isEmpty else { return }
         self.trigger = trigger
+        atlasEnabled = settings.atlasThumbnailsEnabled
         serverID = destinations.first?.server.id
         activeServerID = nil
         isRunning = true
@@ -428,15 +431,36 @@ final class BackupEngine {
         force: Bool,
         limit: Int?
     ) -> [PhotoItem] {
-        let selected = catalog.photos.filter { photo in
+        var selected = catalog.photos.filter { photo in
             if force { return photo.isLocal }
-            if photo.copy(on: server.id) != nil {
-                // Already has the bytes; only a pending sidecar edit remains.
-                return photo.sidecarDirtyAt != nil
+            if let copy = photo.copy(on: server.id) {
+                // Already has the bytes; a pending sidecar edit or a missing
+                // atlas group still needs a pass. Videos have no frame to pack,
+                // so they never become a permanent backfill candidate.
+                if photo.isVideo { return photo.sidecarDirtyAt != nil }
+                return photo.sidecarDirtyAt != nil || (atlasEnabled && copy.atlasGroup == nil)
             }
             return photo.isLocal
         }
         .sorted { ($0.takenAt ?? .distantPast) < ($1.takenAt ?? .distantPast) }
+        // A bucket written before atlases existed would otherwise re-export an
+        // entire library in one run. Newest photos are what a person scrolls
+        // first; the rest fills in over later runs.
+        let backfillLimit = 500
+        let backfillIDs = Set(selected.filter { photo in
+            guard atlasEnabled, !photo.isVideo, let copy = photo.copy(on: server.id) else { return false }
+            return copy.atlasGroup == nil
+        }.map(\.id))
+        if backfillIDs.count > backfillLimit {
+            let keep = Set(selected
+                .filter { backfillIDs.contains($0.id) }
+                .sorted { ($0.takenAt ?? .distantPast) > ($1.takenAt ?? .distantPast) }
+                .prefix(backfillLimit)
+                .map(\.id))
+            selected = selected.filter { photo in
+                !backfillIDs.contains(photo.id) || keep.contains(photo.id)
+            }
+        }
         if let limit { return Array(selected.prefix(limit)) }
         return selected
     }
@@ -455,6 +479,7 @@ final class BackupEngine {
         var uploadedSinceIndex = 0
         let analyzer = FaceAnalyzer()
         let device = DeviceInfo.name
+        let atlasBatch = AtlasBatch(server: server, client: client, catalog: catalog)
 
         for photo in candidates {
             if Task.isCancelled { break }
@@ -476,7 +501,8 @@ final class BackupEngine {
                     faceStore: faceStore,
                     analyzer: analyzer,
                     device: device,
-                    isMetadataOnly: isMetadataOnly
+                    isMetadataOnly: isMetadataOnly,
+                    atlas: atlasBatch
                 )
                 completedCount += 1
                 uploadedSinceIndex += 1
@@ -507,6 +533,7 @@ final class BackupEngine {
             }
         }
 
+        await atlasBatch.flush()
         await uploadIndex(client: client, catalog: catalog, server: server, device: device)
     }
 
@@ -558,7 +585,8 @@ final class BackupEngine {
         faceStore: FaceEmbeddingStore,
         analyzer: FaceAnalyzer,
         device: String,
-        isMetadataOnly: Bool
+        isMetadataOnly: Bool,
+        atlas: AtlasBatch
     ) async throws {
         var photo = original
         var sha = original.sha256
@@ -635,12 +663,22 @@ final class BackupEngine {
                 )
             }
 
-            if let thumb = await Self.makeThumbnail(url: exported.url) {
+            if let rendered = await Self.makeThumbnailSet(url: exported.url) {
                 let digest = sha ?? ""
                 let thumbName = String(digest.prefix(20)) + ".jpg"
                 let thumbKey = S3Client.join(server.normalizedPrefix, ".backu/thumbs/\(thumbName)")
-                try? await client.putObject(key: thumbKey, data: thumb, contentType: "image/jpeg")
+                try? await client.putObject(key: thumbKey, data: rendered.thumbnail, contentType: "image/jpeg")
                 photo.remoteThumbnailKey = thumbKey
+                // The tiles go into the run's atlas batch; it publishes the
+                // group every 36 photos and again at the end of the run.
+                if atlasEnabled, !digest.isEmpty {
+                    await atlas.add(
+                        photoID: photo.id,
+                        digest: digest,
+                        grid: rendered.grid,
+                        preview: rendered.preview
+                    )
+                }
             }
 
             photo.sha256 = sha
@@ -663,13 +701,36 @@ final class BackupEngine {
             )
         }
 
+        // A photo whose bytes are already in the bucket but whose atlas group is
+        // missing (interrupted publish, or an older install) is re-rendered
+        // from the local original without uploading the original again.
+        if atlasEnabled,
+           isMetadataOnly,
+           !photo.isVideo,
+           photo.copy(on: server.id)?.atlasGroup == nil,
+           let sha,
+           let localIdentifier = photo.localIdentifier,
+           let exported = try? await library.exportOriginal(for: localIdentifier) {
+            defer { try? FileManager.default.removeItem(at: exported.url) }
+            updateItem(itemID) { $0.phase = .analyzing }
+            if let rendered = await Self.makeThumbnailSet(url: exported.url) {
+                await atlas.add(
+                    photoID: photo.id,
+                    digest: sha,
+                    grid: rendered.grid,
+                    preview: rendered.preview
+                )
+            }
+        }
+
         updateItem(itemID) { $0.phase = .metadata }
         let current = catalog.photo(id: photo.id) ?? photo
         let sidecar = SidecarDocument.make(
             photo: current,
             people: Dictionary(catalog.people.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             device: device,
-            sha256: sha
+            sha256: sha,
+            serverID: server.id
         )
         let finalObjectKey = objectKey
             ?? current.copy(on: server.id)?.objectKey
@@ -825,9 +886,9 @@ final class BackupEngine {
         }.value
     }
 
-    nonisolated static func makeThumbnail(url: URL) async -> Data? {
+    nonisolated static func makeThumbnailSet(url: URL) async -> (thumbnail: Data, grid: CGImage, preview: CGImage)? {
         await Task.detached(priority: .utility) {
-            ImageMetadataReader.thumbnailJPEG(url: url, maxPixel: 900)
+            AtlasTileRenderer.render(url: url)
         }.value
     }
 

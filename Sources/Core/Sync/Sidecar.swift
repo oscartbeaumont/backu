@@ -58,10 +58,22 @@ struct SidecarDocument: Codable, Sendable {
     var camera: CameraInfo
     var location: LocationInfo?
     var sha256: String?
+    /// Immutable atlas group and cell, copied so a bucket can be repaired from
+    /// sidecars alone. The app browses from `index.json`.
+    var atlasGroup: String?
+    var atlasCell: Int?
     var device: String
     var app: String
 
-    static func make(photo: PhotoItem, people: [UUID: Person], device: String, sha256: String?) -> SidecarDocument {
+    static func make(
+        photo: PhotoItem,
+        people: [UUID: Person],
+        device: String,
+        sha256: String?,
+        serverID: UUID? = nil
+    ) -> SidecarDocument {
+        let atlasCopy = serverID.flatMap { id in photo.copies.first { $0.serverID == id } }
+            ?? photo.copies.first { $0.atlasGroup != nil }
         let referenced = Set(photo.faces.compactMap(\.personID))
         return SidecarDocument(
             id: photo.id,
@@ -107,6 +119,8 @@ struct SidecarDocument: Codable, Sendable {
                 )
             },
             sha256: sha256,
+            atlasGroup: atlasCopy?.atlasGroup,
+            atlasCell: atlasCopy?.atlasCell,
             device: device,
             app: "Backu 1.0"
         )
@@ -142,6 +156,8 @@ struct RemoteIndexDocument: Codable, Sendable {
         var key: String
         var sidecarKey: String
         var thumbnailKey: String?
+        var atlasGroup: String?
+        var atlasCell: Int?
         var sha256: String?
         var filename: String
         var capturedAt: Date?
@@ -205,6 +221,8 @@ struct RemoteIndexDocument: Codable, Sendable {
                     key: copy.objectKey,
                     sidecarKey: copy.sidecarKey,
                     thumbnailKey: copy.thumbnailKey,
+                    atlasGroup: copy.atlasGroup,
+                    atlasCell: copy.atlasCell,
                     sha256: photo.sha256,
                     filename: photo.filename,
                     capturedAt: photo.takenAt,
@@ -260,7 +278,9 @@ struct RemoteIndexDocument: Codable, Sendable {
                 uploadedAt: Date(),
                 byteCount: entry.byteCount,
                 etag: nil,
-                sha256: entry.sha256
+                sha256: entry.sha256,
+                atlasGroup: entry.atlasGroup,
+                atlasCell: entry.atlasCell
             )
 
             let faces: [PhotoFace] = (entry.faces ?? []).compactMap { face in

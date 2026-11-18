@@ -22,3 +22,4 @@ Tests/Fixtures/performance/raw/
 
 # Cloudflare CLI cache
 .cloudflare/
+Tests/Fixtures/atlas-corpus/
