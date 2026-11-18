@@ -12,6 +12,9 @@ struct FaceAnalyzer: Sendable {
 
     /// Ignore faces smaller than this fraction of the image's short edge.
     var minimumFaceFraction: Double = 0.035
+    /// Detection confidence floor. Low-confidence regions are usually textures
+    /// or partial faces and produce unstable feature prints.
+    var minimumConfidence: Double = 0.4
     var maximumAnalysisPixel: Int = 1600
 
     struct Outcome: Sendable {
@@ -36,7 +39,8 @@ struct FaceAnalyzer: Sendable {
             for observation in observations {
                 let box = observation.boundingBox.cgRect
                 let shortEdge = min(box.width, box.height)
-                guard shortEdge >= minimumFaceFraction else { continue }
+                guard Double(observation.confidence) >= minimumConfidence,
+                      shortEdge >= minimumFaceFraction else { continue }
                 let rect = NormRect(
                     visionX: box.origin.x,
                     visionY: box.origin.y,
@@ -64,7 +68,8 @@ struct FaceAnalyzer: Sendable {
             for observation in animals {
                 let box = observation.boundingBox.cgRect
                 let shortEdge = min(box.width, box.height)
-                guard shortEdge >= minimumFaceFraction else { continue }
+                guard Double(observation.confidence) >= minimumConfidence,
+                      shortEdge >= minimumFaceFraction else { continue }
                 guard let label = observation.labels.first, label.confidence > 0.35 else { continue }
                 let rect = NormRect(
                     visionX: box.origin.x,
@@ -92,17 +97,26 @@ struct FaceAnalyzer: Sendable {
         return Outcome(faces: results, imageSize: size)
     }
 
-    /// Crops the face (with a little context) and computes a feature print.
+    /// Crops a square around the face (with a little context) and computes a
+    /// feature print. A square, face-centred crop removes the background and
+    /// aspect-ratio variation that otherwise makes the same person look
+    /// different to the generic image feature print.
     private func featurePrint(for rect: NormRect, in image: CGImage) async -> [Float]? {
-        let padded = rect.inset(by: 0.28)
+        let side = max(rect.width, rect.height) * 1.9
+        let centerX = rect.x + rect.width / 2
+        let centerY = rect.y + rect.height / 2
+        let cropX = min(max(0, centerX - side / 2), max(0, 1 - side))
+        let cropY = min(max(0, centerY - side / 2), max(0, 1 - side))
+        let cropWidth = min(side, 1 - cropX)
+        let cropHeight = min(side, 1 - cropY)
+
         let width = CGFloat(image.width)
         let height = CGFloat(image.height)
-        // NormRect is already in top-left space, which is what CGImage cropping uses.
         let pixelRect = CGRect(
-            x: padded.x * width,
-            y: padded.y * height,
-            width: padded.width * width,
-            height: padded.height * height
+            x: cropX * width,
+            y: cropY * height,
+            width: cropWidth * width,
+            height: cropHeight * height
         ).integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard pixelRect.width >= 12, pixelRect.height >= 12,
               let crop = image.cropping(to: pixelRect) else { return nil }

@@ -150,6 +150,19 @@ final class LibraryAnalyzer {
             status = "Grouped \(result.newPeople) new \(result.newPeople == 1 ? "person" : "people")"
         }
     }
+
+    /// Manual cleanup from People → Merge Similar. Returns how many duplicate
+    /// groups were folded away.
+    @discardableResult
+    func mergeSimilarPeople(catalog: CatalogStore, faceStore: FaceEmbeddingStore) async -> Int {
+        status = "Merging similar faces"
+        let count = await FaceClusterer().mergeSimilarPeople(catalog: catalog, store: faceStore)
+        status = count == 0
+            ? "No similar people found"
+            : "Merged \(count) similar \(count == 1 ? "person" : "people")"
+        lastRunAt = Date()
+        return count
+    }
 }
 
 /// Groups face feature prints into people, matching against names the user has
@@ -162,6 +175,15 @@ struct FaceClusterer {
         return 0.30
     }()
     var petThreshold: Double = 0.26
+    /// Looser threshold for folding two already-created unnamed groups. They
+    /// have survived the first assignment pass, so a little more evidence is
+    /// enough to say they are the same person.
+    var mergeThreshold: Double = {
+        if let raw = ProcessInfo.processInfo.environment["BACKU_FACE_MERGE_THRESHOLD"], let value = Double(raw) {
+            return value
+        }
+        return 0.42
+    }()
 
     struct Result: Sendable {
         var newPeople = 0
@@ -196,7 +218,13 @@ struct FaceClusterer {
             }
         }
 
-        guard !unassigned.isEmpty else { return Result() }
+        guard !unassigned.isEmpty else {
+            // Existing libraries may have been analysed by an older clustering
+            // pass. Re-run the merge so duplicates disappear without needing a
+            // fresh scan.
+            await mergeSimilarPeople(catalog: catalog, store: store)
+            return Result()
+        }
 
         // Some runtimes (notably the Simulator) hand back identical feature
         // prints for every image. Merging on those would collapse every face
@@ -277,34 +305,156 @@ struct FaceClusterer {
             }
         }
 
-        await mergeSimilarPeople(catalog: catalog, clusters: unnamedClusters)
+        let merged = await mergeSimilarPeople(catalog: catalog, store: store)
+        if merged > 0 {
+            result.newPeople = max(0, result.newPeople - merged)
+        }
         return result
     }
 
-    /// Unnamed groups that turn out to be the same person get folded together.
+    /// Folds unnamed people that are the same face together, and pulls unnamed
+    /// groups into a named person when they are clearly the same. This runs
+    /// after every analysis pass and can also be triggered by hand.
+    ///
+    /// It deliberately never merges two named people: two names are a user
+    /// decision, while an unnamed duplicate is an analysis error.
     @MainActor
-    private func mergeSimilarPeople(
-        catalog: CatalogStore,
-        clusters: [(personID: UUID, vectors: [[Float]], kind: PhotoFace.Kind)]
-    ) async {
-        var remaining = clusters
-        var merges: [(UUID, UUID)] = []
-        while remaining.count > 1 {
-            let first = remaining.removeFirst()
-            guard catalog.person(id: first.personID)?.isNamed == false else { continue }
-            guard let centroid = VectorMath.centroid(first.vectors) else { continue }
-            for other in remaining {
-                guard catalog.person(id: other.personID)?.isNamed == false else { continue }
-                guard let otherCentroid = VectorMath.centroid(other.vectors),
-                      other.kind == first.kind else { continue }
-                if VectorMath.distance(centroid, otherCentroid) < threshold * 0.82 {
-                    merges.append((other.personID, first.personID))
-                    break
+    @discardableResult
+    func mergeSimilarPeople(catalog: CatalogStore, store: FaceEmbeddingStore) async -> Int {
+        struct Cluster {
+            var id: UUID
+            var isPet: Bool
+            var isNamed: Bool
+            var faceCount: Int
+            var vectors: [[Float]]
+        }
+
+        var named: [Cluster] = []
+        var unnamed: [Cluster] = []
+
+        var vectorsByPerson: [UUID: [[Float]]] = [:]
+        for photo in catalog.photos {
+            for face in photo.faces {
+                guard let personID = face.personID,
+                      let index = face.embeddingIndex,
+                      let vector = await store.vector(at: index) else { continue }
+                vectorsByPerson[personID, default: []].append(vector)
+            }
+        }
+
+        for person in catalog.people where !person.isHidden {
+            guard let vectors = vectorsByPerson[person.id], !vectors.isEmpty else { continue }
+            let cluster = Cluster(
+                id: person.id,
+                isPet: person.isPet,
+                isNamed: person.isNamed,
+                faceCount: person.faceCount,
+                vectors: vectors
+            )
+            if person.isNamed {
+                named.append(cluster)
+            } else {
+                unnamed.append(cluster)
+            }
+        }
+
+        guard unnamed.count > 0 else { return 0 }
+        let limit = mergeThreshold
+        var merges = 0
+        var remaining: [Cluster] = []
+
+        // First pull unnamed groups into an existing named person. A named
+        // person is the strongest signal available, so this keeps the name.
+        for var cluster in unnamed {
+            if let index = named.firstIndex(where: {
+                $0.isPet == cluster.isPet
+                    && (distance($0.vectors, cluster.vectors) < limit * 0.9
+                        || nearestDistance($0.vectors, cluster.vectors) < limit * 0.55)
+            }) {
+                catalog.mergePeople(cluster.id, into: named[index].id)
+                named[index].vectors.append(contentsOf: cluster.vectors)
+                named[index].faceCount += cluster.faceCount
+                merges += 1
+            } else {
+                remaining.append(cluster)
+            }
+        }
+
+        // Then cluster the remaining unnamed people with each other. Pairwise
+        // average distance is less eager than a single nearest pair, which
+        // stops one odd angle from gluing two different people together.
+        var parent = Array(remaining.indices)
+        func find(_ index: Int) -> Int {
+            var index = index
+            while parent[index] != index {
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            }
+            return index
+        }
+        func union(_ lhs: Int, _ rhs: Int) {
+            let a = find(lhs)
+            let b = find(rhs)
+            if a != b { parent[b] = a }
+        }
+
+        for i in remaining.indices {
+            for j in remaining.indices where j > i {
+                guard remaining[i].isPet == remaining[j].isPet else { continue }
+                if distance(remaining[i].vectors, remaining[j].vectors) < limit
+                    || nearestDistance(remaining[i].vectors, remaining[j].vectors) < limit * 0.55 {
+                    union(i, j)
                 }
             }
         }
-        for (source, target) in merges {
-            catalog.mergePeople(source, into: target)
+
+        var groups: [Int: [Int]] = [:]
+        for index in remaining.indices {
+            groups[find(index), default: []].append(index)
         }
+        for indices in groups.values where indices.count > 1 {
+            let targetIndex = indices.max {
+                remaining[$0].faceCount < remaining[$1].faceCount
+            } ?? indices[0]
+            let target = remaining[targetIndex]
+            for index in indices where index != targetIndex {
+                catalog.mergePeople(remaining[index].id, into: target.id)
+                merges += 1
+            }
+        }
+
+        return merges
+    }
+
+    /// Average pairwise distance between two people, using a bounded sample so
+    /// a person with hundreds of faces does not make clustering quadratic.
+    private func distance(_ lhs: [[Float]], _ rhs: [[Float]]) -> Double {
+        let a = Array(lhs.prefix(12))
+        let b = Array(rhs.prefix(12))
+        guard !a.isEmpty, !b.isEmpty else { return .greatestFiniteMagnitude }
+        var sum = 0.0
+        var count = 0
+        for left in a {
+            for right in b {
+                sum += VectorMath.distance(left, right)
+                count += 1
+            }
+        }
+        return count == 0 ? .greatestFiniteMagnitude : sum / Double(count)
+    }
+
+    /// One unusually close pair is strong evidence the clusters are the same
+    /// person. This is used alongside the average so a single odd angle does
+    /// not keep duplicates apart.
+    private func nearestDistance(_ lhs: [[Float]], _ rhs: [[Float]]) -> Double {
+        let a = Array(lhs.prefix(12))
+        let b = Array(rhs.prefix(12))
+        var nearest = Double.greatestFiniteMagnitude
+        for left in a {
+            for right in b {
+                nearest = min(nearest, VectorMath.distance(left, right))
+            }
+        }
+        return nearest
     }
 }
