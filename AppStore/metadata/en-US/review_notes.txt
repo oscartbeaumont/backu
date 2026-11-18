@@ -1,17 +1,17 @@
 NO SIGN-IN
-Backu has no account or login. All features except backup work with just the system photo library: browse the grid, open the viewer, add tags/favourites, search, and use the People tab after the on-device face index runs.
+Backu has no account or login, so there is no account to delete. All features except backup work with just the system photo library: browse the grid, open the viewer, add tags/favourites, search, and use the People tab after the on-device face index runs.
 
 TESTING BACKUP
 Backup requires an S3-compatible bucket (AWS S3, Backblaze B2, Cloudflare R2, MinIO, Wasabi, Synology or a custom endpoint) because the app uploads only to storage the person owns. Open Servers → add a server, choose a provider preset, and enter a bucket and access key. "Test Connection" writes and reads a small probe object before saving. Without a bucket, the app clearly explains that backup is unavailable and does not block the rest of the library.
 
 PRIVACY
-No developer server is involved. Photos, tags and face boxes go only to the bucket the user configures; face feature vectors stay on-device. There is no analytics, advertising or tracking SDK. The in-app Support card opens GitHub Sponsors in the browser; it is a donation link for an open-source project, not a purchase of digital content.
+The privacy policy is at https://backu.otbeaumont.me/privacy and the app links to it from Settings and from the onboarding privacy card. No developer server is involved. Photos, tags and face boxes go only to the bucket the user configures; face feature vectors stay on-device. There is no analytics, advertising or tracking SDK. The in-app Support card opens GitHub Sponsors in the browser; it is a donation link for an open-source project, not a purchase of digital content.
 
 LOCAL NETWORK
 If the user enters an S3-compatible endpoint on their LAN, iOS shows the standard Local Network permission prompt. The app does not scan or discover devices; it only connects to the address the user enters. If the user only uses a public endpoint, no local-network prompt appears.
 
 BACKGROUND MODES
-"fetch" and "processing" are used only to continue an automatic photo backup (BGProcessingTask) and to keep background URLSession uploads moving.
+The "processing" mode continues an automatic photo backup with a BGProcessingTask. Uploads already running also keep moving through a background URLSession, which needs no background mode of its own.
 
 ENCRYPTION
 The app uses HTTPS through the system stack. Its Info.plist declares no non-exempt encryption.
