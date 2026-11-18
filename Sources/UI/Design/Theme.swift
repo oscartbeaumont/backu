@@ -150,6 +150,7 @@ extension Animation {
 
 /// `withAnimation`, but applied instantly when Reduce Motion is on, so a state
 /// change still lands and only the travel between the two states is dropped.
+/// Pass the view's `@Environment(\.accessibilityReduceMotion)` value.
 @discardableResult
 func withRespectingReduceMotion<Result>(
     _ animation: Animation,

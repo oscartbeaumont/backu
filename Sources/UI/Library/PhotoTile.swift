@@ -302,6 +302,7 @@ struct FaceBubble: View {
                 Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
+                    .accessibilityHidden(true)
             } else {
                 Circle().fill(.quaternary)
                     .overlay {

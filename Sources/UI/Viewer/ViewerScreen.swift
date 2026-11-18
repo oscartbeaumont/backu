@@ -498,6 +498,7 @@ struct ViewerPage: View {
         Image(platformImage: image)
             .resizable()
             .scaledToFit()
+            .accessibilityHidden(true)
             .scaleEffect(scale)
             .offset(offset)
             .gesture(magnification)

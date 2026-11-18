@@ -77,7 +77,7 @@ struct AddServerFlow: View {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "key.horizontal")
                         .foregroundStyle(Theme.accent)
-                    Text("S3 buckets are unlocked with an access key, not an OAuth login. Backu opens the exact page where you create one, fills in every endpoint and region for you, and keeps the key in the Keychain.")
+                    Text("S3 buckets are unlocked with an access key, not a password. Backu opens the exact page where you create one, fills in every endpoint and region for you, and keeps the key in the Keychain.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

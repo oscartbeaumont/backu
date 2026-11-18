@@ -2,7 +2,7 @@ import Foundation
 
 /// A bucket provider Backu knows how to pre-fill.
 ///
-/// S3 itself has no end-user OAuth flow: buckets are unlocked with an access key
+/// S3 itself has no end-user sign-in: buckets are unlocked with an access key
 /// pair. The provider presets exist to remove every avoidable step, deep-link to
 /// the exact page where a key is created, and pre-fill endpoint and region.
 enum StorageProvider: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -70,7 +70,7 @@ enum StorageProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .aws: return "s3.us-east-1.amazonaws.com"
         case .backblaze: return "s3.us-west-004.backblazeb2.com"
         case .cloudflareR2: return "abc123.r2.cloudflarestorage.com"
-        case .custom: return "s3.example.com"
+        case .custom: return "s3.your-domain.com"
         }
     }
 
