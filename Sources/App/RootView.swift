@@ -216,7 +216,7 @@ struct AppBottomBar: View {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(Theme.accent)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 56, height: 56)
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
@@ -247,7 +247,7 @@ struct AppBottomBar: View {
                     }
                     .foregroundStyle(selection == tab ? Theme.accent : Color.secondary)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 52)
+                    .frame(height: 50)
                     .background {
                         if selection == tab {
                             Capsule()

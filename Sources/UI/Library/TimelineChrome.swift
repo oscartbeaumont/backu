@@ -29,8 +29,8 @@ struct StatusBarScrim: View {
 /// Photos' three-level library switch: Years, Months, All.
 ///
 /// The control is a glass capsule with a matched-geometry selection pill. It
-/// floats above the tab bar, so the content keeps the full width on every
-/// level and the switch is reachable without leaving the timeline.
+/// lives inside the bottom bar, so every timeline element shares the same
+/// 56 pt height.
 struct LibraryLevelSwitcher: View {
     @Binding var level: LibraryLevel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,7 +48,8 @@ struct LibraryLevelSwitcher: View {
                     Text(option.rawValue)
                         .font(.subheadline.weight(level == option ? .semibold : .medium))
                         .foregroundStyle(level == option ? Color.primary : Color.secondary)
-                        .frame(width: 78, height: 42)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
                         .background {
                             if level == option {
                                 Capsule()
@@ -65,7 +66,7 @@ struct LibraryLevelSwitcher: View {
             }
         }
         .padding(3)
-        .frame(width: 240, height: 48)
+        .frame(minWidth: 200, idealWidth: 240, maxWidth: 240, minHeight: 56, maxHeight: 56)
         .glassCapsule(interactive: true)
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
         .animation(
