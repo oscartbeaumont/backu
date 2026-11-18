@@ -1,0 +1,65 @@
+name: TestFlight group
+
+# Retry just the group assignment for a build that has already been uploaded.
+# The Release workflow does this automatically after publishing; this exists for
+# a slow or failed assignment without bumping a version or uploading again.
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: TestFlight build number (e.g. 20261118080104)
+        required: true
+      group:
+        description: TestFlight group name
+        required: false
+        default: Internal
+      platform:
+        description: Platform
+        type: choice
+        options:
+          - ios
+          - macos
+        default: ios
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-group
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Write App Store Connect key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s' "$ASC_PRIVATE_KEY" > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Add build to TestFlight group
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          TESTFLIGHT_GROUP: ${{ inputs.group }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/testflight-group.py \
+            --key-path "$ASC_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --bundle-id me.otbeaumont.backu \
+            --build-number "$BUILD_NUMBER" \
+            --group "$TESTFLIGHT_GROUP" \
+            --platform "$PLATFORM"

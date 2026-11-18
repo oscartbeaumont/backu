@@ -98,18 +98,30 @@ def find_app(token: str, bundle_id: str, platform: str | None) -> dict:
     if status != 200:
         raise SystemExit(f"could not list apps ({status}): {body}")
     apps = body.get("data", [])
+    if not apps:
+        raise SystemExit(f"no app record for {bundle_id} ({platform or 'any platform'})")
     if platform:
         wanted = {
             "ios": {"IOS"},
             "macos": {"MACOS", "MAC_OS"},
         }[platform]
-        apps = [
+        # The Apps resource does not always expose `platform`; only narrow the
+        # list when at least one record actually carries the attribute. The
+        # upload has already proved the app record exists.
+        matching = [
             app
             for app in apps
             if str(app.get("attributes", {}).get("platform", "")).upper() in wanted
         ]
-    if not apps:
-        raise SystemExit(f"no app record for {bundle_id} ({platform or 'any platform'})")
+        if matching:
+            apps = matching
+    print(
+        "  app record: "
+        + ", ".join(
+            str(app.get("attributes", {}).get("name", app.get("id")))
+            for app in apps
+        )
+    )
     return apps[0]
 
 
