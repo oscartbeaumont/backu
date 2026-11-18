@@ -200,6 +200,18 @@ def main() -> None:
         f"{group.get('attributes', {}).get('name')}"
     )
     build = wait_for_build(token, app_id, args.build_number, args.timeout, args.poll)
+
+    # App Store Connect rejects a builds relationship for an internal group
+    # with "Builds cannot be assigned to this internal group": internal testers
+    # already receive every processed build. The only requirement is waiting
+    # for processing, which wait_for_build just did.
+    if group.get("attributes", {}).get("isInternalGroup") is True:
+        print(
+            f"Build {args.build_number} is VALID and available to internal "
+            "testers (internal groups receive every build; no assignment needed)."
+        )
+        return
+
     status, body = request(
         token,
         "POST",
