@@ -110,6 +110,7 @@ final class AppModel {
         faceStore = FaceEmbeddingStore()
         places = PlaceResolver()
         images = ImageCache()
+        images.atlasEnabled = settings.atlasThumbnailsEnabled
         AppModel.shared = self
         installImageLoaders()
     }
@@ -582,7 +583,7 @@ final class AppModel {
     /// whole library with no network at all. Metered links are left alone
     /// unless the person already allowed cellular backups.
     func prefetchRemotePreviews() {
-        guard previewPrefetchTask == nil else { return }
+        guard settings.atlasThumbnailsEnabled, previewPrefetchTask == nil else { return }
         let photos = catalog.photos.filter(\.isRemoteOnly)
         guard photos.count >= 30 else { return }
         let byServer = Dictionary(grouping: photos) { $0.serverID ?? $0.copies.first?.serverID }
@@ -604,6 +605,19 @@ final class AppModel {
                     prefix: server.normalizedPrefix
                 )
             }
+        }
+    }
+
+    /// Settings → Experimental. Turning it off makes every atlas path inert
+    /// immediately; cached sheets stay on disk so turning it back on is cheap.
+    func setAtlasThumbnailsEnabled(_ enabled: Bool) {
+        settings.atlasThumbnailsEnabled = enabled
+        images.atlasEnabled = enabled
+        if enabled {
+            prefetchRemotePreviews()
+        } else {
+            previewPrefetchTask?.cancel()
+            previewPrefetchTask = nil
         }
     }
 

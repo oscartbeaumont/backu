@@ -23,6 +23,9 @@ final class ImageCache {
     /// Immutable thumbnail atlases for remote-only photos. Local PhotoKit
     /// assets never touch it: Photos already caches and prefetches those.
     var atlasStore: AtlasStore?
+    /// Mirrors the Settings toggle. When off, every atlas path is inert and the
+    /// app behaves exactly as it did before the feature existed.
+    var atlasEnabled = false
     /// Resolves the S3 client for the server that owns a photo.
     var atlasClient: ((UUID?) -> S3Client?)?
     /// The folder prefix inside that server's bucket; sheets live under it.
@@ -66,17 +69,19 @@ final class ImageCache {
         if let degraded = degradedThumbnails.object(forKey: cacheKey)?.image { return degraded }
         // A preview atlas cell is already decoded with its sheet: this is the
         // paint that makes a fast scroll show pictures instead of placeholders.
+        guard atlasEnabled else { return nil }
         return atlasStore?.cachedTile(for: photo, level: .preview)
     }
 
     func cachedAtlasPreview(for photo: PhotoItem) -> PlatformImage? {
-        atlasStore?.cachedTile(for: photo, level: .preview)
+        guard atlasEnabled else { return nil }
+        return atlasStore?.cachedTile(for: photo, level: .preview)
     }
 
     /// Starts fetching the grid sheets for a scroll window. Called by the
     /// prefetcher instead of one request per tile.
     func prepareAtlas(photos: [PhotoItem], level: ThumbnailAtlas.Level) {
-        guard let atlasStore else { return }
+        guard atlasEnabled, let atlasStore else { return }
         let byServer = Dictionary(grouping: photos.filter(\.isRemoteOnly)) { photo in
             photo.serverID ?? photo.copies.first?.serverID
         }
@@ -94,13 +99,15 @@ final class ImageCache {
     /// choose between sheets and per-photo thumbnails; a bucket half-migrated
     /// to atlases still prefetches the photos that have none.
     func hasAtlas(for photo: PhotoItem) -> Bool {
-        atlasStore?.pointer(for: photo) != nil
+        guard atlasEnabled else { return false }
+        return atlasStore?.pointer(for: photo) != nil
     }
 
     func atlasTile(for photo: PhotoItem, size: CGSize) async -> PlatformImage? {
-        guard let atlasStore, let client = atlasClient?(photo.serverID ?? photo.copies.first?.serverID) else {
-            return nil
-        }
+        guard atlasEnabled,
+              let atlasStore,
+              let client = atlasClient?(photo.serverID ?? photo.copies.first?.serverID)
+        else { return nil }
         // A 384 px cell is exact on an iPhone grid. On an iPad the tile is
         // wider than one cell, so the sharper per-photo thumbnail wins.
         let wanted = max(size.width, size.height)
@@ -176,7 +183,7 @@ final class ImageCache {
             // Remote-only: paint the preview atlas immediately, then upgrade to
             // the grid sheet. Only when neither exists does the 900 px
             // per-photo thumbnail get fetched.
-            if let preview = atlasStore?.cachedTile(for: photo, level: .preview) {
+            if atlasEnabled, let preview = atlasStore?.cachedTile(for: photo, level: .preview) {
                 onDegraded?(preview)
             }
             if let tile = await atlasTile(for: photo, size: size) {

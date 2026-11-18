@@ -182,6 +182,8 @@ final class BackupEngine {
 
     private var runTask: Task<Void, Never>?
     private var runStartedAt: Date?
+    /// Settings → Experimental, snapshotted when a run starts.
+    private var atlasEnabled = false
     private let library = PhotoLibraryService.shared
     private let journal = UploadJournal.shared
 
@@ -233,6 +235,7 @@ final class BackupEngine {
     ) {
         guard !isRunning, !destinations.isEmpty else { return }
         self.trigger = trigger
+        atlasEnabled = settings.atlasThumbnailsEnabled
         serverID = destinations.first?.server.id
         activeServerID = nil
         isRunning = true
@@ -435,7 +438,7 @@ final class BackupEngine {
                 // atlas group still needs a pass. Videos have no frame to pack,
                 // so they never become a permanent backfill candidate.
                 if photo.isVideo { return photo.sidecarDirtyAt != nil }
-                return photo.sidecarDirtyAt != nil || copy.atlasGroup == nil
+                return photo.sidecarDirtyAt != nil || (atlasEnabled && copy.atlasGroup == nil)
             }
             return photo.isLocal
         }
@@ -445,7 +448,7 @@ final class BackupEngine {
         // first; the rest fills in over later runs.
         let backfillLimit = 500
         let backfillIDs = Set(selected.filter { photo in
-            guard !photo.isVideo, let copy = photo.copy(on: server.id) else { return false }
+            guard atlasEnabled, !photo.isVideo, let copy = photo.copy(on: server.id) else { return false }
             return copy.atlasGroup == nil
         }.map(\.id))
         if backfillIDs.count > backfillLimit {
@@ -668,7 +671,7 @@ final class BackupEngine {
                 photo.remoteThumbnailKey = thumbKey
                 // The tiles go into the run's atlas batch; it publishes the
                 // group every 36 photos and again at the end of the run.
-                if !digest.isEmpty {
+                if atlasEnabled, !digest.isEmpty {
                     await atlas.add(
                         photoID: photo.id,
                         digest: digest,
@@ -701,7 +704,8 @@ final class BackupEngine {
         // A photo whose bytes are already in the bucket but whose atlas group is
         // missing (interrupted publish, or an older install) is re-rendered
         // from the local original without uploading the original again.
-        if isMetadataOnly,
+        if atlasEnabled,
+           isMetadataOnly,
            !photo.isVideo,
            photo.copy(on: server.id)?.atlasGroup == nil,
            let sha,

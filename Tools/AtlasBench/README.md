@@ -222,7 +222,10 @@ tiles. 2,778 GETs is roughly $0.001 on S3.
 
 ## Verdict
 
-**Implement it, but as two tiers and only for remote-only photos.**
+**Implement it, but as two tiers, only for remote-only photos, and opt-in while
+it is iterated on.** The app ships this behind *Settings → Experimental → Fast
+remote thumbnails* (off by default); turning it on makes the next backup
+publish atlases and backfill older photos 500 at a time.
 
 - The **preview atlas is an unambiguous win.** 67 MB holds a 100k-photo
   library; a 10-screen fling costs 116 KB and 107 ms on the mobile profile

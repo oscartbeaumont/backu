@@ -15,6 +15,7 @@ struct SettingsScreen: View {
                 backupCard()
                 serversCard()
                 libraryCard()
+                experimentalCard()
                 peopleCard()
                 supportCard
                 aboutCard
@@ -392,6 +393,24 @@ struct SettingsScreen: View {
                     .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: Experimental
+
+    @ViewBuilder
+    private func experimentalCard() -> some View {
+        @Bindable var settings = app.settings
+        SettingsCard(title: "Experimental", symbol: "flask") {
+            SettingsToggle(
+                title: "Fast remote thumbnails",
+                subtitle: "Pack thumbnails from your buckets into sheets for instant scrolling and offline browsing. Beta.",
+                symbol: "square.grid.3x3",
+                isOn: Binding(
+                    get: { settings.atlasThumbnailsEnabled },
+                    set: { app.setAtlasThumbnailsEnabled($0) }
+                )
+            )
         }
     }
 

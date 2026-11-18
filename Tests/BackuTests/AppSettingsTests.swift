@@ -19,6 +19,15 @@ final class AppSettingsTests: XCTestCase {
         super.tearDown()
     }
 
+    func testAtlasThumbnailsAreOptInAndPersist() {
+        let initial = AppSettings(defaults: defaults)
+        XCTAssertFalse(initial.atlasThumbnailsEnabled, "The experimental feature must start off")
+
+        initial.atlasThumbnailsEnabled = true
+        let reloaded = AppSettings(defaults: defaults)
+        XCTAssertTrue(reloaded.atlasThumbnailsEnabled)
+    }
+
     func testBackupDestinationsRoundTrip() {
         let first = UUID()
         let second = UUID()

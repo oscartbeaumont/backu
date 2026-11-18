@@ -75,7 +75,7 @@ launch_case() {
   local port="$1"
   local log="$WORK/mock-$port.log"
   local boot
-  boot="{\"servers\":[{\"name\":\"Atlas\",\"provider\":\"custom\",\"endpoint\":\"http://127.0.0.1:$port\",\"region\":\"us-east-1\",\"bucket\":\"backu-test\",\"accessKeyID\":\"testkey\",\"secretAccessKey\":\"testsecret\",\"pathStyle\":true,\"prefix\":\"\"}],\"settings\":{\"autoBackupEnabled\":false,\"backupOnCellular\":false,\"faceRecognitionEnabled\":false,\"gridColumns\":3,\"hasCompletedOnboarding\":true,\"showRemoteOnlyPhotos\":true}}"
+  boot="{\"servers\":[{\"name\":\"Atlas\",\"provider\":\"custom\",\"endpoint\":\"http://127.0.0.1:$port\",\"region\":\"us-east-1\",\"bucket\":\"backu-test\",\"accessKeyID\":\"testkey\",\"secretAccessKey\":\"testsecret\",\"pathStyle\":true,\"prefix\":\"\"}],\"settings\":{\"autoBackupEnabled\":false,\"backupOnCellular\":false,\"faceRecognitionEnabled\":false,\"gridColumns\":3,\"hasCompletedOnboarding\":true,\"showRemoteOnlyPhotos\":true,\"atlasThumbnailsEnabled\":true}}"
   # A reinstall is the only reliable reset for app data, Keychain and any
   # cached sheets left by an earlier case.
   xcrun simctl terminate "$UDID" me.otbeaumont.backu >/dev/null 2>&1 || true
