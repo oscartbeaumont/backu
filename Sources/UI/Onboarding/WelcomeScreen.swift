@@ -152,6 +152,7 @@ struct WelcomeScreen: View {
 struct PhotoAccessOnboardingView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
     @State private var isRequesting = false
     @State private var didAppear = false
     var onContinue: () -> Void
@@ -283,15 +284,24 @@ struct PhotoAccessOnboardingView: View {
     }
 
     private var privacyNote: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "hand.raised.fill")
-                .scaledFont(12, weight: .semibold)
-                .foregroundStyle(Theme.accent)
-                .padding(.top, 1)
-            Text("Faces, places and search are processed on this device. Photos only leave it once you connect a bucket and backup runs.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "hand.raised.fill")
+                    .scaledFont(12, weight: .semibold)
+                    .foregroundStyle(Theme.accent)
+                    .padding(.top, 1)
+                Text("Faces, places and search are processed on this device. Photos only leave it once you connect a bucket and backup runs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Read the privacy policy") {
+                openURL(ProjectLinks.privacyPolicy)
+            }
+            .font(.caption2.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .padding(.leading, 22)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)

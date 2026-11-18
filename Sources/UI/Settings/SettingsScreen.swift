@@ -701,6 +701,24 @@ struct SettingsScreen: View {
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                Button("Privacy Policy") {
+                    openURL(ProjectLinks.privacyPolicy)
+                }
+                Text("·")
+                Button("Support") {
+                    openURL(ProjectLinks.support)
+                }
+                Text("·")
+                Button("Licence") {
+                    openURL(ProjectLinks.license)
+                }
+            }
+            .font(.caption2)
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("settings.privacyPolicy")
         }
         .frame(maxWidth: .infinity)
         .padding(22)
