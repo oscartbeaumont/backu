@@ -26,3 +26,7 @@ Tests/Fixtures/atlas-corpus/
 
 # Sync bench raw output (Tools/MetaBench/sync.sh)
 Tools/MetaBench/results/sync-*.jsonl
+
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
