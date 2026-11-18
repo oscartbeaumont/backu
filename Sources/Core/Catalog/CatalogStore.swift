@@ -13,6 +13,21 @@ struct CatalogSnapshot: Codable {
     var deletedHashes: [String]?
 }
 
+/// Ids touched since the metadata log last drained them. The catalog does the
+/// bookkeeping so every mutation path is covered, including ones added later
+/// that go through `mutatePhoto`.
+struct MetadataDelta: Sendable {
+    var touchedPhotos: Set<String> = []
+    var deletedPhotos: [String: String?] = [:]
+    var touchedPeople: Set<UUID> = []
+    var deletedPeople: Set<UUID> = []
+
+    var isDirty: Bool {
+        !touchedPhotos.isEmpty || !deletedPhotos.isEmpty
+            || !touchedPeople.isEmpty || !deletedPeople.isEmpty
+    }
+}
+
 struct LibraryStats: Sendable {
     var totalPhotos: Int = 0
     var videos: Int = 0
@@ -52,6 +67,15 @@ final class CatalogStore {
     private var saveTask: Task<Void, Never>?
     private var needsSort = false
 
+    /// Metadata log bookkeeping. Coalesced rather than per-field: the writer
+    /// diffs the entity once and emits a single patch.
+    private var dirtyPhotoIDs: Set<String> = []
+    private var deletedPhotoIDs: [String: String?] = [:]
+    private var dirtyPersonIDs: Set<UUID> = []
+    private var deletedPersonIDs: Set<UUID> = []
+    /// Called on the main actor whenever local state needs publishing.
+    var onMetadataDirty: (() -> Void)?
+
     init(loadFromDisk: Bool = true) {
         if loadFromDisk {
             load()
@@ -85,6 +109,194 @@ final class CatalogStore {
     private func rebuildLookups() {
         photoByID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         personByID = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    func takeMetadataDelta() -> MetadataDelta {
+        let delta = MetadataDelta(
+            touchedPhotos: dirtyPhotoIDs,
+            deletedPhotos: deletedPhotoIDs,
+            touchedPeople: dirtyPersonIDs,
+            deletedPeople: deletedPersonIDs
+        )
+        dirtyPhotoIDs.removeAll(keepingCapacity: true)
+        deletedPhotoIDs.removeAll(keepingCapacity: true)
+        dirtyPersonIDs.removeAll(keepingCapacity: true)
+        deletedPersonIDs.removeAll(keepingCapacity: true)
+        return delta
+    }
+
+    var deletedSHA256: [String] { Array(deletedHashes) }
+
+    func isMetadataDirty(_ id: String) -> Bool { dirtyPhotoIDs.contains(id) }
+
+    var hasMetadataDirty: Bool {
+        !dirtyPhotoIDs.isEmpty || !deletedPhotoIDs.isEmpty
+            || !dirtyPersonIDs.isEmpty || !deletedPersonIDs.isEmpty
+    }
+
+    /// Applies the merged v2 state to the catalog without marking anything
+    /// dirty. This is the other half of the echo-prevention rule: a device
+    /// publishes its own edits first, then adopts the merged result, so the
+    /// next diff sees no difference and cannot revert another device's work.
+    func applyMergedMetadata(
+        photos incoming: [PhotoItem],
+        people incomingPeople: [Person],
+        deletedPeople: Set<UUID>,
+        deletedHashes remoteDeleted: Set<String>
+    ) {
+        var changed = false
+        var byHash: [String: String] = [:]
+        for photo in photos {
+            if let sha = photo.sha256, byHash[sha] == nil { byHash[sha] = photo.id }
+        }
+
+        for item in incoming {
+            let matchID: String? = {
+                if photoByID[item.id] != nil { return item.id }
+                if let sha = item.sha256, let id = byHash[sha] { return id }
+                return nil
+            }()
+
+            if let id = matchID, let index = photos.firstIndex(where: { $0.id == id }) {
+                var existing = photos[index]
+                for copy in item.copies
+                where !existing.copies.contains(where: { $0.serverID == copy.serverID && $0.objectKey == copy.objectKey }) {
+                    existing.copies.append(copy)
+                }
+                existing.filename = item.filename
+                existing.takenAt = item.takenAt
+                existing.addedAt = item.addedAt
+                existing.modifiedAt = item.modifiedAt
+                existing.isVideo = item.isVideo
+                existing.isFavorite = item.isFavorite
+                existing.pixelWidth = item.pixelWidth
+                existing.pixelHeight = item.pixelHeight
+                existing.duration = item.duration
+                existing.tags = item.tags
+                existing.metadata = item.metadata
+                existing.sha256 = existing.sha256 ?? item.sha256
+                existing.remoteThumbnailKey = existing.remoteThumbnailKey ?? item.remoteThumbnailKey
+                // Face identity is shared; embedding indexes are local. Keep
+                // the local index for faces this device has analysed.
+                var embedding: [UUID: Int?] = [:]
+                for face in existing.faces { embedding[face.id] = face.embeddingIndex }
+                existing.faces = item.faces.map { face in
+                    var updated = face
+                    updated.embeddingIndex = embedding[face.id] ?? nil
+                    return updated
+                }
+                photos[index] = existing
+                photoByID[existing.id] = existing
+                if let sha = existing.sha256 { byHash[sha] = existing.id }
+                changed = true
+            } else if photoByID[item.id] == nil {
+                var added = item
+                added.localIdentifier = nil
+                photos.append(added)
+                photoByID[added.id] = added
+                if let sha = added.sha256 { byHash[sha] = added.id }
+                changed = true
+            }
+        }
+
+        for person in incomingPeople {
+            if let index = people.firstIndex(where: { $0.id == person.id }) {
+                people[index].name = person.name
+                people[index].isPet = person.isPet
+                people[index].coverPhotoID = person.coverPhotoID
+                people[index].coverFaceID = person.coverFaceID
+                people[index].isHidden = person.isHidden
+                people[index].faceCount = person.faceCount
+                personByID[person.id] = people[index]
+                changed = true
+            } else if !deletedPeople.contains(person.id) {
+                people.append(person)
+                personByID[person.id] = person
+                changed = true
+            }
+        }
+        if !deletedPeople.isEmpty {
+            people.removeAll { deletedPeople.contains($0.id) }
+            for id in deletedPeople { personByID[id] = nil }
+            changed = true
+        }
+        if !remoteDeleted.isEmpty {
+            let merged = deletedHashes.union(remoteDeleted)
+            if merged.count != deletedHashes.count {
+                deletedHashes = merged
+                changed = true
+            }
+        }
+
+        guard changed else { return }
+        rebuildLookups()
+        needsSort = true
+        bump()
+        saveSoon()
+    }
+
+    /// Removes bucket-only photos that the v2 state no longer contains. Local
+    /// assets are never touched, and a photo with a pending local edit is left
+    /// for the writer to resolve. With several replicas the copy is removed
+    /// without deleting the photo.
+    func reconcileRemote(
+        serverID: UUID,
+        presentIDs: Set<String>,
+        deletedHashes remoteDeleted: Set<String>
+    ) {
+        var changed = false
+        var survivors: [PhotoItem] = []
+        survivors.reserveCapacity(photos.count)
+        for photo in photos {
+            guard photo.localIdentifier == nil,
+                  photo.copies.contains(where: { $0.serverID == serverID }),
+                  !dirtyPhotoIDs.contains(photo.id)
+            else {
+                survivors.append(photo)
+                continue
+            }
+            let hashDeleted = photo.sha256.map { remoteDeleted.contains($0) } ?? false
+            guard !presentIDs.contains(photo.id) || hashDeleted else {
+                survivors.append(photo)
+                continue
+            }
+            let remaining = photo.copies.filter { $0.serverID != serverID }
+            changed = true
+            if remaining.isEmpty {
+                continue
+            }
+            var updated = photo
+            updated.copies = remaining
+            updated.serverID = remaining.first?.serverID
+            updated.remoteThumbnailKey = remaining.first?.thumbnailKey
+            survivors.append(updated)
+        }
+        guard changed else { return }
+        photos = survivors
+        rebuildLookups()
+        bump()
+        saveSoon()
+    }
+
+    /// Deletions discovered on another device. Local tombstones stay in place:
+    /// a photo removed here should not be re-adopted by a sync either.
+    func applyRemoteDeletedHashes(_ hashes: Set<String>) {
+        guard !hashes.isEmpty else { return }
+        let merged = deletedHashes.union(hashes)
+        guard merged.count != deletedHashes.count else { return }
+        deletedHashes = merged
+        bump()
+        saveSoon()
+    }
+
+    private func markMetadataPhoto(_ id: String) {
+        dirtyPhotoIDs.insert(id)
+        onMetadataDirty?()
+    }
+
+    private func markMetadataPerson(_ id: UUID) {
+        dirtyPersonIDs.insert(id)
+        onMetadataDirty?()
     }
 
     func saveSoon() {
@@ -243,9 +455,11 @@ final class CatalogStore {
                     existing.metadata.altitude = photo.metadata.altitude
                 }
                 upsertInMemory(existing)
+                markMetadataPhoto(existing.id)
                 updated += 1
             } else {
                 upsertInMemory(photo)
+                markMetadataPhoto(photo.id)
                 added += 1
             }
         }
@@ -295,6 +509,10 @@ final class CatalogStore {
         photos = []
         people = []
         deletedHashes = []
+        dirtyPhotoIDs.removeAll()
+        deletedPhotoIDs.removeAll()
+        dirtyPersonIDs.removeAll()
+        deletedPersonIDs.removeAll()
         rebuildLookups()
         bump()
         saveNow()
@@ -312,9 +530,14 @@ final class CatalogStore {
                 hashes.insert(hash)
             }
         }
+        for photo in photos where ids.contains(photo.id) || (photo.sha256.map { hashes.contains($0) } ?? false) {
+            deletedPhotoIDs[photo.id] = photo.sha256
+            dirtyPhotoIDs.remove(photo.id)
+        }
         photos.removeAll {
             ids.contains($0.id) || ($0.sha256.map { hashes.contains($0) } ?? false)
         }
+        if !hashes.isEmpty { onMetadataDirty?() }
         rebuildLookups()
         bump()
         saveNow()
@@ -326,6 +549,7 @@ final class CatalogStore {
         guard let index = photos.firstIndex(where: { $0.id == id }) else { return }
         body(&photos[index])
         photoByID[id] = photos[index]
+        markMetadataPhoto(id)
         bump()
         saveSoon()
     }
@@ -401,10 +625,20 @@ final class CatalogStore {
                 existingFaces.append(face)
             }
         }
+        // Re-key to the shared identity. Embeddings live at
+        // `embeddingIndex`, so this is safe and makes a second device's
+        // analysis of the same bytes address the same faces.
+        var seenFaces = Set<UUID>()
+        existingFaces = existingFaces.compactMap { face in
+            var keyed = face
+            keyed.id = FaceIdentity.canonical(photoID: photoID, kind: face.kind, rect: face.rect)
+            return seenFaces.insert(keyed.id).inserted ? keyed : nil
+        }
         photos[index].faces = existingFaces
         photos[index].analyzedAt = Date()
         if let metadata { photos[index].metadata = metadata }
         photoByID[photoID] = photos[index]
+        markMetadataPhoto(photoID)
         recomputePeopleCounts()
         bump()
         saveSoon()
@@ -420,6 +654,7 @@ final class CatalogStore {
         )
         people.append(person)
         personByID[person.id] = person
+        markMetadataPerson(person.id)
         bump()
         saveSoon()
         return person
@@ -430,6 +665,7 @@ final class CatalogStore {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         people[index].name = trimmed.isEmpty ? nil : trimmed
         personByID[id] = people[index]
+        markMetadataPerson(id)
         markSidecarsDirty(forPerson: id)
         bump()
         saveSoon()
@@ -446,6 +682,7 @@ final class CatalogStore {
         guard let index = people.firstIndex(where: { $0.id == id }) else { return }
         people[index].isPet = isPet
         personByID[id] = people[index]
+        markMetadataPerson(id)
         markSidecarsDirty(forPerson: id)
         bump()
         saveSoon()
@@ -474,6 +711,9 @@ final class CatalogStore {
             recount(personID)
         }
         if markDirty { photos[photoIndex].sidecarDirtyAt = Date() }
+        markMetadataPhoto(photoID)
+        if let personID { markMetadataPerson(personID) }
+        if let previousPerson { markMetadataPerson(previousPerson) }
         bump()
         saveSoon()
     }
@@ -492,6 +732,8 @@ final class CatalogStore {
             personByID[personID] = people[personIndex]
         }
         recount(personID)
+        markMetadataPhoto(photoID)
+        markMetadataPerson(personID)
         bump()
         saveSoon()
     }
@@ -499,14 +741,19 @@ final class CatalogStore {
     func deletePerson(_ id: UUID) {
         people.removeAll { $0.id == id }
         personByID[id] = nil
+        deletedPersonIDs.insert(id)
         for index in photos.indices {
             var changed = false
             for faceIndex in photos[index].faces.indices where photos[index].faces[faceIndex].personID == id {
                 photos[index].faces[faceIndex].personID = nil
                 changed = true
             }
-            if changed { photos[index].sidecarDirtyAt = Date() }
+            if changed {
+                photos[index].sidecarDirtyAt = Date()
+                markMetadataPhoto(photos[index].id)
+            }
         }
+        onMetadataDirty?()
         rebuildLookups()
         bump()
         saveSoon()
@@ -514,16 +761,22 @@ final class CatalogStore {
 
     func mergePeople(_ source: UUID, into target: UUID) {
         guard source != target else { return }
+        deletedPersonIDs.insert(source)
         for index in photos.indices {
             var changed = false
             for faceIndex in photos[index].faces.indices where photos[index].faces[faceIndex].personID == source {
                 photos[index].faces[faceIndex].personID = target
                 changed = true
             }
-            if changed { photos[index].sidecarDirtyAt = Date() }
+            if changed {
+                photos[index].sidecarDirtyAt = Date()
+                markMetadataPhoto(photos[index].id)
+            }
         }
         people.removeAll { $0.id == source }
         personByID[source] = nil
+        markMetadataPerson(target)
+        onMetadataDirty?()
         rebuildLookups()
         recount(target)
         bump()
@@ -578,6 +831,7 @@ final class CatalogStore {
             photos[index].copies[copyIndex].atlasGroup = group
             photos[index].copies[copyIndex].atlasCell = cell
             photoByID[photoID] = photos[index]
+            markMetadataPhoto(photoID)
             changed += 1
         }
         guard changed > 0 else { return }
@@ -653,7 +907,12 @@ final class CatalogStore {
         for index in photos.indices {
             let before = photos[index].copies.count
             photos[index].copies.removeAll { $0.serverID == serverID }
-            if photos[index].copies.count != before { changed = true }
+            if photos[index].copies.count != before {
+                changed = true
+                // The remaining buckets need a patch: their copy list is part
+                // of the shared record.
+                markMetadataPhoto(photos[index].id)
+            }
         }
         let ghosts = photos.filter { $0.localIdentifier == nil && $0.copies.isEmpty }
         if !ghosts.isEmpty {

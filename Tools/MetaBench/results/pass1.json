@@ -1,0 +1,33 @@
+{
+  "edits" : 100,
+  "fetches" : {
+    "v1-index.json" : 15.043208,
+    "v2-segment.jsonl.gz" : 5.797625,
+    "v2-snapshot.jsonl.gz" : 4.25925
+  },
+  "notes" : [
+    "v2 state build + merge: 197 ms",
+    "v2 snapshot gzip: 690 ms"
+  ],
+  "photos" : 100000,
+  "uploads" : {
+    "v1-index.json" : 139.997292,
+    "v2-segment.jsonl.gz" : 1.26325,
+    "v2-snapshot.jsonl.gz" : 32.244167
+  },
+  "v1BytesPerEdit" : 57304378,
+  "v1CompactBytes" : 57304378,
+  "v1EncodeMilliseconds" : 691.509083,
+  "v1PrettyBytes" : 83982945,
+  "v1WritesPerEdit" : 1,
+  "v2BytesPerEdit" : 7444,
+  "v2EditRecordBytes" : 74.44,
+  "v2HeadBytes" : 198,
+  "v2SeedBytes" : 7535741,
+  "v2SeedSegments" : 200,
+  "v2SegmentBytes" : 7444,
+  "v2SegmentRawBytes" : 89576,
+  "v2SnapshotBytes" : 13833014,
+  "v2SnapshotMilliseconds" : 689.755833,
+  "v2WritesPerEdit" : 1
+}

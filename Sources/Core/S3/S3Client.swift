@@ -11,6 +11,9 @@ struct S3ListPage: Sendable {
     var objects: [S3Object]
     var nextToken: String?
     var isTruncated: Bool
+    /// `delimiter` rollups, used to discover writer prefixes in one request
+    /// instead of listing the entire history.
+    var commonPrefixes: [String] = []
 }
 
 struct S3ObjectHead: Sendable {
@@ -107,13 +110,21 @@ struct S3Client: Sendable {
 
     // MARK: - Operations
 
-    func listObjects(prefix: String, continuationToken: String? = nil, maxKeys: Int = 1000) async throws -> S3ListPage {
+    func listObjects(
+        prefix: String,
+        continuationToken: String? = nil,
+        maxKeys: Int = 1000,
+        delimiter: String? = nil,
+        startAfter: String? = nil
+    ) async throws -> S3ListPage {
         var query = [
             URLQueryItem(name: "list-type", value: "2"),
             URLQueryItem(name: "max-keys", value: String(maxKeys))
         ]
         if !prefix.isEmpty { query.append(URLQueryItem(name: "prefix", value: prefix)) }
         if let continuationToken { query.append(URLQueryItem(name: "continuation-token", value: continuationToken)) }
+        if let delimiter { query.append(URLQueryItem(name: "delimiter", value: delimiter)) }
+        if let startAfter { query.append(URLQueryItem(name: "start-after", value: startAfter)) }
 
         var request = try makeRequest(method: "GET", key: nil, query: query)
         sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
@@ -185,6 +196,20 @@ struct S3Client: Sendable {
         let (data, response) = try await perform(request)
         try validate(response, data: data)
         return data
+    }
+
+    /// Conditional GET for the metadata head. A 304 returns `(nil, etag)`
+    /// instead of throwing, so a steady-state sync costs one round trip and no
+    /// body.
+    func getObjectIfChanged(key: String, etag: String?) async throws -> (data: Data?, etag: String?) {
+        var request = try makeRequest(method: "GET", key: key, query: [])
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
+        let (data, response) = try await perform(request)
+        if response.statusCode == 304 { return (nil, etag) }
+        if response.statusCode == 404 { return (nil, nil) }
+        try validate(response, data: data)
+        return (data, response.value(forHTTPHeaderField: "ETag"))
     }
 
     /// Returns nil for a missing object instead of throwing 404.
@@ -431,6 +456,8 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
     private var current: [String: String] = [:]
     private var depth = 0
     private var contentsDepth: Int?
+    private var commonPrefixDepth: Int?
+    private var commonPrefixes: [String] = []
     private var text = ""
     private var parseError: Error?
 
@@ -445,7 +472,8 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
         return S3ListPage(
             objects: parser.objects,
             nextToken: parser.nextToken,
-            isTruncated: parser.isTruncated
+            isTruncated: parser.isTruncated,
+            commonPrefixes: parser.commonPrefixes
         )
     }
 
@@ -456,6 +484,9 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
             contentsDepth = depth
             current = [:]
         }
+        if elementName == "CommonPrefixes" {
+            commonPrefixDepth = depth
+        }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
@@ -464,6 +495,9 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let commonPrefixDepth, depth == commonPrefixDepth + 1, elementName == "Prefix" {
+            commonPrefixes.append(value)
+        }
         if let contentsDepth, depth == contentsDepth + 1 {
             current[elementName] = value
         } else if contentsDepth == nil {
@@ -472,6 +506,9 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
             case "IsTruncated": isTruncated = value.lowercased() == "true"
             default: break
             }
+        }
+        if elementName == "CommonPrefixes", depth == commonPrefixDepth {
+            commonPrefixDepth = nil
         }
         if elementName == "Contents", depth == contentsDepth {
             contentsDepth = nil

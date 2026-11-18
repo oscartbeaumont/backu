@@ -41,6 +41,7 @@ struct BackuApp: App {
                     } else if phase == .background {
                         app.catalog.saveNow()
                         app.servers.persistNow()
+                        Task { await app.flushMetadataNow() }
                         app.scheduleBackgroundBackup()
                     }
                 }
