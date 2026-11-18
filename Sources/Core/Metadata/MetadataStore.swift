@@ -16,6 +16,13 @@ struct MetadataListPage: Sendable {
     var isTruncated: Bool = false
 }
 
+/// The outcome of a file-backed download. The body is on disk, not in memory.
+enum MetadataDownloadResult: Sendable {
+    case downloaded(etag: String?)
+    case notModified(etag: String?)
+    case missing
+}
+
 /// Everything the metadata journal needs from an object store. S3 is one
 /// implementation; the tests use an in-memory store with fault injection so
 /// retry, crash and concurrent-compaction paths can be exercised without a
@@ -33,6 +40,33 @@ protocol MetadataObjectStore: Sendable {
         continuationToken: String?,
         maxKeys: Int
     ) async throws -> MetadataListPage
+
+    /// Streams an object straight to a file. Only the snapshot uses it, and only
+    /// on cold start: a 13 MB compressed / 60 MB expanded JSONL body is the one
+    /// place where buffering costs real peak memory on a phone.
+    ///
+    /// The default implementation buffers, which is the right trade for the
+    /// in-memory test store. `S3MetadataStore` overrides it with a streaming
+    /// download.
+    func downloadObject(_ key: String, to url: URL) async throws -> MetadataDownloadResult
+}
+
+extension MetadataObjectStore {
+    func downloadObject(_ key: String, to url: URL) async throws -> MetadataDownloadResult {
+        switch try await getObject(key, ifNoneMatch: nil) {
+        case let .found(data, etag):
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+            return .downloaded(etag: etag)
+        case let .notModified(etag):
+            return .notModified(etag: etag)
+        case .missing:
+            return .missing
+        }
+    }
 }
 
 /// Adapts `S3Client` to the journal's vocabulary. Each call is one S3 request;
@@ -62,6 +96,18 @@ struct S3MetadataStore: MetadataObjectStore {
             data: data,
             contentType: contentType
         )
+    }
+
+    /// Streams the body through URLSession to disk. The metadata snapshot is
+    /// the one object big enough that buffering it doubles cold-start memory.
+    func downloadObject(_ key: String, to url: URL) async throws -> MetadataDownloadResult {
+        do {
+            try await client.downloadObjectStreaming(key: S3Client.join(prefix, key), to: url)
+            return .downloaded(etag: nil)
+        } catch let error as S3Error {
+            if case let .http(status, _, _, _) = error, status == 404 { return .missing }
+            throw error
+        }
     }
 
     func listObjects(

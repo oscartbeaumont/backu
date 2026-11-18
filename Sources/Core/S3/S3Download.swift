@@ -576,6 +576,35 @@ extension S3Client {
             try? FileManager.default.removeItem(at: source)
         }
     }
+
+    /// A single streaming GET written straight to `destination`. No HEAD probe
+    /// and no in-memory body: the metadata journal reads a snapshot once, and a
+    /// probe would only add a round trip to a body it is about to read whole.
+    func downloadObjectStreaming(key: String, to destination: URL) async throws {
+        var request = try makeRequest(method: "GET", key: key, query: [])
+        sign(&request, payloadHash: SigV4Signer.emptyPayloadHash)
+        let (temporary, response) = try await session.download(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw S3Error.decoding("No HTTP response")
+        }
+        if http.statusCode == 404 {
+            try? FileManager.default.removeItem(at: temporary)
+            throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = (try? Data(contentsOf: temporary)) ?? Data()
+            try? FileManager.default.removeItem(at: temporary)
+            try validate(http, data: body)
+            return
+        }
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        // URLSession's temporary file is only guaranteed to exist until this
+        // call returns, so move it now.
+        try replace(destination: destination, with: temporary)
+    }
 }
 
 enum S3DownloadError: Error {

@@ -68,3 +68,94 @@ The mock bucket does not implement `delimiter` or `start-after`, which is a
 useful robustness test: the reader falls back to listing the log directly and
 still converges. A bearer of a real S3-compatible service gets the cheap
 delimiter path.
+
+## Optimisation pass
+
+The log's bytes were already small; the *work around them* was not. A one-photo
+sync still materialised all 100k photos, rewrote the 13 MB local cache, and the
+catalog walked its whole photo array. This pass removes that per-sync cost.
+
+Measured on this machine — Apple M5 Max, 128 GB, macOS 27.2.1, Xcode 27.2,
+Swift 6.4.2, `-O` — with `Tools/MetaBench/sync.sh` (3 runs per scenario, median),
+100,000 photos:
+
+| scenario | before | after |
+| --- | ---: | ---: |
+| cold start (snapshot → merged state) | 3.32 s, 597 MB peak | **3.11 s, 468 MB peak** |
+| warm sync, 1 changed photo | 144 ms, 679 MB peak | **1.3 ms, 418 MB peak** |
+| returns from a warm sync | 100,000 photos | **1 photo** |
+| cache written by that sync | 12.8 MB | **0 B** |
+| seed 100k (200 × 500-record PUTs, 15 ms simulated RTT) | 8.54 s, 989 MB | **4.46 s, 1009 MB** |
+
+`peak` is `ru_maxrss` for a process that runs exactly one scenario, so it is the
+peak of that scenario rather than of a long-lived app. The warm number is a
+relaunch: one process primes the cache (the old code writes it on a background
+queue; the script gives it time), then a fresh process syncs one new segment.
+The seed's peak is dominated by the 100k-photo `CatalogStore` itself and is
+unchanged within noise (≈2%); the win there is wall time.
+
+Run it with:
+
+```sh
+./Tools/MetaBench/sync.sh
+# Raw JSON lines in Tools/MetaBench/results/sync-<timestamp>.jsonl
+```
+
+`BACKU_SYNC_BENCH_PHOTOS=20000` and `BACKU_SYNC_BENCH_RUNS=1` make a quick pass;
+`BACKU_SYNC_BENCH_BIN`/`BACKU_SYNC_BENCH_DIR` let you build two checkouts of the
+same script against one fixture to compare revisions.
+
+### What changed
+
+1. **Incremental materialisation.** `MergedMetadata.apply(_:)` now returns the
+   ids it actually changed or removed, and `materialize(serverID:changes:)` builds
+   catalog items for only those. A sync reports `isFull` when it loaded a
+   snapshot (or started from empty), so a cold start still materialises
+   everything once and a reader knows when it may reconcile absent photos.
+   `CatalogStore` keeps id and SHA-256 indexes, so applying one merged photo is
+   O(1) instead of two dictionary builds plus an array scan. Deletions use a new
+   `removeRemotePhotos(serverID:removedIDs:deletedHashes:)`; `reconcileRemote`
+   (which walks the library) is only reached by a full sync.
+2. **Throttled cache writes.** The merged-state cache is written when a snapshot
+   is loaded, when 2,000 records have accumulated since the last write, or on
+   `flushCacheIfNeeded()` (background/termination, wired to
+   `flushMetadataNow`). A stale cache stays correct: its header watermark is
+   authoritative, so a relaunch replays the few segments it missed.
+3. **Streamed snapshot decode.** `MetadataObjectStore` gained
+   `downloadObject(_:to:)` (default: buffer; S3: one streaming
+   `URLSession.download`), and `MergedMetadata.decodeSnapshot(gzipFile:)`
+   inflates with `compression_stream` in 64 KB slices, splitting lines with
+   `memchr` and dropping each line after it becomes a merged entity. The 13 MB
+   compressed body never coexists with 60 MB of JSON text.
+4. **Parallel seed, smarter compaction.** `flush` keeps up to four PUTs in
+   flight and only drops the contiguous uploaded prefix, so a retry reuses the
+   exact key after a gap-free run; seed queues four 500-record batches before
+   flushing. Compaction now triggers on `segmentsSinceSnapshot >= 32` **or**
+   `editsSinceSnapshot >= 20,000` (`MetadataCompactionPolicy`, injectable), so
+   eight trivial edits no longer re-upload a 13 MB snapshot. Own segments are
+   counted once, at write time, not again when the sync reads them back.
+5. **Fewer requests.** The sequence probe that used to cost an extra LIST after
+   a state-file loss now reads the highest sequence out of the listing the sync
+   already performs. A warm sync with nothing new is one conditional head GET
+   and two LISTs (delimiter plus per-writer) and no segment GETs; each new
+   segment costs exactly one GET. `MetadataIncrementalTests` asserts those
+   counts.
+
+### Tradeoffs
+
+- A warm sync now returns only the changed photos, so any consumer that assumed
+  `outcome.photos` was the whole bucket must honour `isFull` (in-tree that is
+  only `AppModel.applyMerged`).
+- The cache can be up to 2,000 records / five minutes behind the state file.
+  That trades a small replay on the next launch for not gzipping 13 MB per edit.
+- A failed PUT that follows a successful one in the same batch leaves the later
+  chunk in the outbox, so its retry gets a fresh sequence number. Records are
+  idempotent, so this duplicates bytes, never state; with no gap the retry
+  reuses the identical key.
+- A person edit still counts faces across every photo, because `faceCount` is
+  derived; it is the one O(library) step left on an incremental sync and only
+  runs when a person changed.
+- The snapshot download used by the in-memory test store still buffers the whole
+  object; only S3 streams. The protocol keeps that as a default so a store can
+  stay simple.
+

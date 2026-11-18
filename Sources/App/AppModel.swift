@@ -186,6 +186,11 @@ final class AppModel {
     func flushMetadataNow() async {
         catalog.saveNow()
         await publishLocalMetadata()
+        // Backgrounding is the point where the merged-state cache is worth a
+        // write even if the throttled policy would have skipped it.
+        for service in metadataServices.values {
+            service.flushCacheIfNeeded()
+        }
     }
 
     private func enabledMetadataServices() -> [(ServerConfig, S3Client, MetadataService)] {
@@ -201,22 +206,32 @@ final class AppModel {
     /// shared fields for photos this device already knows (tags, favourites,
     /// faces, names) without marking them dirty, so the next local diff cannot
     /// undo another device's edit.
+    ///
+    /// A full sync reconciles photos missing from the list; an incremental one
+    /// only drops the ids the log says are gone, so neither costs O(library)
+    /// for a one-photo edit.
     private func applyMerged(_ outcome: MetadataSyncOutcome, serverID: UUID) -> Int {
         guard outcome.changed else { return 0 }
-        let before = catalog.photos.filter(\.isRemoteOnly).count
-        catalog.applyMergedMetadata(
+        let added = catalog.applyMergedMetadata(
             photos: outcome.photos,
             people: outcome.people,
             deletedPeople: outcome.deletedPeople,
             deletedHashes: outcome.deletedHashes
         )
-        catalog.reconcileRemote(
-            serverID: serverID,
-            presentIDs: Set(outcome.photos.map(\.id)),
-            deletedHashes: outcome.deletedHashes
-        )
-        let after = catalog.photos.filter(\.isRemoteOnly).count
-        return max(0, after - before)
+        if outcome.isFull {
+            catalog.reconcileRemote(
+                serverID: serverID,
+                presentIDs: Set(outcome.photos.map(\.id)),
+                deletedHashes: outcome.deletedHashes
+            )
+        } else if !outcome.removedPhotoIDs.isEmpty || !outcome.deletedHashes.isEmpty {
+            catalog.removeRemotePhotos(
+                serverID: serverID,
+                removedIDs: outcome.removedPhotoIDs,
+                deletedHashes: outcome.deletedHashes
+            )
+        }
+        return added
     }
 
     private func installImageLoaders() {

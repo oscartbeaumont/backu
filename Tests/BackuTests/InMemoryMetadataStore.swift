@@ -21,6 +21,10 @@ actor InMemoryMetadataStore: MetadataObjectStore {
     private var storeThenFail: [(pattern: String, remaining: Int)] = []
     private var getFailures: [(pattern: String, remaining: Int)] = []
     private var listFailuresRemaining = 0
+    private var concurrentPuts = 0
+    /// Highest number of PUTs that were in flight at once. Lets a test prove the
+    /// seed and flush paths actually overlap their uploads.
+    private(set) var peakConcurrentPuts = 0
 
     var pageSize = 1000
     var supportsDelimiter = true
@@ -73,6 +77,12 @@ actor InMemoryMetadataStore: MetadataObjectStore {
     }
 
     func putObject(_ key: String, data: Data, contentType: String) async throws {
+        concurrentPuts += 1
+        peakConcurrentPuts = max(peakConcurrentPuts, concurrentPuts)
+        defer { concurrentPuts -= 1 }
+        // Give a sibling PUT a chance to be in flight, so the counter reflects
+        // real overlap rather than actor serialisation.
+        await Task.yield()
         putLog.append((key, data.count))
         if consume(&putFailures, matching: key) { throw Fault.injected }
         objects[key] = data
@@ -80,6 +90,7 @@ actor InMemoryMetadataStore: MetadataObjectStore {
         etags[key] = "etag-\(etagCounter)"
         if consume(&storeThenFail, matching: key) { throw Fault.injected }
     }
+
 
     func listObjects(
         prefix: String,

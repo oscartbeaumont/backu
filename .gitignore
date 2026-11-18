@@ -23,3 +23,6 @@ Tests/Fixtures/performance/raw/
 # Cloudflare CLI cache
 .cloudflare/
 Tests/Fixtures/atlas-corpus/
+
+# Sync bench raw output (Tools/MetaBench/sync.sh)
+Tools/MetaBench/results/sync-*.jsonl

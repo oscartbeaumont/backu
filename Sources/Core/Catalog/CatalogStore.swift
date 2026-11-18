@@ -62,6 +62,11 @@ final class CatalogStore {
 
     private var photoByID: [String: PhotoItem] = [:]
     private var personByID: [UUID: Person] = [:]
+    /// Position of each photo in `photos` and the first photo for each SHA-256.
+    /// Without these, applying one merged photo was an O(library) scan, which is
+    /// exactly what made a 7 KB edit expensive.
+    private var indexByID: [String: Int] = [:]
+    private var indexByHash: [String: String] = [:]
     private var index: SearchIndex?
     private var indexVersion = -1
     private var saveTask: Task<Void, Never>?
@@ -109,6 +114,27 @@ final class CatalogStore {
     private func rebuildLookups() {
         photoByID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         personByID = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        reindexPhotos()
+    }
+
+    /// Rebuilds the id/SHA indexes after a structural change (sort, bulk
+    /// remove). Incremental updates go through `indexPhoto` instead.
+    private func reindexPhotos() {
+        indexByID.removeAll(keepingCapacity: true)
+        indexByHash.removeAll(keepingCapacity: true)
+        indexByID.reserveCapacity(photos.count)
+        for (position, photo) in photos.enumerated() {
+            indexByID[photo.id] = position
+            if let sha = photo.sha256, !sha.isEmpty, indexByHash[sha] == nil {
+                indexByHash[sha] = photo.id
+            }
+        }
+    }
+
+    private func indexPhoto(_ photo: PhotoItem) {
+        if let sha = photo.sha256, !sha.isEmpty, indexByHash[sha] == nil {
+            indexByHash[sha] = photo.id
+        }
     }
 
     func takeMetadataDelta() -> MetadataDelta {
@@ -138,26 +164,32 @@ final class CatalogStore {
     /// dirty. This is the other half of the echo-prevention rule: a device
     /// publishes its own edits first, then adopts the merged result, so the
     /// next diff sees no difference and cannot revert another device's work.
+    ///
+    /// Returns how many remote-only photos the catalog gained. The work is
+    /// proportional to `incoming`, not to the library: the id and SHA indexes
+    /// replace a per-item scan.
+    @discardableResult
     func applyMergedMetadata(
         photos incoming: [PhotoItem],
         people incomingPeople: [Person],
         deletedPeople: Set<UUID>,
         deletedHashes remoteDeleted: Set<String>
-    ) {
+    ) -> Int {
         var changed = false
-        var byHash: [String: String] = [:]
-        for photo in photos {
-            if let sha = photo.sha256, byHash[sha] == nil { byHash[sha] = photo.id }
-        }
+        var added = 0
 
         for item in incoming {
             let matchID: String? = {
-                if photoByID[item.id] != nil { return item.id }
-                if let sha = item.sha256, let id = byHash[sha] { return id }
+                if indexByID[item.id] != nil { return item.id }
+                if let sha = item.sha256,
+                   let id = indexByHash[sha],
+                   photoByID[id]?.sha256 == sha {
+                    return id
+                }
                 return nil
             }()
 
-            if let id = matchID, let index = photos.firstIndex(where: { $0.id == id }) {
+            if let id = matchID, let index = indexByID[id] {
                 var existing = photos[index]
                 for copy in item.copies
                 where !existing.copies.contains(where: { $0.serverID == copy.serverID && $0.objectKey == copy.objectKey }) {
@@ -187,14 +219,16 @@ final class CatalogStore {
                 }
                 photos[index] = existing
                 photoByID[existing.id] = existing
-                if let sha = existing.sha256 { byHash[sha] = existing.id }
+                indexPhoto(existing)
                 changed = true
-            } else if photoByID[item.id] == nil {
-                var added = item
-                added.localIdentifier = nil
-                photos.append(added)
-                photoByID[added.id] = added
-                if let sha = added.sha256 { byHash[sha] = added.id }
+            } else if indexByID[item.id] == nil {
+                var addedItem = item
+                addedItem.localIdentifier = nil
+                photos.append(addedItem)
+                indexByID[addedItem.id] = photos.count - 1
+                photoByID[addedItem.id] = addedItem
+                indexPhoto(addedItem)
+                if addedItem.isRemoteOnly { added += 1 }
                 changed = true
             }
         }
@@ -228,17 +262,22 @@ final class CatalogStore {
             }
         }
 
-        guard changed else { return }
-        rebuildLookups()
+        guard changed else { return 0 }
+        // The lookups were maintained above; rebuilding them here would put the
+        // library scan back into every one-photo sync.
         needsSort = true
         bump()
         saveSoon()
+        return added
     }
 
     /// Removes bucket-only photos that the v2 state no longer contains. Local
     /// assets are never touched, and a photo with a pending local edit is left
     /// for the writer to resolve. With several replicas the copy is removed
     /// without deleting the photo.
+    ///
+    /// This walks every photo, so it is only for a full sync. An incremental
+    /// sync uses `removeRemotePhotos`.
     func reconcileRemote(
         serverID: UUID,
         presentIDs: Set<String>,
@@ -260,22 +299,68 @@ final class CatalogStore {
                 survivors.append(photo)
                 continue
             }
-            let remaining = photo.copies.filter { $0.serverID != serverID }
-            changed = true
-            if remaining.isEmpty {
-                continue
+            if let updated = Self.droppingCopy(of: photo, serverID: serverID) {
+                survivors.append(updated)
             }
-            var updated = photo
-            updated.copies = remaining
-            updated.serverID = remaining.first?.serverID
-            updated.remoteThumbnailKey = remaining.first?.thumbnailKey
-            survivors.append(updated)
+            changed = true
         }
         guard changed else { return }
         photos = survivors
         rebuildLookups()
         bump()
         saveSoon()
+    }
+
+    /// The incremental counterpart of `reconcileRemote`: only the ids a sync
+    /// reported as gone are touched.
+    func removeRemotePhotos(
+        serverID: UUID,
+        removedIDs: Set<String>,
+        deletedHashes remoteDeleted: Set<String>
+    ) {
+        guard !removedIDs.isEmpty || !remoteDeleted.isEmpty else { return }
+        var changed = false
+        var survivors: [PhotoItem] = []
+        survivors.reserveCapacity(photos.count)
+        for photo in photos {
+            let canonical: String
+            if photo.id.hasPrefix("remote:") {
+                canonical = String(photo.id.dropFirst("remote:".count))
+            } else {
+                canonical = photo.id
+            }
+            let named = removedIDs.contains(photo.id) || removedIDs.contains(canonical)
+            let hashDeleted = photo.sha256.map { remoteDeleted.contains($0) } ?? false
+            guard named || hashDeleted,
+                  photo.localIdentifier == nil,
+                  photo.copies.contains(where: { $0.serverID == serverID }),
+                  !dirtyPhotoIDs.contains(photo.id)
+            else {
+                survivors.append(photo)
+                continue
+            }
+            if let updated = Self.droppingCopy(of: photo, serverID: serverID) {
+                survivors.append(updated)
+            }
+            changed = true
+        }
+        guard changed else { return }
+        photos = survivors
+        rebuildLookups()
+        bump()
+        saveSoon()
+    }
+
+    /// Removes this bucket's copy. Returns nil when the photo has no copy left
+    /// anywhere, so a remote-only entry disappears and a local asset survives.
+    private static func droppingCopy(of photo: PhotoItem, serverID: UUID) -> PhotoItem? {
+        let remaining = photo.copies.filter { $0.serverID != serverID }
+        guard !remaining.isEmpty else { return nil }
+        var updated = photo
+        updated.copies = remaining
+        updated.serverID = remaining.first?.serverID
+        updated.remoteThumbnailKey = remaining.first?.thumbnailKey
+        return updated
     }
 
     /// Deletions discovered on another device. Local tombstones stay in place:
@@ -490,19 +575,22 @@ final class CatalogStore {
     }
 
     private func upsertInMemory(_ photo: PhotoItem) {
-        if let index = photos.firstIndex(where: { $0.id == photo.id }) {
+        if let index = indexByID[photo.id] {
             photos[index] = photo
         } else {
             photos.append(photo)
+            indexByID[photo.id] = photos.count - 1
             needsSort = true
         }
         photoByID[photo.id] = photo
+        indexPhoto(photo)
     }
 
     private func sortIfNeeded() {
         guard needsSort else { return }
         photos.sort { ($0.takenAt ?? .distantPast) > ($1.takenAt ?? .distantPast) }
         needsSort = false
+        reindexPhotos()
     }
 
     func removeAll() {
@@ -546,9 +634,10 @@ final class CatalogStore {
     // MARK: - Mutation
 
     func mutatePhoto(_ id: String, _ body: (inout PhotoItem) -> Void) {
-        guard let index = photos.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = indexByID[id] else { return }
         body(&photos[index])
         photoByID[id] = photos[index]
+        indexPhoto(photos[index])
         markMetadataPhoto(id)
         bump()
         saveSoon()
@@ -882,6 +971,7 @@ final class CatalogStore {
         if shouldDrop {
             photos.removeAll { $0.id == photoID }
             photoByID[photoID] = nil
+            rebuildLookups()
             bump()
             saveSoon()
         }

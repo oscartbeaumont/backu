@@ -77,10 +77,26 @@ struct MetadataSyncOutcome: Sendable {
     /// True when this bucket already has v2 data (a head, snapshot or segment).
     var sawLog: Bool = false
     var changed: Bool = false
+    /// True when `photos` is every photo in the bucket (cold start, or a first
+    /// sync of a bucket whose log is only segments). Only then may a reader
+    /// reconcile photos that are absent from the list.
+    var isFull: Bool = false
+    /// The changed photos for an incremental sync, or all photos for a full one.
     var photos: [PhotoItem] = []
     var people: [Person] = []
     var deletedPeople: Set<UUID> = []
     var deletedHashes: Set<String> = []
+    /// Merged entity ids that no longer exist. Filled for incremental syncs so a
+    /// reader can drop exactly those catalog entries.
+    var removedPhotoIDs: Set<String> = []
+}
+
+/// When compaction is worth a whole-snapshot upload. Segment count alone makes
+/// a 100k library rewrite 13 MB after eight trivial edits; the edit count keeps
+/// a busy but short-lived log from growing without bound.
+struct MetadataCompactionPolicy: Sendable {
+    var segmentThreshold: Int = 32
+    var editThreshold: Int = 20_000
 }
 
 /// One bucket's replication state, writer queue and compactor.
@@ -95,6 +111,7 @@ final class MetadataService {
     private(set) var replication: MetadataReplicationState
     private(set) var outbox: [MetaRecord] = []
     private var catalog: CatalogStore?
+    let compaction: MetadataCompactionPolicy
 
     private var syncing = false
     private var compacting = false
@@ -112,10 +129,29 @@ final class MetadataService {
     private(set) var sawLog = false
     var hasOutbox: Bool { !outbox.isEmpty }
 
-    private let compactionSegmentThreshold = 8
+    /// Merged records not yet folded into the local cache file. Rewriting 13 MB
+    /// after every 7 KB edit is the cache's whole cost, so it is only written
+    /// when this reaches `cacheRecordThreshold`, on a snapshot change, or when
+    /// the app asks (background/termination).
+    private var pendingCacheRecords = 0
+    private var cacheNeedsWrite = false
+    private var lastCachePersist = Date.distantPast
+    /// Exposed so a test can exercise the threshold without building thousands
+    /// of records. Production keeps the default.
+    var cacheRecordThreshold = 2_000
+    /// A long session with sporadic edits still refreshes the cache eventually.
+    var cacheMaximumInterval: TimeInterval = 300
+    /// How many cache writes have been started. Read by tests; a counter is
+    /// cheaper than exposing the queue.
+    private(set) var cacheWriteCount = 0
 
-    init(serverID: UUID, writerID: String? = nil) {
+    init(
+        serverID: UUID,
+        writerID: String? = nil,
+        compaction: MetadataCompactionPolicy = MetadataCompactionPolicy()
+    ) {
         self.serverID = serverID
+        self.compaction = compaction
         let url = AppPaths.metadataStateFile(serverID)
         stateFileExisted = FileManager.default.fileExists(atPath: url.path)
         var persisted = JSONFile.read(MetadataReplicationState.self, from: url)
@@ -172,6 +208,11 @@ final class MetadataService {
         syncing = true
         defer { syncing = false }
 
+        // Captured before anything is applied: a first sync of a bucket whose
+        // log is only segments starts from an empty state, so materialising the
+        // changed ids is the same as materialising everything.
+        let startedEmpty = state.isEmpty
+
         var head: MetadataHead?
         var headUnreadable = false
         var headNotModified = false
@@ -197,24 +238,18 @@ final class MetadataService {
             return MetadataSyncOutcome(hasHead: true, sawLog: true, changed: false)
         }
 
-        if !probedSequence {
-            probedSequence = true
-            try await probeSequence(store: store)
-        }
-
         if let head { replication.headSnapshot = head.snapshot }
         var changed = false
+        var snapshotLoaded = false
         let headSnapshot = head?.snapshot ?? replication.headSnapshot
         let needsSnapshot = headSnapshot != replication.snapshotKey
             || (!cacheLoaded && replication.snapshotKey != nil)
         if needsSnapshot, let snapshotKey = headSnapshot ?? replication.snapshotKey {
-            let compressed = try await read(snapshotKey, from: store)
-            let raw = try await Self.gunzipInBackground(compressed)
-            // Parsing a 100k-photo snapshot is hundreds of milliseconds; keep
-            // it off the main actor.
-            let decoded = try await Task.detached(priority: .userInitiated) {
-                try MergedMetadata.decodeSnapshot(raw)
-            }.value
+            // The snapshot is the one object big enough to matter: stream it to
+            // a temporary file and decode the JSONL incrementally, so peak
+            // memory is the merged state rather than the state plus 60 MB of
+            // JSON text.
+            let decoded = try await Self.loadSnapshot(snapshotKey, from: store)
             state = decoded.metadata
             replication.snapshotKey = snapshotKey
             replication.headSnapshot = snapshotKey
@@ -222,13 +257,23 @@ final class MetadataService {
             // The snapshot's own watermark is authority: the state file may
             // have advanced past a cache write that never landed.
             replication.watermark = decoded.header.watermark
+            replication.segmentsSinceSnapshot = 0
+            replication.editsSinceSnapshot = 0
             cacheLoaded = true
             changed = true
+            snapshotLoaded = true
         }
 
         // A 304 only skips the head *body*; segments still have to be listed or
         // edits made since the last compaction never arrive.
-        let segments = try await pendingSegments(store: store)
+        let listing = try await pendingSegments(store: store)
+        if !probedSequence {
+            probedSequence = true
+            adoptSequence(from: listing.maxSequences)
+        }
+        let segments = listing.pending
+        var changes = MetadataChangeSet()
+        var appliedRecords = 0
         if !segments.isEmpty {
             let downloaded = try await download(segments: segments, store: store)
             var records: [MetaRecord] = []
@@ -238,9 +283,15 @@ final class MetadataService {
                     replication.watermark[item.writer] ?? -1,
                     item.sequence
                 )
-                replication.segmentsSinceSnapshot += 1
+                // Our own segments were already counted when they were written;
+                // counting them again here would compact twice as eagerly as
+                // the configured policy says.
+                if item.writer != replication.writerID {
+                    replication.segmentsSinceSnapshot += 1
+                }
             }
-            state.apply(records)
+            changes = state.apply(records)
+            appliedRecords = records.count
             observe(records)
             changed = true
         }
@@ -256,28 +307,62 @@ final class MetadataService {
         }
         replication.lastSyncAt = Date()
         persist()
-        if changed {
+
+        guard changed else {
+            return MetadataSyncOutcome(hasHead: hasHead, sawLog: sawLog, changed: false)
+        }
+
+        // Materialise only what moved. A snapshot load replaces the whole state
+        // and a first sync starts from nothing, so both are a full read.
+        let outcome: MetadataSyncOutcome
+        if snapshotLoaded || startedEmpty {
             let materialized = state.materialize(serverID: serverID)
-            persistCache()
-            return MetadataSyncOutcome(
+            outcome = MetadataSyncOutcome(
                 hasHead: hasHead,
                 sawLog: sawLog,
                 changed: true,
+                isFull: true,
                 photos: materialized.photos,
                 people: materialized.people,
                 deletedPeople: materialized.deletedPeople,
                 deletedHashes: materialized.deletedHashes
             )
+        } else {
+            let delta = state.materialize(serverID: serverID, changes: changes)
+            outcome = MetadataSyncOutcome(
+                hasHead: hasHead,
+                sawLog: sawLog,
+                changed: true,
+                isFull: false,
+                photos: delta.photos,
+                people: delta.people,
+                deletedPeople: delta.deletedPeople,
+                deletedHashes: changes.deletedHashes,
+                removedPhotoIDs: delta.removedPhotoIDs
+            )
         }
-        return MetadataSyncOutcome(hasHead: hasHead, sawLog: sawLog, changed: false)
+
+        noteCacheChanges(records: appliedRecords, snapshot: snapshotLoaded)
+        return outcome
     }
 
-    private func read(_ key: String, from store: MetadataObjectStore) async throws -> Data {
-        switch try await store.getObject(key, ifNoneMatch: nil) {
-        case let .found(data, _): return data
+    private static func loadSnapshot(
+        _ key: String,
+        from store: MetadataObjectStore
+    ) async throws -> MergedMetadata.DecodedSnapshot {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backu-metadata-\(UUID().uuidString).jsonl.gz")
+        defer { try? FileManager.default.removeItem(at: url) }
+        switch try await store.downloadObject(key, to: url) {
         case .missing: throw MetadataError.missingObject(key)
-        case .notModified: throw MetadataError.invalidSegment
+        case .notModified: throw MetadataError.invalidSnapshot
+        case .downloaded: break
         }
+        // Parsing a 100k-photo snapshot is hundreds of milliseconds; keep it off
+        // the main actor.
+        return try await Task.detached(priority: .userInitiated) {
+            try MergedMetadata.decodeSnapshot(gzipFile: url)
+        }.value
     }
 
     private struct PendingSegment {
@@ -286,15 +371,27 @@ final class MetadataService {
         var sequence: Int
     }
 
+    private struct SegmentListing {
+        var pending: [PendingSegment] = []
+        /// writer id -> highest sequence seen, used to recover a lost counter.
+        var maxSequences: [String: Int] = [:]
+    }
+
     /// Lists writer namespaces with one delimiter request, then one
     /// `start-after` list per writer. This avoids walking the whole history on
     /// every sync, which is what makes steady-state replication cheap.
-    private func pendingSegments(store: MetadataObjectStore) async throws -> [PendingSegment] {
+    ///
+    /// The same listing recovers a lost sequence counter, so a state-file loss
+    /// costs no extra request.
+    private func pendingSegments(store: MetadataObjectStore) async throws -> SegmentListing {
         let logPrefix = MetadataLayout.logPrefix + "/"
         var writers = Set<String>()
-        var direct: [PendingSegment] = []
+        var listing = SegmentListing()
         var token: String?
-        var maxSequences: [String: Int] = [:]
+        // A state file that vanished (server removed and re-added) hides the
+        // counter this writer used. Ask for the whole namespace once so the
+        // highest sequence is in the answer.
+        let probeSelf = replication.sequence == 0 && !stateFileExisted
 
         repeat {
             let page = try await store.listObjects(
@@ -313,9 +410,14 @@ final class MetadataService {
             for key in page.keys {
                 guard let parsed = MetadataLayout.parseSegment(key) else { continue }
                 writers.insert(parsed.writer)
-                maxSequences[parsed.writer] = max(maxSequences[parsed.writer] ?? -1, parsed.sequence)
+                listing.maxSequences[parsed.writer] = max(
+                    listing.maxSequences[parsed.writer] ?? -1,
+                    parsed.sequence
+                )
                 if parsed.sequence > (replication.watermark[parsed.writer] ?? -1) {
-                    direct.append(PendingSegment(key: key, writer: parsed.writer, sequence: parsed.sequence))
+                    listing.pending.append(
+                        PendingSegment(key: key, writer: parsed.writer, sequence: parsed.sequence)
+                    )
                 }
             }
             token = page.isTruncated ? page.nextToken : nil
@@ -324,11 +426,13 @@ final class MetadataService {
         // A delimiter-aware store gives no keys above, so ask each writer only
         // for what is new. `start-after` on a zero-padded sequence is the first
         // unseen segment without walking the writer's history.
-        if direct.isEmpty {
+        if listing.pending.isEmpty {
             for writer in writers {
                 let prefix = MetadataLayout.writerPrefix(writer)
                 let startSequence = (replication.watermark[writer] ?? -1) + 1
-                var startAfter: String? = String(format: "%@/%012d", prefix, startSequence)
+                var startAfter: String? = (probeSelf && writer == replication.writerID)
+                    ? nil
+                    : String(format: "%@/%012d", prefix, startSequence)
                 var continuation: String?
                 repeat {
                     let page = try await store.listObjects(
@@ -340,11 +444,16 @@ final class MetadataService {
                     )
                     for key in page.keys {
                         guard let parsed = MetadataLayout.parseSegment(key),
-                              parsed.writer == writer,
-                              parsed.sequence > (replication.watermark[writer] ?? -1)
+                              parsed.writer == writer
                         else { continue }
-                        maxSequences[writer] = max(maxSequences[writer] ?? -1, parsed.sequence)
-                        direct.append(PendingSegment(key: key, writer: writer, sequence: parsed.sequence))
+                        listing.maxSequences[writer] = max(
+                            listing.maxSequences[writer] ?? -1,
+                            parsed.sequence
+                        )
+                        guard parsed.sequence > (replication.watermark[writer] ?? -1) else { continue }
+                        listing.pending.append(
+                            PendingSegment(key: key, writer: writer, sequence: parsed.sequence)
+                        )
                     }
                     continuation = page.isTruncated ? page.nextToken : nil
                     startAfter = nil
@@ -352,40 +461,21 @@ final class MetadataService {
             }
         }
 
-        direct.sort { lhs, rhs in
+        listing.pending.sort { lhs, rhs in
             lhs.sequence == rhs.sequence ? lhs.writer < rhs.writer : lhs.sequence < rhs.sequence
         }
-        return direct
+        return listing
     }
 
     /// A removed-and-re-added server loses its state file, including the
     /// sequence counter. Reusing sequence 0 would make every existing reader
-    /// ignore the new segments forever, so inspect this writer's namespace once
-    /// when the state file was absent.
-    private func probeSequence(store: MetadataObjectStore) async throws {
+    /// ignore the new segments forever, so take the highest sequence from the
+    /// listing we already fetched.
+    private func adoptSequence(from maxSequences: [String: Int]) {
         guard replication.sequence == 0, !stateFileExisted else { return }
-        var maxSequence = -1
-        var token: String?
-        repeat {
-            let page = try await store.listObjects(
-                prefix: MetadataLayout.writerPrefix(replication.writerID) + "/",
-                delimiter: nil,
-                startAfter: nil,
-                continuationToken: token,
-                maxKeys: 1000
-            )
-            for key in page.keys {
-                guard let parsed = MetadataLayout.parseSegment(key),
-                      parsed.writer == replication.writerID
-                else { continue }
-                maxSequence = max(maxSequence, parsed.sequence)
-            }
-            token = page.isTruncated ? page.nextToken : nil
-        } while token != nil
-        if maxSequence >= 0 {
-            replication.sequence = maxSequence + 1
-            persist()
-        }
+        guard let maxSequence = maxSequences[replication.writerID], maxSequence >= 0 else { return }
+        replication.sequence = maxSequence + 1
+        persist()
     }
 
     private func download(
@@ -567,9 +657,10 @@ final class MetadataService {
         ]
     }
 
-    /// Publishes the outbox in one PUT per chunk. A failed PUT leaves the
-    /// records in the outbox; retrying reuses the same key and bytes, so a
-    /// lost response cannot duplicate a segment.
+    /// Publishes the outbox in one PUT per chunk, up to four chunks in flight.
+    /// A failed PUT leaves its records in the outbox; retrying reuses the same
+    /// key and bytes when the chunks before it landed, so a lost response
+    /// cannot duplicate a segment.
     ///
     /// Returns false when another flush is already running; the outbox is still
     /// intact and the caller should retry rather than assume success.
@@ -580,27 +671,90 @@ final class MetadataService {
         flushing = true
         defer { flushing = false }
 
+        let chunkSize = Self.segmentRecordLimit
+        let concurrency = 4
         while !outbox.isEmpty {
-            let chunk = Array(outbox.prefix(500))
-            let raw = try MetadataSegmentCodec.encode(chunk)
-            let compressed = try await Self.gzipInBackground(raw)
-            let hlc = chunk.map(\.hlc).max() ?? tick()
-            let key = MetadataLayout.segmentKey(
-                writer: replication.writerID,
-                sequence: replication.sequence,
-                hlc: hlc,
-                digest: SigV4Signer.sha256Hex(compressed)
-            )
-            try await store.putObject(key, data: compressed, contentType: "application/gzip")
-            outbox.removeFirst(chunk.count)
-            replication.sequence += 1
-            replication.segmentsSinceSnapshot += 1
-            replication.editsSinceSnapshot += chunk.count
-            persistOutbox()
-            persist()
+            let base = replication.sequence
+            let writer = replication.writerID
+            let count = outbox.count
+            let chunkCount = min(concurrency, (count + chunkSize - 1) / chunkSize)
+            let chunks = (0..<chunkCount).map { index in
+                Array(outbox[index * chunkSize..<min((index + 1) * chunkSize, count)])
+            }
+
+            // Encode and compress off the main actor while the PUTs run.
+            let prepared = try await withThrowingTaskGroup(
+                of: (index: Int, key: String, data: Data).self
+            ) { group in
+                for (index, chunk) in chunks.enumerated() {
+                    let sequence = base + index
+                    group.addTask {
+                        let raw = try MetadataSegmentCodec.encode(chunk)
+                        let compressed = try Gzip.compress(raw)
+                        let hlc = chunk.map(\.hlc).max() ?? 0
+                        let key = MetadataLayout.segmentKey(
+                            writer: writer,
+                            sequence: sequence,
+                            hlc: hlc,
+                            digest: SigV4Signer.sha256Hex(compressed)
+                        )
+                        return (index, key, compressed)
+                    }
+                }
+                var output: [(index: Int, key: String, data: Data)] = []
+                for try await value in group { output.append(value) }
+                return output.sorted { $0.index < $1.index }
+            }
+
+            let outcome = await withTaskGroup(of: (Int, String?).self) { group in
+                for item in prepared {
+                    group.addTask {
+                        do {
+                            try await store.putObject(
+                                item.key,
+                                data: item.data,
+                                contentType: "application/gzip"
+                            )
+                            return (item.index, nil)
+                        } catch {
+                            return (item.index, String(describing: error))
+                        }
+                    }
+                }
+                var results: [Int: String?] = [:]
+                for await (index, failure) in group { results[index] = failure }
+                return results
+            }
+
+            // Remove only the contiguous uploaded prefix. A gap keeps the later
+            // chunks in the outbox so a retry cannot skip records; re-sending
+            // them under a fresh sequence is harmless because records are
+            // idempotent, and with no gap every retry reuses the exact key.
+            var advanced = 0
+            for index in 0..<chunks.count {
+                guard let failure = outcome[index], failure == nil else { break }
+                advanced += 1
+            }
+            if advanced > 0 {
+                let removed = chunks.prefix(advanced).reduce(0) { $0 + $1.count }
+                outbox.removeFirst(removed)
+                replication.sequence = base + advanced
+                replication.segmentsSinceSnapshot += advanced
+                replication.editsSinceSnapshot += removed
+                persistOutbox()
+                persist()
+            }
+            if advanced < chunks.count {
+                let failure = outcome[advanced].flatMap { $0 }
+                throw MetadataError.uploadFailed(failure ?? "upload failed")
+            }
         }
         return true
     }
+
+    /// Records per segment. A segment is the unit readers fetch and gzip, so it
+    /// stays small enough to be cheap to replay.
+    static let segmentRecordLimit = 500
 
     // MARK: - Migration
 
@@ -631,31 +785,44 @@ final class MetadataService {
             cursor = photos.firstIndex { $0.id > last } ?? photos.count
         }
 
+        // Queue several batches before flushing so the writer can keep four
+        // PUTs in flight. Every queued record is in the outbox *before*
+        // `seedPendingLastID` advances past it, so a crash mid-flush still
+        // resumes at a record that was actually published.
+        let batchSize = Self.segmentRecordLimit
+        let batchesPerFlush = 4
         while cursor < photos.count {
-            let upper = min(cursor + 500, photos.count)
-            var records: [MetaRecord] = []
             var lastID: String?
-            for photo in photos[cursor..<upper] {
-                guard let copy = photo.copy(on: serverID) else { continue }
-                let shared = SharedPhoto(photo: photo, serverID: serverID)
-                guard !shared.copies.isEmpty else { continue }
-                lastID = photo.id
-                records.append(
-                    MetaRecord(
-                        op: .photoUpsert,
-                        id: shared.id,
-                        hlc: tick(),
-                        by: replication.writerID,
-                        photo: shared,
-                        tagsAdd: photo.tags.isEmpty ? nil : photo.tags,
-                        facesSet: photo.faces.isEmpty ? nil : photo.faces.map(SharedFace.init),
-                        sha256: copy.sha256
+            var queued = 0
+            var batches = 0
+            while cursor < photos.count && batches < batchesPerFlush {
+                let upper = min(cursor + batchSize, photos.count)
+                var records: [MetaRecord] = []
+                for photo in photos[cursor..<upper] {
+                    guard let copy = photo.copy(on: serverID) else { continue }
+                    let shared = SharedPhoto(photo: photo, serverID: serverID)
+                    guard !shared.copies.isEmpty else { continue }
+                    lastID = photo.id
+                    records.append(
+                        MetaRecord(
+                            op: .photoUpsert,
+                            id: shared.id,
+                            hlc: tick(),
+                            by: replication.writerID,
+                            photo: shared,
+                            tagsAdd: photo.tags.isEmpty ? nil : photo.tags,
+                            facesSet: photo.faces.isEmpty ? nil : photo.faces.map(SharedFace.init),
+                            sha256: copy.sha256
+                        )
                     )
-                )
+                }
+                cursor = upper
+                guard !records.isEmpty else { continue }
+                outbox.append(contentsOf: records)
+                queued += records.count
+                batches += 1
             }
-            cursor = upper
-            guard !records.isEmpty else { continue }
-            outbox.append(contentsOf: records)
+            guard queued > 0 else { continue }
             replication.seedPendingLastID = lastID
             persistOutbox()
             persist()
@@ -718,7 +885,12 @@ final class MetadataService {
     /// not depend on the race's outcome.
     func compactIfNeeded(store: MetadataObjectStore, force: Bool = false) async {
         guard !compacting else { return }
-        guard replication.segmentsSinceSnapshot >= compactionSegmentThreshold || force else { return }
+        // A snapshot is a 13 MB upload for a 100k library, so segment count
+        // alone is a bad trigger: eight trivial edits would rewrite everything.
+        // Compact on whichever threshold is reached first.
+        let due = replication.segmentsSinceSnapshot >= compaction.segmentThreshold
+            || replication.editsSinceSnapshot >= compaction.editThreshold
+        guard due || force else { return }
         guard !state.photos.isEmpty || !state.people.isEmpty else { return }
         compacting = true
         defer { compacting = false }
@@ -810,10 +982,7 @@ final class MetadataService {
 
     private func loadCache() {
         let url = AppPaths.metadataCacheFile(serverID)
-        guard let compressed = try? Data(contentsOf: url),
-              let raw = try? Gzip.decompress(compressed),
-              let decoded = try? MergedMetadata.decodeSnapshot(raw)
-        else { return }
+        guard let decoded = try? MergedMetadata.decodeSnapshot(gzipFile: url) else { return }
         state = decoded.metadata
         // The cache knows exactly how much it covers. Trust it over the state
         // file, which is written before the asynchronous cache write.
@@ -828,11 +997,37 @@ final class MetadataService {
         qos: .utility
     )
 
+    /// Decide whether this sync is worth a 13 MB local rewrite. A 304 plus one
+    /// segment leaves the cache stale, which is safe: the cache's header
+    /// watermark is authoritative, so the next launch replays the few records
+    /// it missed instead of trusting a head that moved past it.
+    private func noteCacheChanges(records: Int, snapshot: Bool) {
+        pendingCacheRecords += records
+        cacheNeedsWrite = cacheNeedsWrite || snapshot
+        let stale = Date().timeIntervalSince(lastCachePersist) > cacheMaximumInterval
+        guard cacheNeedsWrite
+            || pendingCacheRecords >= cacheRecordThreshold
+            || (pendingCacheRecords > 0 && stale)
+        else { return }
+        persistCache()
+    }
+
+    /// Writes any pending merged state now. Called when the app backgrounds so
+    /// a long session's cache stays close to the server.
+    func flushCacheIfNeeded() {
+        guard cacheNeedsWrite || pendingCacheRecords > 0 else { return }
+        persistCache()
+    }
+
     private func persistCache() {
         let snapshot = state
         let generation = replication.generation
         let watermark = replication.watermark
         let url = AppPaths.metadataCacheFile(serverID)
+        pendingCacheRecords = 0
+        cacheNeedsWrite = false
+        lastCachePersist = Date()
+        cacheWriteCount += 1
         Self.cacheQueue.async {
             let raw = snapshot.encodeSnapshot(generation: generation, watermark: watermark)
             guard let compressed = try? Gzip.compress(raw) else { return }
@@ -844,6 +1039,7 @@ final class MetadataService {
     /// Test seam: the cache write is queued, so a test that deletes the file
     /// needs a point where the write has certainly landed.
     func flushCacheForTesting() async {
+        flushCacheIfNeeded()
         await withCheckedContinuation { continuation in
             Self.cacheQueue.async { continuation.resume() }
         }
@@ -852,10 +1048,6 @@ final class MetadataService {
 
     private static func gzipInBackground(_ data: Data) async throws -> Data {
         try await Task.detached(priority: .utility) { try Gzip.compress(data) }.value
-    }
-
-    private static func gunzipInBackground(_ data: Data) async throws -> Data {
-        try await Task.detached(priority: .utility) { try Gzip.decompress(data) }.value
     }
 }
 
