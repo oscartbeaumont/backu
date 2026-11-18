@@ -188,8 +188,9 @@ jobs:
           TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP || 'Internal' }}
           PLATFORM: ios
         run: |
-          python3 -m pip install --quiet --user cryptography
-          python3 scripts/testflight-group.py \
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/testflight-group.py \
             --key-path "$ASC_KEY_PATH" \
             --key-id "$ASC_KEY_ID" \
             --issuer-id "$ASC_ISSUER_ID" \
@@ -210,8 +211,9 @@ jobs:
           TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP || 'Internal' }}
           PLATFORM: macos
         run: |
-          python3 -m pip install --quiet --user cryptography
-          python3 scripts/testflight-group.py \
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/testflight-group.py \
             --key-path "$ASC_KEY_PATH" \
             --key-id "$ASC_KEY_ID" \
             --issuer-id "$ASC_ISSUER_ID" \
