@@ -1,6 +1,6 @@
-Backu is a private, native photo backup and library app for iPhone, iPad and Mac. It stores your photos in your own Amazon S3, Backblaze B2, Cloudflare R2, MinIO or other S3-compatible bucket. There is no Backu account, no subscription and no developer server in the middle: the app talks straight to storage you control.
+Backu is a private, native photo backup and library app for iPhone, iPad and Mac. It stores your photos in your own Amazon S3, Backblaze B2, Cloudflare R2, MinIO or other S3-compatible bucket. There is no Backu account, no recurring fee and no developer server in the middle: the app talks straight to storage you control.
 
-BACK UP WITHOUT A SUBSCRIPTION
+BACK UP WITHOUT A RECURRING FEE
 • Upload originals, videos and screenshots with a stable folder layout.
 • Automatic backup in the background, with optional Wi-Fi-only transfers.
 • Choose different servers and folders for different backups, or skip the folder to use the bucket root.
@@ -32,3 +32,7 @@ BUILT FOR PRIVACY
 • Open source under the MIT licence.
 
 Note: Backu needs an S3-compatible bucket to back up. You can browse and search your photo library without configuring one. Provider setup is guided in the app, with links to the exact page where you create an access key.
+
+Backu is free, with no in-app purchases.
+Privacy policy: https://backu.otbeaumont.me/privacy
+Support: https://backu.otbeaumont.me/support
