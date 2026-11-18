@@ -64,14 +64,14 @@ struct PhotoTile: View {
                     HStack(spacing: 4) {
                         if photo.isFavorite {
                             Image(systemName: "heart.fill")
-                                .font(.system(size: 9, weight: .bold))
+                                .scaledFont(9, weight: .bold)
                                 .foregroundStyle(.white)
                                 .padding(4)
                                 .background(Circle().fill(.black.opacity(0.35)))
                         }
                         if resolvedBackupState == .needsUpdate {
                             Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                                .font(.system(size: 10, weight: .bold))
+                                .scaledFont(10, weight: .bold)
                                 .foregroundStyle(.white)
                                 .padding(4)
                                 .background(Circle().fill(.orange))
@@ -203,7 +203,7 @@ struct PhotoTile: View {
 
     private var selectionMark: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-            .font(.system(size: 22, weight: .semibold))
+            .scaledFont(22, weight: .semibold)
             .symbolRenderingMode(.palette)
             .foregroundStyle(.white, isSelected ? Theme.accent : Color.black.opacity(0.25))
             .background(Circle().fill(.black.opacity(0.18)))
@@ -215,10 +215,10 @@ struct PhotoTile: View {
     private var videoBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "play.fill")
-                .font(.system(size: 7, weight: .bold))
+                .scaledFont(7, weight: .bold)
             if let duration = photo.duration {
                 Text(shortDuration(duration))
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .scaledFont(9, weight: .semibold, design: .rounded)
                     .monospacedDigit()
             }
         }

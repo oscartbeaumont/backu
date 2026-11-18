@@ -55,7 +55,7 @@ struct GlassIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
         }
@@ -75,7 +75,7 @@ struct ProviderBadge: View {
             RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
                 .fill(Color(hex: provider.tint).gradient)
             Image(systemName: provider.symbol)
-                .font(.system(size: size * 0.42, weight: .semibold))
+                .scaledFont(size * 0.42, weight: .semibold)
                 .foregroundStyle(.white)
         }
         .frame(width: size, height: size)
@@ -116,7 +116,7 @@ struct TagChip: View {
             if let onRemove {
                 Button(action: onRemove) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
+                        .scaledFont(9, weight: .bold)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -150,7 +150,7 @@ struct StatTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .foregroundStyle(tint)
             Text(value)
                 .font(.title2.weight(.semibold))
@@ -216,7 +216,7 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 38, weight: .light))
+                .scaledFont(38, weight: .light)
                 .foregroundStyle(Theme.accent)
                 .padding(18)
                 .glassSurface(24, tint: Theme.accent.opacity(0.12))

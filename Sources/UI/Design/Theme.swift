@@ -146,6 +146,128 @@ extension Animation {
     static var backuGentle: Animation { .smooth(duration: 0.35) }
 }
 
+// MARK: - Motion
+
+/// `withAnimation`, but applied instantly when Reduce Motion is on, so a state
+/// change still lands and only the travel between the two states is dropped.
+@discardableResult
+func withRespectingReduceMotion<Result>(
+    _ animation: Animation,
+    when reduceMotion: Bool,
+    _ body: () throws -> Result
+) rethrows -> Result {
+    try withAnimation(reduceMotion ? nil : animation, body)
+}
+
+// MARK: - Dynamic Type
+
+/// A system font that keeps a design's exact point size at the default text
+/// size, then grows with the user's Dynamic Type setting. A fixed-size SwiftUI
+/// font pins the size, so a person who asks for larger text still gets small text.
+private struct ScaledSystemFont: ViewModifier {
+    @ScaledMetric private var points: CGFloat
+    private let weight: Font.Weight
+    private let design: Font.Design
+
+    init(size: CGFloat, weight: Font.Weight, design: Font.Design, relativeTo textStyle: Font.TextStyle) {
+        _points = ScaledMetric(wrappedValue: size, relativeTo: textStyle)
+        self.weight = weight
+        self.design = design
+    }
+
+    func body(content: Content) -> some View {
+        content.font(PlatformFont.named(size: points, weight: weight, design: design))
+    }
+}
+
+extension View {
+    /// Use in place of a fixed-size font so custom point sizes scale with
+    /// Dynamic Type. `relativeTo` chooses the text style whose growth curve
+    /// applies, and body text is the right default for interface copy.
+    func scaledFont(
+        _ size: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default,
+        relativeTo textStyle: Font.TextStyle = .body
+    ) -> some View {
+        modifier(ScaledSystemFont(size: size, weight: weight, design: design, relativeTo: textStyle))
+    }
+}
+
+/// SwiftUI only offers arbitrary point sizes through the platform font types,
+/// so the two are bridged here once instead of at every call site.
+private enum PlatformFont {
+    static func named(size: CGFloat, weight: Font.Weight, design: Font.Design) -> Font {
+        #if canImport(UIKit)
+        var font = UIFont.systemFont(ofSize: size, weight: weight.uiWeight)
+        if let design = design.uiDesign, let descriptor = font.fontDescriptor.withDesign(design) {
+            font = UIFont(descriptor: descriptor, size: size)
+        }
+        return Font(font)
+        #else
+        var font = NSFont.systemFont(ofSize: size, weight: weight.nsWeight)
+        if let design = design.nsDesign, let descriptor = font.fontDescriptor.withDesign(design) {
+            font = NSFont(descriptor: descriptor, size: size) ?? font
+        }
+        return Font(font)
+        #endif
+    }
+}
+
+private extension Font.Weight {
+    #if canImport(UIKit)
+    var uiWeight: UIFont.Weight {
+        switch self {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+    #else
+    var nsWeight: NSFont.Weight {
+        switch self {
+        case .ultraLight: return .ultraLight
+        case .thin: return .thin
+        case .light: return .light
+        case .medium: return .medium
+        case .semibold: return .semibold
+        case .bold: return .bold
+        case .heavy: return .heavy
+        case .black: return .black
+        default: return .regular
+        }
+    }
+    #endif
+}
+
+private extension Font.Design {
+    #if canImport(UIKit)
+    var uiDesign: UIFontDescriptor.SystemDesign? {
+        switch self {
+        case .rounded: return .rounded
+        case .serif: return .serif
+        case .monospaced: return .monospaced
+        default: return nil
+        }
+    }
+    #else
+    var nsDesign: NSFontDescriptor.SystemDesign? {
+        switch self {
+        case .rounded: return .rounded
+        case .serif: return .serif
+        case .monospaced: return .monospaced
+        default: return nil
+        }
+    }
+    #endif
+}
+
 /// The namespace shared by every grid tile and the viewer, so whichever screen
 /// pushed the viewer can zoom back into the tile it came from.
 private struct ViewerZoomNamespaceKey: EnvironmentKey {

@@ -211,7 +211,7 @@ struct PhotoInfoSheet: View {
                     addTag(to: photo)
                 } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
+                        .scaledFont(13, weight: .bold)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.glassProminent)
@@ -242,7 +242,7 @@ struct PhotoInfoSheet: View {
                 Spacer(minLength: 8)
                 if let format = formatLabel(photo) {
                     Text(format)
-                        .font(.system(size: 10, weight: .semibold))
+                        .scaledFont(10, weight: .semibold)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -326,7 +326,7 @@ struct PhotoInfoSheet: View {
     private func exposureStat(_ text: String, shows: Bool) -> some View {
         if shows {
             Text(text)
-                .font(.system(size: 13, weight: .medium))
+                .scaledFont(13, weight: .medium)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .frame(maxWidth: .infinity)
@@ -594,7 +594,7 @@ struct PersonAvatar: View {
                     .overlay {
                         Image(systemName: person.isPet ? "pawprint.fill" : "person.fill")
                             .foregroundStyle(.white)
-                            .font(.system(size: size * 0.4))
+                            .scaledFont(size * 0.4)
                     }
             }
         }

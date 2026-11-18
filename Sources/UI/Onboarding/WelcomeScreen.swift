@@ -255,7 +255,7 @@ struct PhotoAccessOnboardingView: View {
     private var accessStateCard: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: status == .limited ? "photo.badge.checkmark" : "lock.shield")
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(17, weight: .semibold)
                 .foregroundStyle(status == .limited ? Theme.mint : .orange)
                 .frame(width: 40, height: 40)
                 .background(
@@ -279,7 +279,7 @@ struct PhotoAccessOnboardingView: View {
     private var privacyNote: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "hand.raised.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .scaledFont(12, weight: .semibold)
                 .foregroundStyle(Theme.accent)
                 .padding(.top, 1)
             Text("Faces, places and search are processed on this device. Photos only leave it once you connect a bucket and backup runs.")
@@ -382,7 +382,7 @@ struct WelcomeFeature: View {
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(17, weight: .semibold)
                 .foregroundStyle(Theme.accent)
                 .frame(width: 42, height: 42)
                 .glassSurface(14, tint: Theme.accent.opacity(0.10))

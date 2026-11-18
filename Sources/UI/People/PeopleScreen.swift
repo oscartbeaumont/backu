@@ -65,7 +65,7 @@ struct PeopleScreen: View {
                             }
                         } label: {
                             Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 16, weight: .semibold))
+                                .scaledFont(16, weight: .semibold)
                                 .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.glass)
@@ -309,7 +309,7 @@ struct PersonGridCell: View {
                     .overlay(alignment: .bottomTrailing) {
                         if person.isPet {
                             Image(systemName: "pawprint.fill")
-                                .font(.system(size: 10, weight: .bold))
+                                .scaledFont(10, weight: .bold)
                                 .foregroundStyle(.white)
                                 .padding(6)
                                 .background(Circle().fill(Color(hex: 0xC98A3D)))
@@ -319,7 +319,7 @@ struct PersonGridCell: View {
                     .overlay(alignment: .topTrailing) {
                         if isSelecting {
                             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 24, weight: .semibold))
+                                .scaledFont(24, weight: .semibold)
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.white, isSelected ? Theme.accent : Color.black.opacity(0.3))
                                 .background(Circle().fill(.black.opacity(0.18)))
@@ -550,7 +550,7 @@ struct PersonDetailScreen: View {
                     save()
                 } label: {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
+                        .scaledFont(12, weight: .bold)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.glass)

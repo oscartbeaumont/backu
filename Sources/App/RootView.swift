@@ -193,7 +193,7 @@ struct AppBottomBar: View {
 
             Button(action: onSearch) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 20, weight: .semibold))
+                    .scaledFont(20, weight: .semibold)
                     .frame(width: 56, height: 56)
             }
             .buttonStyle(.glass)
@@ -214,7 +214,7 @@ struct AppBottomBar: View {
                 }
             } label: {
                 Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 19, weight: .semibold))
+                    .scaledFont(19, weight: .semibold)
                     .foregroundStyle(Theme.accent)
                     .frame(width: 56, height: 56)
             }
@@ -240,7 +240,7 @@ struct AppBottomBar: View {
                 } label: {
                     VStack(spacing: 2) {
                         Image(systemName: tab.symbol)
-                            .font(.system(size: 18, weight: .semibold))
+                            .scaledFont(18, weight: .semibold)
                             .frame(height: 22)
                         Text(tab.title)
                             .font(.caption2.weight(.medium))

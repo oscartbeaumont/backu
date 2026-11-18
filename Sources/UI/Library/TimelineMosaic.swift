@@ -98,7 +98,7 @@ struct TimelineDateLabel: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 20, weight: .bold))
+            .scaledFont(20, weight: .bold)
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)

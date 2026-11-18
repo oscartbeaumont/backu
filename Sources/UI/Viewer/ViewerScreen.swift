@@ -249,7 +249,7 @@ struct ViewerScreen: View {
         HStack(spacing: 10) {
             Button(action: close) {
                 Image(systemName: closeSymbol)
-                    .font(.system(size: 16, weight: .bold))
+                    .scaledFont(16, weight: .bold)
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.glass)
@@ -260,10 +260,10 @@ struct ViewerScreen: View {
 
             VStack(spacing: 1) {
                 Text(photo?.takenAt?.dayLabel ?? "Photo")
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(17, weight: .semibold)
                 if let taken = photo?.takenAt {
                     Text(taken.timeLabel)
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .opacity(0.7)
                 }
             }
@@ -279,7 +279,7 @@ struct ViewerScreen: View {
                     app.toggleFavorite(photo.id)
                 } label: {
                     Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
-                        .font(.system(size: 15, weight: .semibold))
+                        .scaledFont(15, weight: .semibold)
                         .frame(width: 44, height: 44)
                         .foregroundStyle(photo.isFavorite ? Theme.accent : Color.primary)
                         .contentTransition(.symbolEffect(.replace))
@@ -312,7 +312,7 @@ struct ViewerScreen: View {
                 } label: {
                     VStack(spacing: 3) {
                         Image(systemName: "square.and.arrow.down")
-                            .font(.system(size: 16, weight: .semibold))
+                            .scaledFont(16, weight: .semibold)
                         Text("Save")
                             .font(.caption2.weight(.medium))
                     }
@@ -337,7 +337,7 @@ struct ViewerScreen: View {
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(16, weight: .semibold)
                 Text(label)
                     .font(.caption2.weight(.medium))
             }
@@ -356,7 +356,7 @@ struct ViewerScreen: View {
             move(symbol.contains("left") ? -1 : 1)
         } label: {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .bold))
+                .scaledFont(16, weight: .bold)
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.glass)

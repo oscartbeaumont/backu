@@ -80,7 +80,7 @@ struct LibraryFilterPanel: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: option.symbol)
-                            .font(.system(size: 15, weight: .semibold))
+                            .scaledFont(15, weight: .semibold)
                         Text(option.rawValue)
                             .font(.subheadline.weight(.medium))
                     }
@@ -109,14 +109,14 @@ struct LibraryFilterPanel: View {
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: option.symbol)
-                    .font(.system(size: 17, weight: .medium))
+                    .scaledFont(17, weight: .medium)
                     .frame(width: 24)
                 Text(option.rawValue)
                     .font(.body)
                 Spacer(minLength: 8)
                 if filter == option {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 13, weight: .bold))
+                        .scaledFont(13, weight: .bold)
                 }
             }
             .foregroundStyle(.primary)
@@ -135,17 +135,17 @@ struct LibraryFilterPanel: View {
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "play.rectangle.on.rectangle")
-                    .font(.system(size: 17, weight: .medium))
+                    .scaledFont(17, weight: .medium)
                     .frame(width: 24)
                 Text("Media Types")
                     .font(.body)
                 Spacer(minLength: 8)
                 if filter == .photos || filter == .videos {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 13, weight: .bold))
+                        .scaledFont(13, weight: .bold)
                 }
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .bold))
+                    .scaledFont(12, weight: .bold)
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(mediaExpanded ? 90 : 0))
             }
@@ -164,13 +164,13 @@ struct LibraryFilterPanel: View {
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "rectangle.grid.2x2")
-                    .font(.system(size: 17, weight: .medium))
+                    .scaledFont(17, weight: .medium)
                     .frame(width: 24)
                 Text("View Options")
                     .font(.body)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .bold))
+                    .scaledFont(12, weight: .bold)
                     .foregroundStyle(.tertiary)
                     .rotationEffect(.degrees(viewExpanded ? 90 : 0))
             }

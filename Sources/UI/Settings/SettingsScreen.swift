@@ -85,7 +85,7 @@ struct SettingsScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 Image(systemName: "externaldrive.connected.to.line.below")
-                    .font(.system(size: 15, weight: .medium))
+                    .scaledFont(15, weight: .medium)
                     .foregroundStyle(Theme.accent)
                     .frame(width: 26)
                 VStack(alignment: .leading, spacing: 1) {
@@ -140,7 +140,7 @@ struct SettingsScreen: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18, weight: .medium))
+                    .scaledFont(18, weight: .medium)
                     .foregroundStyle(selected ? Theme.accent : Color.secondary.opacity(0.45))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(server.name)
@@ -178,7 +178,7 @@ struct SettingsScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 12) {
                     Image(systemName: statusSymbol)
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(16, weight: .semibold)
                         .foregroundStyle(statusTint)
                         .frame(width: 26)
                     VStack(alignment: .leading, spacing: 1) {
@@ -316,7 +316,7 @@ struct SettingsScreen: View {
     private var photoAccessRow: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: accessSymbol)
-                .font(.system(size: 15, weight: .medium))
+                .scaledFont(15, weight: .medium)
                 .foregroundStyle(accessTint)
                 .frame(width: 26)
                 .padding(.top, 1)
@@ -430,7 +430,7 @@ struct SettingsScreen: View {
 
             HStack(spacing: 12) {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 15, weight: .medium))
+                    .scaledFont(15, weight: .medium)
                     .foregroundStyle(Theme.accent)
                     .frame(width: 26)
                 VStack(alignment: .leading, spacing: 1) {
@@ -459,7 +459,7 @@ struct SettingsScreen: View {
             )
             HStack(spacing: 12) {
                 Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 15, weight: .medium))
+                    .scaledFont(15, weight: .medium)
                     .foregroundStyle(Theme.accent)
                     .frame(width: 26)
                 Text("Grid size")
@@ -512,7 +512,7 @@ struct SettingsScreen: View {
             } else {
                 HStack(spacing: 12) {
                     Image(systemName: "sparkle.magnifyingglass")
-                        .font(.system(size: 15, weight: .medium))
+                        .scaledFont(15, weight: .medium)
                         .foregroundStyle(Theme.accent)
                         .frame(width: 26)
                     VStack(alignment: .leading, spacing: 1) {
@@ -556,7 +556,7 @@ struct SettingsScreen: View {
                         ProviderBadge(provider: server.provider, size: 30)
                     } else {
                         Image(systemName: "externaldrive.badge.plus")
-                            .font(.system(size: 15, weight: .medium))
+                            .scaledFont(15, weight: .medium)
                             .foregroundStyle(Theme.accent)
                             .frame(width: 26)
                     }
@@ -608,7 +608,7 @@ struct SettingsScreen: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 Image(systemName: "heart.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .scaledFont(16, weight: .semibold)
                     .foregroundStyle(.pink)
                     .frame(width: 30, height: 30)
                     .background(Circle().fill(.pink.opacity(0.12)))
@@ -743,7 +743,7 @@ struct SettingsToggle: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
+                .scaledFont(15, weight: .medium)
                 .foregroundStyle(Theme.accent)
                 .frame(width: 26)
             VStack(alignment: .leading, spacing: 1) {

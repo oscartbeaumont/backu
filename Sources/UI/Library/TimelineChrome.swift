@@ -118,7 +118,7 @@ struct LibraryTopBar: View {
             } else {
                 Button(action: onFilter) {
                     Image(systemName: isFiltered ? filterSymbol : "line.3.horizontal.decrease")
-                        .font(.system(size: 16, weight: .semibold))
+                        .scaledFont(16, weight: .semibold)
                         .foregroundStyle(isFiltered ? Theme.accent : Color.primary)
                         .frame(width: 42, height: 42)
                 }
@@ -169,7 +169,7 @@ struct LibrarySelectionBar: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 17, weight: .semibold))
+                            .scaledFont(17, weight: .semibold)
                     }
                 }
                 .frame(width: 64, height: 42)
@@ -196,7 +196,7 @@ struct LibrarySelectionBar: View {
 
             Button(action: onDelete) {
                 Image(systemName: "trash")
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(17, weight: .semibold)
                     .foregroundStyle(.red)
                     .frame(width: 64, height: 42)
                     .contentShape(Rectangle())

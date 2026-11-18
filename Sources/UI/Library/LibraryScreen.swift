@@ -1078,7 +1078,7 @@ struct PhotoAccessBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: isLimited ? "photo.badge.checkmark" : "lock.shield")
-                .font(.system(size: 14, weight: .semibold))
+                .scaledFont(14, weight: .semibold)
                 .foregroundStyle(isLimited ? Theme.mint : .orange)
                 .padding(.top, 1)
 

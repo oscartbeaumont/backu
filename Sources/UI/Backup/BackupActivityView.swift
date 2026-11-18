@@ -95,7 +95,7 @@ struct BackupActivityView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 26, weight: .semibold))
+                    .scaledFont(26, weight: .semibold)
                     .foregroundStyle(iconTint)
                     .symbolEffect(.pulse, options: .repeating, isActive: backup.isRunning)
                     .frame(width: 34)

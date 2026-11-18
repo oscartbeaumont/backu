@@ -78,7 +78,7 @@ struct SearchScreen: View {
     private var searchField: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .foregroundStyle(.secondary)
             TextField("People, places, cameras, tags…", text: $text)
                 .textFieldStyle(.plain)
