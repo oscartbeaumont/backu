@@ -6,6 +6,7 @@ import SwiftUI
 /// visible while the filter changes.
 struct LibraryFilterPanel: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var sort: LibrarySort
     @Binding var filter: LibraryFilter
     var onDismiss: () -> Void
@@ -76,7 +77,7 @@ struct LibraryFilterPanel: View {
         HStack(spacing: 2) {
             ForEach(LibrarySort.allCases) { option in
                 Button {
-                    withAnimation(.backuSnappy) { sort = option }
+                    withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { sort = option }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: option.symbol)
@@ -105,7 +106,7 @@ struct LibraryFilterPanel: View {
 
     private func filterRow(_ option: LibraryFilter) -> some View {
         Button {
-            withAnimation(.backuSnappy) { filter = option }
+            withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { filter = option }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: option.symbol)
@@ -131,7 +132,7 @@ struct LibraryFilterPanel: View {
 
     private var mediaTypesRow: some View {
         Button {
-            withAnimation(.backuSnappy) { mediaExpanded.toggle() }
+            withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { mediaExpanded.toggle() }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "play.rectangle.on.rectangle")
@@ -160,7 +161,7 @@ struct LibraryFilterPanel: View {
 
     private var viewOptionsRow: some View {
         Button {
-            withAnimation(.backuSnappy) { viewExpanded.toggle() }
+            withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { viewExpanded.toggle() }
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "rectangle.grid.2x2")

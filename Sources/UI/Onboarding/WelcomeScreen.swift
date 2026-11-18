@@ -3,6 +3,7 @@ import SwiftUI
 
 struct WelcomeScreen: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showAdd = false
     @State private var stage: Stage?
     @State private var appearStep = 0
@@ -18,7 +19,7 @@ struct WelcomeScreen: View {
             switch stage {
             case .photoAccess:
                 PhotoAccessOnboardingView {
-                    withAnimation(.backuSnappy) { stage = .intro }
+                    withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { stage = .intro }
                 }
                 .transition(.opacity)
             case .intro:
@@ -110,7 +111,7 @@ struct WelcomeScreen: View {
 
                     Button("Look around first") {
                         app.settings.hasCompletedOnboarding = true
-                        withAnimation(.backuSnappy) { app.showOnboarding = false }
+                        withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { app.showOnboarding = false }
                     }
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(.secondary)
@@ -135,7 +136,9 @@ struct WelcomeScreen: View {
         .task {
             for index in 1...4 {
                 try? await Task.sleep(for: .milliseconds(90))
-                withAnimation(.spring(duration: 0.55, bounce: 0.12)) { appearStep = index }
+                withRespectingReduceMotion(.spring(duration: 0.55, bounce: 0.12), when: reduceMotion) {
+                    appearStep = index
+                }
             }
         }
     }
@@ -148,6 +151,7 @@ struct WelcomeScreen: View {
 /// only be undone in Settings.
 struct PhotoAccessOnboardingView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isRequesting = false
     @State private var didAppear = false
     var onContinue: () -> Void
@@ -216,7 +220,9 @@ struct PhotoAccessOnboardingView: View {
         }
         .scrollIndicators(.hidden)
         .task {
-            withAnimation(.spring(duration: 0.55, bounce: 0.12)) { didAppear = true }
+            withRespectingReduceMotion(.spring(duration: 0.55, bounce: 0.12), when: reduceMotion) {
+                didAppear = true
+            }
         }
         .onChange(of: app.authorization) { _, newValue in
             // Choosing full access in the system prompt (or coming back from

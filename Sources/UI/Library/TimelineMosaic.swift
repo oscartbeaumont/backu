@@ -60,6 +60,7 @@ private struct TimelineThumbnail: View {
     let pixelSize: CGFloat
 
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: PlatformImage?
 
     private var targetSize: CGSize {
@@ -73,6 +74,7 @@ private struct TimelineThumbnail: View {
                 Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
+                    .accessibilityHidden(true)
                     .transition(.opacity)
             }
         }
@@ -86,7 +88,7 @@ private struct TimelineThumbnail: View {
         }
         guard let loaded = await app.images.thumbnail(for: photo, size: targetSize),
               !Task.isCancelled else { return }
-        withAnimation(.easeOut(duration: 0.18)) {
+        withRespectingReduceMotion(.easeOut(duration: 0.18), when: reduceMotion) {
             image = loaded
         }
     }

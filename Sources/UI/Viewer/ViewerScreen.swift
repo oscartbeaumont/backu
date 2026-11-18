@@ -364,6 +364,7 @@ struct ViewerScreen: View {
         .opacity(enabled ? 1 : 0)
         .disabled(!enabled)
         .padding(24)
+        .accessibilityLabel(symbol.contains("left") ? "Previous photo" : "Next photo")
     }
 
     private func move(_ delta: Int) {

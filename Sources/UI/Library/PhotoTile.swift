@@ -18,6 +18,7 @@ struct PhotoTile: View {
     var isSelected: Bool = false
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.viewerZoomNamespace) private var zoomNamespace
     @Environment(\.viewerZoomSourceActive) private var zoomSourceActive
     @State private var image: PlatformImage?
@@ -42,11 +43,7 @@ struct PhotoTile: View {
                 Color.clear
                 TilePlaceholder()
                 if let image {
-                    Image(platformImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .id(imageID)
-                        .transition(.opacity)
+                    TileImage(image: image, imageID: imageID)
                 }
             }
             .modifier(TileSizing(side: side, aspectRatio: aspectRatio))
@@ -177,13 +174,13 @@ struct PhotoTile: View {
         }
         let loaded = await app.images.thumbnail(for: photo, size: size) { degraded in
             guard !isFinal else { return }
-            withAnimation(.easeOut(duration: 0.12)) {
+            withRespectingReduceMotion(.easeOut(duration: 0.12), when: reduceMotion) {
                 image = degraded
                 imageID += 1
             }
         }
         guard let loaded else { return }
-        withAnimation(.easeOut(duration: 0.2)) {
+        withRespectingReduceMotion(.easeOut(duration: 0.2), when: reduceMotion) {
             image = loaded
             imageID += 1
             isFinal = true
@@ -242,6 +239,22 @@ struct PhotoTile: View {
 
 /// The loading surface: a calm two-tone wash instead of a spinner per tile.
 /// It stays still while scrolling — no flashing, no repeating animation.
+/// The thumbnail itself. It carries no label of its own: the tile's Button
+/// describes the photo, so VoiceOver reads one element instead of two.
+private struct TileImage: View {
+    let image: PlatformImage
+    let imageID: Int
+
+    var body: some View {
+        Image(platformImage: image)
+            .resizable()
+            .scaledToFill()
+            .accessibilityHidden(true)
+            .id(imageID)
+            .transition(.opacity)
+    }
+}
+
 private struct TilePlaceholder: View {
     var body: some View {
         Rectangle()
@@ -279,6 +292,7 @@ struct FaceBubble: View {
     let face: PhotoFace
     var size: CGFloat = 56
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: PlatformImage?
     @State private var didAppear = false
 
@@ -296,13 +310,14 @@ struct FaceBubble: View {
                     }
             }
         }
+        .accessibilityHidden(true)
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(.white.opacity(0.7), lineWidth: 1))
         .scaleEffect(didAppear ? 1 : 0.85)
         .opacity(didAppear ? 1 : 0)
         .onAppear {
-            withAnimation(.backuGentle.delay(0.03)) { didAppear = true }
+            withRespectingReduceMotion(.backuGentle.delay(0.03), when: reduceMotion) { didAppear = true }
         }
         .task(id: face.id) {
             image = await app.images.faceImage(photo: photo, face: face)

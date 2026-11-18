@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PeopleScreen: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var filter: PeopleFilter = .all
     @State private var personTarget: Person?
@@ -74,7 +75,7 @@ struct PeopleScreen: View {
 
                         if isSelecting {
                             Button("Done") {
-                                withAnimation(.backuSnappy) { endSelection() }
+                                withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { endSelection() }
                             }
                             .font(.subheadline.weight(.semibold))
                             .padding(.horizontal, 16)
@@ -84,7 +85,7 @@ struct PeopleScreen: View {
                             .accessibilityIdentifier("people.done")
                         } else {
                             Button("Select") {
-                                withAnimation(.backuSnappy) {
+                                withRespectingReduceMotion(.backuSnappy, when: reduceMotion) {
                                     isSelecting = true
                                     selectedPeople = []
                                 }
@@ -173,7 +174,7 @@ struct PeopleScreen: View {
                     app.catalog.mergePeople(source, into: targetID)
                 }
                 mergeStatus = "Merged \(sources.count + 1) people into one."
-                withAnimation(.backuSnappy) { endSelection() }
+                withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { endSelection() }
             }
             .environment(app)
         }
@@ -196,7 +197,7 @@ struct PeopleScreen: View {
         .task(id: mergeStatus) {
             guard mergeStatus != nil else { return }
             try? await Task.sleep(for: .seconds(4))
-            withAnimation(.backuSnappy) { mergeStatus = nil }
+            withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { mergeStatus = nil }
         }
     }
 
@@ -232,7 +233,7 @@ struct PeopleScreen: View {
             HStack(spacing: 8) {
                 ForEach(PeopleFilter.allCases) { option in
                     FilterChip(title: option.rawValue, isSelected: filter == option) {
-                        withAnimation(.backuSnappy) { filter = option }
+                        withRespectingReduceMotion(.backuSnappy, when: reduceMotion) { filter = option }
                     }
                 }
             }

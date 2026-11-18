@@ -585,6 +585,7 @@ struct PersonAvatar: View {
                 Image(platformImage: image)
                     .resizable()
                     .scaledToFill()
+                    .accessibilityHidden(true)
             } else if let photo = app.catalog.photo(id: person.coverPhotoID ?? ""),
                       let face = photo.faces.first(where: { $0.id == person.coverFaceID }) {
                 FaceBubble(photo: photo, face: face, size: size)

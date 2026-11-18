@@ -100,7 +100,6 @@ struct AddServerFlow: View {
         draft.name = option.displayName
         draft.region = option.defaultRegion
         draft.pathStyle = option.defaultPathStyle
-        withAnimation(.backuSnappy) {}
     }
 
     // MARK: Form

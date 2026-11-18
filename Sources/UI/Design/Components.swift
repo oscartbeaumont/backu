@@ -9,9 +9,9 @@ struct BrandMarkView: View {
             .resizable()
             .interpolation(.high)
             .aspectRatio(contentMode: .fit)
+            .accessibilityHidden(true)
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: showBackground ? size * 0.24 : 0, style: .continuous))
-            .accessibilityHidden(true)
     }
 }
 

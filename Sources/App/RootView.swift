@@ -173,6 +173,7 @@ struct AppBottomBar: View {
     @Binding var showsLibraryTabs: Bool
     var onSearch: () -> Void
     @Namespace private var namespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isTimeline: Bool {
         selection == .library && !showsLibraryTabs
@@ -209,7 +210,7 @@ struct AppBottomBar: View {
     private var timelineChrome: some View {
         HStack(spacing: 8) {
             Button {
-                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                withRespectingReduceMotion(.snappy(duration: 0.28, extraBounce: 0.02), when: reduceMotion) {
                     showsLibraryTabs = true
                 }
             } label: {
@@ -231,7 +232,7 @@ struct AppBottomBar: View {
         HStack(spacing: 2) {
             ForEach(AppTab.allCases) { tab in
                 Button {
-                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                    withRespectingReduceMotion(.snappy(duration: 0.28, extraBounce: 0.02), when: reduceMotion) {
                         selection = tab
                         if tab == .library {
                             showsLibraryTabs = false
