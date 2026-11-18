@@ -18,6 +18,10 @@ Everything here is ready to paste into App Store Connect for the iOS app.
 | `metadata/en-US/categories.txt` | Primary, then secondary category |
 | `metadata/en-US/sku.txt` | SKU for the app record |
 
+`Compliance.md` records the store-compliance review: what the playbook scan
+found, what changed, what does not apply, and the checks only the account owner
+can do.
+
 Screenshots live in `screenshots/iphone-6.9/` and `screenshots/ipad-13/`, captured
 from the real app on those device classes. Regenerate them with the
 `testAppStoreScreenshots` UI test (see `Tools/Screenshots/README.md`).

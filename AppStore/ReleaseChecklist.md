@@ -151,6 +151,15 @@ In App Store Connect → App Store tab, paste from `AppStore/metadata/en-US/`:
       `AppStore/screenshots/ipad-13/` (upload in filename order).
 - [ ] Category: Photo & Video (primary), Productivity (secondary).
 - [ ] Age rating: 4+ (no user-generated content, no web browsing, no ads).
+      Answer the 2026 questionnaire in full, including the two newer groups:
+      **Shared Location** No (the app reads GPS from the user's own photos and
+      never shares the user's location with anyone), and **Dating and
+      Relationships** No. Both must be answered for every app.
+- [ ] Privacy policy: `https://backu.otbeaumont.me/privacy` in the listing, and
+      reachable inside the app (Settings → About → Privacy Policy, and the
+      onboarding privacy card).
+- [ ] Account deletion (5.1.1(v)): not applicable. Backu creates no account, so
+      there is nothing to delete; say so in the review notes.
 - [ ] Price: Free. Availability: all countries.
 - [ ] App Privacy:
   - Data Not Collected.
