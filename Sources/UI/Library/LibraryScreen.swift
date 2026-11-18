@@ -1,19 +1,41 @@
 import SwiftUI
 
 enum LibraryFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case favorites = "Favorites"
+    case all = "All Items"
+    case favorites = "Favourites"
     case videos = "Videos"
-    case pending = "Not backed up"
+    case photos = "Photos"
+    case pending = "Not Backed Up"
+    case people = "With People"
+    case located = "With Location"
+    case local = "On This Device"
 
     var id: String { rawValue }
 
     var symbol: String {
         switch self {
         case .all: return "square.grid.2x2"
-        case .favorites: return "heart.fill"
-        case .videos: return "play.rectangle.fill"
+        case .favorites: return "heart"
+        case .videos: return "play.rectangle"
+        case .photos: return "photo"
         case .pending: return "icloud.slash"
+        case .people: return "person.2"
+        case .located: return "location"
+        case .local: return "iphone"
+        }
+    }
+}
+
+enum LibrarySort: String, CaseIterable, Identifiable {
+    case added = "Added"
+    case captured = "Captured"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .added: return "clock"
+        case .captured: return "camera"
         }
     }
 }
@@ -130,16 +152,29 @@ struct LibraryScreen: View {
     @Environment(\.displayScale) private var displayScale
 
     @State private var filter: LibraryFilter = .all
+    @State private var sort: LibrarySort = .captured
     @State private var level: LibraryLevel = .all
+    @State private var showFilterPanel = false
     @State private var showAddServer = false
     @State private var showBackupActivity = false
+    @State private var isSelecting = false
+    @State private var selectedPhotoIDs: Set<String> = []
+    @State private var tileFrames: [String: CGRect] = [:]
+    @State private var dragSelectionBase: Set<String>?
+    @State private var dragAnchorID: String?
+    @State private var dragDeselecting = false
+    @State private var selectionHaptic = 0
+    @State private var isPreparingShare = false
+    @State private var shareURLs: [URL] = []
+    @State private var showShareSheet = false
+    @State private var showDeleteConfirm = false
+    @State private var isDeleting = false
     @State private var items: [LibraryItem] = []
     @State private var photos: [PhotoItem] = []
     @State private var monthSections: [LibraryMonthSection] = []
     @State private var yearSections: [LibraryYearSection] = []
     @State private var summary = LibrarySummary()
     @State private var metrics = TimelineMetrics()
-    @State private var label = TimelineLabelState()
     @State private var window = ScrollWindow()
     @State private var prefetcher = ThumbnailPrefetcher()
     @State private var viewWidth: CGFloat = 0
@@ -203,7 +238,14 @@ struct LibraryScreen: View {
                         .frame(height: 0)
                         .id("library.top")
 
-                    header(topInset: topInset)
+                    // The floating title replaces the old in-flow header. On All
+                    // the grid runs under it; banners and the empty state start
+                    // below it. Years/Months reserve the title height through a
+                    // top safe-area inset so their date labels never sit under
+                    // the clock during a programmatic jump.
+                    if level == .all && (items.isEmpty || hasTopBanner) {
+                        Color.clear.frame(height: topInset + 54)
+                    }
 
                     if app.authorization == .limited {
                         PhotoAccessBanner(
@@ -253,11 +295,17 @@ struct LibraryScreen: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.immediately)
             .background(Theme.pageBackground)
+            .coordinateSpace(name: "libraryGrid")
+            .onPreferenceChange(TileFramePreferenceKey.self) { frames in
+                if isSelecting, tileFrames != frames { tileFrames = frames }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if level != .all {
+                    Color.clear.frame(height: topInset + 54)
+                }
+            }
             #if os(iOS)
-            // All Photos bleeds under the status bar; the timeline levels keep
-            // their month headers below it so a scrolled header can never
-            // collide with the clock.
-            .ignoresSafeArea(edges: level == .all ? .top : Edge.Set())
+            .ignoresSafeArea(edges: .top)
             #endif
             .onGeometryChange(for: CGFloat.self) { view in
                 view.frame(in: .global).minY
@@ -266,26 +314,60 @@ struct LibraryScreen: View {
                 updateTimeline()
             }
             .overlay(alignment: .top) {
-                StatusBarScrim(topInset: topInset, isVisible: label.isCollapsed)
+                StatusBarScrim(topInset: topInset, isVisible: true)
             }
             .overlay(alignment: .top) {
                 LibraryTopBar(
-                    filter: $filter,
-                    showsGridSize: level == .all,
+                    title: isSelecting
+                        ? (selectedPhotoIDs.isEmpty ? "Select Photos" : "\(selectedPhotoIDs.count) Selected")
+                        : "Library",
+                    isSelecting: isSelecting,
+                    isFiltered: filter != .all,
+                    filterSymbol: filter.symbol,
+                    onFilter: {
+                        withAnimation(.backuSnappy) { showFilterPanel.toggle() }
+                    },
+                    onToggleSelection: toggleSelectionMode,
                     pendingCount: summary.pending,
                     onShowActivity: { showBackupActivity = true },
                     onAddServer: { showAddServer = true }
                 )
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                LibraryLevelSwitcher(
-                    level: Binding(
-                        get: { level },
-                        set: { changeLevel($0, proxy: proxy) }
+                #if os(iOS)
+                if isSelecting {
+                    LibrarySelectionBar(
+                        selectedCount: selectedPhotoIDs.count,
+                        allSelected: !items.isEmpty && selectedPhotoIDs.count == items.count,
+                        isPreparingShare: isPreparingShare,
+                        onShare: { Task { await shareSelected() } },
+                        onToggleAll: toggleAllSelection,
+                        onDelete: { showDeleteConfirm = true }
                     )
-                )
-                .padding(.top, 6)
-                .padding(.bottom, 8)
+                    .padding(.top, 6)
+                    .padding(.bottom, 8)
+                } else {
+                    levelSwitcher(proxy: proxy)
+                }
+                #else
+                levelSwitcher(proxy: proxy)
+                #endif
+            }
+            .overlay {
+                if showFilterPanel {
+                    filterPanelOverlay(topInset: topInset)
+                }
+            }
+            .overlay {
+                if isDeleting {
+                    ZStack {
+                        Color.black.opacity(0.2).ignoresSafeArea()
+                        ProgressView("Deleting…")
+                            .padding(18)
+                            .glassSurface(18)
+                    }
+                    .transition(.opacity)
+                }
             }
             #if DEBUG
             .overlay(alignment: .bottomTrailing) { TileLoadProbeView() }
@@ -315,6 +397,7 @@ struct LibraryScreen: View {
         }
         .onChange(of: app.catalog.version) { _, _ in rebuildContent() }
         .onChange(of: filter) { _, _ in rebuildContent() }
+        .onChange(of: sort) { _, _ in rebuildContent() }
         .onChange(of: app.settings.showRemoteOnlyPhotos) { _, _ in rebuildContent() }
         .onChange(of: app.settings.backupServerIDs) { _, _ in rebuildContent() }
         .onChange(of: app.settings.gridColumns) { _, _ in
@@ -336,45 +419,72 @@ struct LibraryScreen: View {
             BackupActivityView()
                 .environment(app)
         }
+        #if os(iOS)
+        .sheet(isPresented: $showShareSheet, onDismiss: { shareURLs = [] }) {
+            ActivityView(items: shareURLs)
+        }
+        #endif
+        .alert(
+            "Delete \(selectedPhotoIDs.count) Photo\(selectedPhotoIDs.count == 1 ? "" : "s")?",
+            isPresented: $showDeleteConfirm
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteSelected() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("They will be removed from this device's photo library. Copies already in your buckets are kept. Remote-only photos are skipped.")
+        }
         .simultaneousGesture(pinchToResize)
+        .simultaneousGesture(selectionDragGesture)
         .sensoryFeedback(.selection, trigger: pinchHaptic)
         .sensoryFeedback(.selection, trigger: app.settings.gridColumns)
+        .sensoryFeedback(.selection, trigger: selectionHaptic)
     }
 
-    // MARK: Header
+    // MARK: Floating header and filter panel
 
-    private func header(topInset: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Library")
-                .font(.largeTitle.bold())
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.trailing, level == .all ? 162 : 112)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-        .padding(.top, level == .all ? topInset + 10 : 10)
-        .padding(.bottom, 4)
+    private var hasTopBanner: Bool {
+        app.authorization == .limited
+            || (!app.hasPhotoAccess && !app.catalog.photos.isEmpty)
+            || app.backup.isRunning
+            || app.backup.lastError != nil
+            || app.remoteSyncMessage != nil
     }
 
-    private var subtitle: String {
-        if app.isScanning { return "Scanning your photo library…" }
-        if !app.hasPhotoAccess {
-            return app.authorization == .notDetermined ? "Photo access not asked yet" : "Photo access is off"
+    private func levelSwitcher(proxy: ScrollViewProxy) -> some View {
+        LibraryLevelSwitcher(
+            level: Binding(
+                get: { level },
+                set: { changeLevel($0, proxy: proxy) }
+            )
+        )
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+    }
+
+    private func filterPanelOverlay(topInset: CGFloat) -> some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    withAnimation(.backuSnappy) { showFilterPanel = false }
+                }
+
+            LibraryFilterPanel(
+                sort: $sort,
+                filter: $filter,
+                onDismiss: {
+                    withAnimation(.backuSnappy) { showFilterPanel = false }
+                }
+            )
+            .frame(maxWidth: 360)
+            .padding(.horizontal, 20)
+            .padding(.top, topInset + 58)
+            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
         }
-        guard !app.catalog.photos.isEmpty else { return "No photos yet" }
-        guard summary.count > 0 else { return "No \(filter.rawValue.lowercased()) photos" }
-        let access = app.authorization == .limited ? " · Limited access" : ""
-        switch level {
-        case .years:
-            return "\(yearSections.count) year\(yearSections.count == 1 ? "" : "s") · \(summary.count) item\(summary.count == 1 ? "" : "s")\(access)"
-        case .months:
-            return "\(monthSections.count) month\(monthSections.count == 1 ? "" : "s") · \(summary.count) item\(summary.count == 1 ? "" : "s")\(access)"
-        case .all:
-            let noun = filter == .all ? "item" : filter.rawValue.lowercased()
-            return "\(summary.count) \(noun)\(summary.count == 1 ? "" : "s") · \(summary.backedUp) backed up\(access)"
-        }
+        .transition(.opacity)
+        .zIndex(20)
     }
 
     // MARK: Banners and empty state
@@ -470,13 +580,25 @@ struct LibraryScreen: View {
 
     // MARK: Timeline levels
 
-    /// Months is the date timeline: one bold header and one large card per
-    /// month, scrolling continuously through the library's history. Tapping a
-    /// month drills into the continuous All grid at that month's first photo.
+    /// Years and Months use the dense PhotoKit collage from Photos: a handful
+    /// of square thumbnails per row with the date floating over the photos.
+    /// Tapping anywhere in a year drills into its months; tapping a month opens
+    /// the All grid at that period.
+    private func calendarColumns(for count: Int) -> Int {
+        switch count {
+        case ...1: return 1
+        case ...4: return 2
+        case ...9: return 3
+        case ...24: return 4
+        default: return 6
+        }
+    }
+
+    private var calendarMaxItems: Int { 42 }
+
     private func monthsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
-        let cardWidth = max(1, width - 40)
-        return LazyVStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(monthSections.enumerated()), id: \.element.id) { position, section in
+        LazyVStack(spacing: 4) {
+            ForEach(monthSections) { section in
                 Button {
                     changeLevel(
                         .all,
@@ -485,62 +607,34 @@ struct LibraryScreen: View {
                         proxy: proxy
                     )
                 } label: {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(section.title)
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(.primary)
-
-                        TimelineCard(
-                            photo: section.cover.photo,
-                            width: cardWidth,
-                            aspectRatio: 1.5,
-                            cornerRadius: 12
-                        ) {
-                            ZStack(alignment: .topLeading) {
-                                LinearGradient(
-                                    colors: [.black.opacity(0.34), .clear],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                                HStack(alignment: .top) {
-                                    Text(section.dayText)
-                                        .font(.system(size: 20, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                                    Spacer()
-                                    if section.items.count > 1 {
-                                        Text("\(section.items.count)")
-                                            .font(.caption2.weight(.semibold))
-                                            .monospacedDigit()
-                                            .foregroundStyle(.white)
-                                            .padding(.horizontal, 7)
-                                            .padding(.vertical, 4)
-                                            .background(Capsule().fill(.black.opacity(0.36)))
-                                    }
-                                }
-                                .padding(14)
-                            }
+                    ZStack(alignment: .topLeading) {
+                        TimelineMosaic(
+                            photos: section.items.map(\.photo),
+                            columns: calendarColumns(for: section.items.count),
+                            maxItems: calendarMaxItems
+                        )
+                        TimelineDateLabel(title: section.title)
+                            .padding(10)
+                        if section.items.count > calendarMaxItems {
+                            TimelineCountBadge(remaining: section.items.count - calendarMaxItems)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         }
                     }
-                    .padding(.horizontal, 20)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .id("month-\(section.id)")
-                .padding(.top, position == 0 ? 6 : 20)
-                .padding(.bottom, 12)
                 .accessibilityLabel("\(section.title), \(section.items.count) photo\(section.items.count == 1 ? "" : "s")")
                 .accessibilityHint("Shows this month in the photo grid")
                 .accessibilityIdentifier("library.monthCard")
             }
         }
+        .padding(.vertical, 2)
     }
 
-    /// Years is the widest view of the timeline. A year card drills into that
-    /// year's Months level, so moving back through time is two clear zooms.
     private func yearsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
-        let cardWidth = max(1, width - 40)
-        return LazyVStack(spacing: 30) {
+        LazyVStack(spacing: 4) {
             ForEach(yearSections) { section in
                 Button {
                     let target = section.firstMonthID.map { "month-\($0)" }
@@ -551,35 +645,18 @@ struct LibraryScreen: View {
                         proxy: proxy
                     )
                 } label: {
-                    TimelineCard(
-                        photo: section.cover.photo,
-                        width: cardWidth,
-                        aspectRatio: 4.0 / 3.0,
-                        cornerRadius: 12
-                    ) {
-                        ZStack(alignment: .topLeading) {
-                            LinearGradient(
-                                colors: [.black.opacity(0.42), .clear],
-                                startPoint: .top,
-                                endPoint: .center
-                            )
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(String(section.year))
-                                    .font(.system(size: 30, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
-                                Spacer(minLength: 0)
-                                HStack {
-                                    Spacer()
-                                    Text("\(section.items.count) photo\(section.items.count == 1 ? "" : "s")")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 5)
-                                        .background(Capsule().fill(.black.opacity(0.36)))
-                                }
-                            }
-                            .padding(16)
+                    ZStack(alignment: .topLeading) {
+                        TimelineMosaic(
+                            photos: section.items.map(\.photo),
+                            columns: calendarColumns(for: section.items.count),
+                            maxItems: calendarMaxItems
+                        )
+                        TimelineDateLabel(title: String(section.year))
+                            .padding(10)
+                        if section.items.count > calendarMaxItems {
+                            TimelineCountBadge(remaining: section.items.count - calendarMaxItems)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         }
                     }
                     .contentShape(Rectangle())
@@ -591,8 +668,7 @@ struct LibraryScreen: View {
                 .accessibilityIdentifier("library.yearCard")
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -610,9 +686,11 @@ struct LibraryScreen: View {
                         targetSize: CGSize(width: width * scale, height: width / aspect * scale),
                         backupState: item.backupState,
                         dateText: item.dateText,
-                        cornerRadius: 0
+                        cornerRadius: 0,
+                        isSelecting: isSelecting,
+                        isSelected: selectedPhotoIDs.contains(item.id)
                     ) {
-                        app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+                        handleTileTap(item)
                     }
                     .id(item.photo.id)
                 }
@@ -639,9 +717,11 @@ struct LibraryScreen: View {
                         targetSize: pixels,
                         backupState: item.backupState,
                         dateText: item.dateText,
-                        cornerRadius: 0
+                        cornerRadius: 0,
+                        isSelecting: isSelecting,
+                        isSelected: selectedPhotoIDs.contains(item.id)
                     ) {
-                        app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+                        handleTileTap(item)
                     }
                     .id(item.photo.id)
                 }
@@ -664,7 +744,7 @@ struct LibraryScreen: View {
     private var pinchToResize: some Gesture {
         MagnifyGesture(minimumScaleDelta: 0.01)
             .onChanged { value in
-                guard level == .all else { return }
+                guard level == .all, !isSelecting else { return }
                 if pinchBaseColumns == nil { pinchBaseColumns = columns }
                 guard let base = pinchBaseColumns, base > 0 else { return }
                 let target = min(8, max(1, Int((CGFloat(base) / max(value.magnification, 0.2)).rounded())))
@@ -674,7 +754,7 @@ struct LibraryScreen: View {
                 }
             }
             .onEnded { value in
-                guard level == .all else { return }
+                guard level == .all, !isSelecting else { return }
                 let base = pinchBaseColumns ?? columns
                 pinchBaseColumns = nil
                 pinchPreviewColumns = nil
@@ -692,6 +772,123 @@ struct LibraryScreen: View {
         }
     }
 
+    // MARK: Bulk selection
+
+    private func toggleSelectionMode() {
+        withAnimation(.backuSnappy) {
+            if isSelecting {
+                endSelection()
+            } else {
+                showFilterPanel = false
+                level = .all
+                selectedPhotoIDs = []
+                isSelecting = true
+            }
+        }
+    }
+
+    private func endSelection() {
+        isSelecting = false
+        selectedPhotoIDs = []
+        tileFrames = [:]
+        resetDragSelection()
+    }
+
+    private func toggleAllSelection() {
+        let all = Set(items.map(\.id))
+        withAnimation(.backuSnappy) {
+            if selectedPhotoIDs.count == items.count {
+                selectedPhotoIDs = []
+            } else {
+                selectedPhotoIDs = all
+            }
+        }
+        selectionHaptic += 1
+    }
+
+    private func handleTileTap(_ item: LibraryItem) {
+        if isSelecting {
+            withAnimation(.backuSnappy) {
+                if selectedPhotoIDs.contains(item.id) {
+                    selectedPhotoIDs.remove(item.id)
+                } else {
+                    selectedPhotoIDs.insert(item.id)
+                }
+            }
+            selectionHaptic += 1
+        } else {
+            app.viewer = app.photosForViewer(startingAt: item.photo.id, within: photos)
+        }
+    }
+
+    private func shareSelected() async {
+        guard !selectedPhotoIDs.isEmpty, !isPreparingShare else { return }
+        isPreparingShare = true
+        let urls = await app.shareURLs(for: selectedPhotoIDs)
+        isPreparingShare = false
+        guard !urls.isEmpty else {
+            app.errorMessage = "Could not prepare those photos for sharing."
+            return
+        }
+        shareURLs = urls
+        showShareSheet = true
+    }
+
+    private func deleteSelected() async {
+        guard !selectedPhotoIDs.isEmpty else { return }
+        isDeleting = true
+        let result = await app.deletePhotos(selectedPhotoIDs)
+        isDeleting = false
+        if result.skipped > 0 {
+            app.errorMessage = "Deleted \(result.deleted) photo\(result.deleted == 1 ? "" : "s"). \(result.skipped) remote-only item\(result.skipped == 1 ? "" : "s") stayed in your buckets."
+        }
+        withAnimation(.backuSnappy) { endSelection() }
+    }
+
+    private var selectionDragGesture: some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named("libraryGrid"))
+            .onChanged { value in
+                guard isSelecting else { return }
+                if dragAnchorID == nil {
+                    guard let anchor = hitTest(value.startLocation) else { return }
+                    dragAnchorID = anchor
+                    dragSelectionBase = selectedPhotoIDs
+                    dragDeselecting = selectedPhotoIDs.contains(anchor)
+                    applySelectionRange(anchor: anchor, target: anchor)
+                } else if let anchor = dragAnchorID,
+                          let target = hitTest(value.location) {
+                    applySelectionRange(anchor: anchor, target: target)
+                }
+            }
+            .onEnded { _ in resetDragSelection() }
+    }
+
+    private func hitTest(_ point: CGPoint) -> String? {
+        tileFrames.first { $0.value.contains(point) }?.key
+    }
+
+    private func applySelectionRange(anchor: String, target: String) {
+        guard let start = items.firstIndex(where: { $0.id == anchor }),
+              let end = items.firstIndex(where: { $0.id == target }) else { return }
+        let range = min(start, end)...max(start, end)
+        let ids = items[range].map(\.id)
+        var next = dragSelectionBase ?? selectedPhotoIDs
+        if dragDeselecting {
+            next.subtract(ids)
+        } else {
+            next.formUnion(ids)
+        }
+        guard next != selectedPhotoIDs else { return }
+        selectedPhotoIDs = next
+        selectionHaptic += 1
+    }
+
+    private func resetDragSelection() {
+        dragAnchorID = nil
+        dragSelectionBase = nil
+        dragDeselecting = false
+    }
+
     // MARK: Content
 
     /// Filtering and the timeline index are derived state: build them once per
@@ -702,17 +899,37 @@ struct LibraryScreen: View {
             filtered.removeAll { !$0.isLocal }
         }
         switch filter {
-        case .all: break
-        case .favorites: filtered.removeAll { !$0.isFavorite }
-        case .videos: filtered.removeAll { !$0.isVideo }
-        case .pending: filtered.removeAll { app.photoBackupState($0) == .backedUp }
+        case .all:
+            break
+        case .favorites:
+            filtered.removeAll { !$0.isFavorite }
+        case .videos:
+            filtered.removeAll { !$0.isVideo }
+        case .photos:
+            filtered.removeAll { $0.isVideo }
+        case .pending:
+            filtered.removeAll { app.photoBackupState($0) == .backedUp }
+        case .people:
+            filtered.removeAll { $0.faces.isEmpty }
+        case .located:
+            filtered.removeAll { !$0.metadata.hasLocation }
+        case .local:
+            filtered.removeAll { !$0.isLocal }
         }
+        filtered.sort { (libraryDate($0) ?? .distantPast) > (libraryDate($1) ?? .distantPast) }
 
         photos = filtered
         rebuildItems()
         updateTimeline()
         window.invalidate()
         requestWindow(immediate: true)
+    }
+
+    private func libraryDate(_ photo: PhotoItem) -> Date? {
+        switch sort {
+        case .captured: return photo.takenAt ?? photo.addedAt
+        case .added: return photo.addedAt ?? photo.takenAt
+        }
     }
 
     /// Re-reads backup state without recomputing the filter or the timeline.
@@ -728,7 +945,7 @@ struct LibraryScreen: View {
             built.append(LibraryItem(
                 photo: photo,
                 backupState: state,
-                dateText: photo.takenAt.map { Self.dayFormatter.string(from: $0) }
+                dateText: libraryDate(photo).map { Self.dayFormatter.string(from: $0) }
             ))
         }
         var pendingTotal = 0
@@ -737,6 +954,9 @@ struct LibraryScreen: View {
         }
         items = built
         summary = LibrarySummary(count: photos.count, backedUp: backedUp, pending: pendingTotal)
+        if isSelecting {
+            selectedPhotoIDs.formIntersection(Set(built.map(\.id)))
+        }
         rebuildSections()
     }
 
@@ -748,7 +968,7 @@ struct LibraryScreen: View {
         var years: [LibraryYearSection] = []
 
         for item in items {
-            let date = item.photo.takenAt ?? item.photo.addedAt ?? .distantPast
+            let date = libraryDate(item.photo) ?? .distantPast
             let parts = calendar.dateComponents([.year, .month, .day], from: date)
             let year = parts.year ?? 0
             let month = parts.month ?? 0
@@ -799,7 +1019,6 @@ struct LibraryScreen: View {
         let rowHeight = max(side + gridSpacing, 1)
         let travelled = metrics.scrollTop - frame.minY
 
-        label.setCollapsed(travelled >= 0)
         guard level == .all else { return }
         let row = max(0, Int(floor(travelled / rowHeight)))
         requestWindow(firstRow: row, rowHeight: rowHeight)

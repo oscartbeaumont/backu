@@ -175,6 +175,34 @@ final class CatalogMergeTests: XCTestCase {
         XCTAssertEqual(store.photo(id: "asset:1")?.copies.count, 1)
     }
 
+    func testDeletingAPhotoHidesItsRemoteTwin() {
+        let store = CatalogStore(loadFromDisk: false)
+        var local = photo(id: "asset:1")
+        local.sha256 = "hash"
+        store.mergeScanned([local])
+        XCTAssertNotNil(store.photo(id: "asset:1"))
+
+        store.removePhotos(["asset:1"])
+        XCTAssertNil(store.photo(id: "asset:1"))
+
+        var remote = photo(id: "remote:1", local: false)
+        remote.sha256 = "hash"
+        remote.copies = [
+            PhotoCopy(
+                serverID: UUID(),
+                objectKey: "Backu/a.jpg",
+                sidecarKey: "Backu/a.jpg.json",
+                thumbnailKey: nil,
+                uploadedAt: Date(),
+                byteCount: 5,
+                etag: nil,
+                sha256: "hash"
+            )
+        ]
+        XCTAssertEqual(store.importRemotePhotos([remote]), 0, "A deleted photo must not return from the bucket")
+        XCTAssertNil(store.photo(id: "remote:1"))
+    }
+
     func testCanonicalURIKeepsTrailingSlash() throws {
         let url = try XCTUnwrap(URL(string: "https://example.com/bucket/folder/"))
         XCTAssertEqual(SigV4Signer.canonicalURI(for: url), "/bucket/folder/")

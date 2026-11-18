@@ -73,8 +73,14 @@ final class BackuUITests: XCTestCase {
         let backup = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Back up'")).firstMatch
         XCTAssertTrue(backup.waitForExistence(timeout: 5), "Backup button missing")
         backup.tap()
-        let upToDate = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'backed up'")).firstMatch
-        XCTAssertTrue(upToDate.waitForExistence(timeout: 30), "Backup never started")
+        let running = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Backing up'")).firstMatch
+        let finished = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH 'All' AND label CONTAINS 'backed up'")
+        ).firstMatch
+        XCTAssertTrue(
+            running.waitForExistence(timeout: 5) || finished.waitForExistence(timeout: 60),
+            "Backup never started or finished"
+        )
         attach(app, "04-backup-running")
         sleep(45)
         attach(app, "04-after-backup")

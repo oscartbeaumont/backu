@@ -619,6 +619,62 @@ final class AppModel {
 
     // MARK: - Photo helpers
 
+    /// Exports the selected originals to temporary files for the system share
+    /// sheet. Local assets keep their metadata via PhotoKit; remote-only photos
+    /// are downloaded from their bucket. Unavailable items are skipped so one
+    /// missing file cannot block a large selection.
+    func shareURLs(for photoIDs: Set<String>) async -> [URL] {
+        let selected = catalog.photos.filter { photoIDs.contains($0.id) }
+        var urls: [URL] = []
+        for photo in selected {
+            if let localIdentifier = photo.localIdentifier {
+                if let exported = try? await PhotoLibraryService.shared.exportOriginal(for: localIdentifier) {
+                    urls.append(exported.url)
+                }
+                continue
+            }
+            guard let server = servers.server(id: photo.copies.first?.serverID ?? photo.serverID),
+                  let client = servers.client(for: server),
+                  let copy = photo.copy(on: server.id),
+                  !copy.objectKey.isEmpty else { continue }
+            let extensionName = BackupEngine.fileExtension(for: photo)
+            let destination = AppPaths.stagingDirectory
+                .appendingPathComponent("share-\(UUID().uuidString).\(extensionName)")
+            do {
+                try await client.downloadObject(
+                    key: copy.objectKey,
+                    to: destination,
+                    sizeHint: copy.byteCount
+                )
+                urls.append(destination)
+            } catch {
+                // Skip the failed item and keep the rest of the selection.
+            }
+        }
+        return urls
+    }
+
+    /// Deletes local photos from the system library and drops them from the
+    /// index. Remote-only photos are skipped: deleting them here would not
+    /// remove the copy in the user's bucket, and a later sync would bring them
+    /// back. Bucket copies of local photos are left untouched on purpose.
+    func deletePhotos(_ photoIDs: Set<String>) async -> (deleted: Int, skipped: Int) {
+        let selected = catalog.photos.filter { photoIDs.contains($0.id) }
+        let local = selected.filter(\.isLocal)
+        let skipped = selected.count - local.count
+        guard !local.isEmpty else { return (0, skipped) }
+        do {
+            try await PhotoLibraryService.shared.deleteAssets(
+                localIdentifiers: local.compactMap(\.localIdentifier)
+            )
+            catalog.removePhotos(Set(local.map(\.id)))
+            return (local.count, skipped)
+        } catch {
+            errorMessage = "Could not delete those photos from your library."
+            return (0, selected.count)
+        }
+    }
+
     func toggleFavorite(_ photoID: String) {
         guard let photo = catalog.photo(id: photoID) else { return }
         catalog.setFavorite(photoID, isFavorite: !photo.isFavorite)

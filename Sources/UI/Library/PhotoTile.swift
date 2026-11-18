@@ -14,6 +14,8 @@ struct PhotoTile: View {
     var backupState: AppModel.BackupState?
     var dateText: String?
     var cornerRadius: CGFloat = Theme.tileRadius
+    var isSelecting: Bool = false
+    var isSelected: Bool = false
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
     @Environment(\.viewerZoomNamespace) private var zoomNamespace
@@ -56,23 +58,34 @@ struct PhotoTile: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                HStack(spacing: 4) {
-                    if photo.isFavorite {
-                        Image(systemName: "heart.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(4)
-                            .background(Circle().fill(.black.opacity(0.35)))
+                if isSelecting {
+                    selectionMark
+                } else {
+                    HStack(spacing: 4) {
+                        if photo.isFavorite {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(4)
+                                .background(Circle().fill(.black.opacity(0.35)))
+                        }
+                        if resolvedBackupState == .needsUpdate {
+                            Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(4)
+                                .background(Circle().fill(.orange))
+                        }
                     }
-                    if resolvedBackupState == .needsUpdate {
-                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(4)
-                            .background(Circle().fill(.orange))
-                    }
+                    .padding(4)
                 }
-                .padding(4)
+            }
+            .overlay {
+                if isSelecting {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(isSelected ? Theme.accent : .clear, lineWidth: 3)
+                        .allowsHitTesting(false)
+                }
             }
             .overlay {
                 if isHovering {
@@ -91,6 +104,16 @@ struct PhotoTile: View {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
+        .background {
+            if isSelecting {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: TileFramePreferenceKey.self,
+                        value: [photo.id: proxy.frame(in: .named("libraryGrid"))]
+                    )
+                }
+            }
+        }
         .zoomTransitionSource(id: photo.id, in: zoomSourceActive ? zoomNamespace : nil)
         .onHover { isHovering = $0 }
         .task(id: photo.id) { await load() }
@@ -114,7 +137,12 @@ struct PhotoTile: View {
             }
         }
         .accessibilityLabel(accessibilityLabel)
-        .accessibilityValue(isFinal ? "Ready" : "Loading")
+        .accessibilityValue(
+            isSelecting
+                ? (isSelected ? "Selected" : "Not selected")
+                : (isFinal ? "Ready" : "Loading")
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("library.tile")
         #if DEBUG
         .onAppear { TileLoadProbe.shared.appeared(photo.id, blank: image == nil, final: isFinal) }
@@ -171,6 +199,17 @@ struct PhotoTile: View {
         }
         if !photo.faces.isEmpty { parts.append("\(photo.faces.count) people") }
         return parts.joined(separator: ", ")
+    }
+
+    private var selectionMark: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 22, weight: .semibold))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, isSelected ? Theme.accent : Color.black.opacity(0.25))
+            .background(Circle().fill(.black.opacity(0.18)))
+            .padding(6)
+            .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
+            .accessibilityHidden(true)
     }
 
     private var videoBadge: some View {

@@ -280,6 +280,16 @@ final class PhotoLibraryService: @unchecked Sendable {
         }
     }
     #endif
+
+    /// Deletes assets from the system photo library. The caller is responsible
+    /// for removing them from the catalog after this succeeds.
+    func deleteAssets(localIdentifiers: [String]) async throws {
+        guard !localIdentifiers.isEmpty else { return }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: localIdentifiers, options: nil)
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.deleteAssets(assets)
+        }
+    }
 }
 
 private final class PhotoLibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserver {

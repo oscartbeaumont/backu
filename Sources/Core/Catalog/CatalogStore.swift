@@ -7,6 +7,10 @@ struct CatalogSnapshot: Codable {
     var lastScanAt: Date?
     var photos: [PhotoItem]
     var people: [Person]
+    /// Content hashes deleted from the library. Remote indexes may still list
+    /// those objects; keeping a tombstone stops them reappearing as remote-only
+    /// photos after a sync. Optional so older catalogs still decode.
+    var deletedHashes: [String]?
 }
 
 struct LibraryStats: Sendable {
@@ -31,6 +35,10 @@ struct LibraryStats: Sendable {
 final class CatalogStore {
     private(set) var photos: [PhotoItem] = []
     private(set) var people: [Person] = []
+    /// SHA-256 hashes the person deleted locally. Bucket copies are kept, but
+    /// their remote index entries are ignored so deleted photos do not come
+    /// back as remote-only items.
+    private var deletedHashes: Set<String> = []
     private(set) var lastScanAt: Date?
     private(set) var version = 0
     /// Set when catalog.json existed but could not be decoded. Writes are
@@ -64,6 +72,7 @@ final class CatalogStore {
         }
         photos = snapshot.photos
         people = snapshot.people
+        deletedHashes = Set(snapshot.deletedHashes ?? [])
         lastScanAt = snapshot.lastScanAt
         rebuildLookups()
         bump()
@@ -98,7 +107,14 @@ final class CatalogStore {
     }
 
     private func snapshot() -> CatalogSnapshot {
-        CatalogSnapshot(version: 1, savedAt: Date(), lastScanAt: lastScanAt, photos: photos, people: people)
+        CatalogSnapshot(
+            version: 1,
+            savedAt: Date(),
+            lastScanAt: lastScanAt,
+            photos: photos,
+            people: people,
+            deletedHashes: Array(deletedHashes).sorted()
+        )
     }
 
     private static let writeQueue = DispatchQueue(label: "me.otbeaumont.backu.catalog-write", qos: .utility)
@@ -198,6 +214,11 @@ final class CatalogStore {
         let scannedIDs = Set(scanned.map(\.id))
 
         for photo in scanned {
+            if let hash = photo.sha256, !hash.isEmpty {
+                // The photo is back in the system library, so allow a future
+                // remote sync to adopt it again.
+                deletedHashes.remove(hash)
+            }
             if var existing = photoByID[photo.id] {
                 // PhotoKit still knows this asset: re-adopt it after an earlier
                 // scan (limited access, videos disabled) dropped the link.
@@ -273,6 +294,27 @@ final class CatalogStore {
     func removeAll() {
         photos = []
         people = []
+        deletedHashes = []
+        rebuildLookups()
+        bump()
+        saveNow()
+    }
+
+    /// Drops photos that were deleted from the system library. Their files in a
+    /// bucket are deliberately left alone: Backu is a backup, not a sync tool.
+    /// A SHA-256 tombstone keeps a later remote sync from re-adding them.
+    func removePhotos(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        var hashes: Set<String> = []
+        for id in ids {
+            if let hash = photoByID[id]?.sha256, !hash.isEmpty {
+                deletedHashes.insert(hash)
+                hashes.insert(hash)
+            }
+        }
+        photos.removeAll {
+            ids.contains($0.id) || ($0.sha256.map { hashes.contains($0) } ?? false)
+        }
         rebuildLookups()
         bump()
         saveNow()
@@ -616,6 +658,11 @@ final class CatalogStore {
         }
 
         for item in remote {
+            if let sha = item.sha256, deletedHashes.contains(sha) {
+                // Deleted locally. The bucket copy is intentionally kept as a
+                // backup, but it should not reappear in the library.
+                continue
+            }
             if let sha = item.sha256, let localID = byHash[sha] {
                 if var local = photoByID[localID] {
                     for copy in item.copies where !local.copies.contains(where: { $0.serverID == copy.serverID }) {
