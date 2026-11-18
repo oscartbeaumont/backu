@@ -1,10 +1,10 @@
 {
   "concurrency" : 4,
-  "endpoint" : "http:\/\/127.0.0.1:9102",
+  "endpoint" : "mock on port 9102",
   "generatedAt" : "2026-11-16T18:09:13Z",
   "mode" : "baseline",
   "partSizeMB" : 8,
-  "profile" : "localhost",
+  "profile" : "loopback",
   "runs" : 3,
   "scenarios" : [
     {
@@ -12,7 +12,7 @@
       "medianMegabytesPerSecond" : 387.67049472005914,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -42,7 +42,7 @@
       "medianMegabytesPerSecond" : 1762.1275076147463,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -72,7 +72,7 @@
       "medianMegabytesPerSecond" : 413.2713651857166,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -102,7 +102,7 @@
       "medianMegabytesPerSecond" : 2966.2687411598304,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -132,7 +132,7 @@
       "medianMegabytesPerSecond" : 433.51034174804005,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -162,7 +162,7 @@
       "medianMegabytesPerSecond" : 3427.2220824901533,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [

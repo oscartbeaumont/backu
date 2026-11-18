@@ -1,6 +1,6 @@
 {
   "concurrency" : 4,
-  "endpoint" : "http:\/\/127.0.0.1:9103",
+  "endpoint" : "mock on port 9103",
   "generatedAt" : "2026-11-16T18:26:16Z",
   "mode" : "both",
   "partSizeMB" : 8,

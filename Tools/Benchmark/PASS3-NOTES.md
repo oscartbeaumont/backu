@@ -98,4 +98,4 @@ Download gains come from 8/10 ranges instead of 6/8 and from removing the
 sequential concatenation pass. 128 MiB upload gains come from 10 connections at
 12.8 MiB parts. The HEAD cache removes one request per repeated download
 (visible as 9 -> 10 requests for a 10-range download where the HEAD is now free,
-2 -> 1 on localhost).
+2 -> 1 on an unshaped link).

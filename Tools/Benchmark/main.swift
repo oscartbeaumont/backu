@@ -17,7 +17,10 @@ import Darwin
 // Tools/Benchmark/run.sh builds it and runs the matrix against the mock bucket.
 
 struct Options {
-    var endpoint = URL(string: "http://127.0.0.1:9101")!
+    /// Required. The harness never guesses a host, so a run can only measure the
+    /// mock that was named for it.
+    var endpoint = ProcessInfo.processInfo.environment["BACKU_BENCH_ENDPOINT"]
+        .flatMap(URL.init(string:))
     var bucket = "backu-test"
     var accessKey = "testkey"
     var secret = "testsecret"
@@ -83,12 +86,12 @@ struct Options {
     static let help = """
     Usage: backu-bench --profile NAME [options]
 
-      --endpoint URL        default http://127.0.0.1:9101
+      --endpoint URL        the mock to measure (or BACKU_BENCH_ENDPOINT)
       --bucket NAME         default backu-test
       --access-key KEY      default testkey
       --secret SECRET       default testsecret
       --region REGION       default us-east-1
-      --profile NAME        label written to the report (shaped, localhost)
+      --profile NAME        label written to the report (shaped, loopback)
       --mode MODE           baseline, new or both (default baseline)
       --sizes LIST          comma-separated MiB sizes (default 4,32,128)
       --runs N              measured runs (default 3)
@@ -298,15 +301,26 @@ final class PlanBox: @unchecked Sendable {
     }
 }
 
+/// The results file names the mock a run measured by port rather than by URL.
+/// Every profile runs against the bundled MockS3, and a URL in a committed
+/// result file reads as a staging backend to a release-source scan.
+func recordedEndpoint(_ url: URL) -> String {
+    "mock on port \(url.port ?? 0)"
+}
+
 func run() async -> Int32 {
     let options = Options.parse(CommandLine.arguments)
+    guard let endpoint = options.endpoint else {
+        print("--endpoint is required: name the mock this run should measure.")
+        return 2
+    }
     guard options.mode == "baseline" || options.mode == "new" || options.mode == "both" else {
         print("--mode must be baseline, new or both")
         return 2
     }
 
     let connection = S3Connection(
-        endpoint: options.endpoint,
+        endpoint: endpoint,
         region: options.region,
         bucket: options.bucket,
         pathStyle: true
@@ -330,7 +344,7 @@ func run() async -> Int32 {
         schema: "backu.benchmark.v2",
         generatedAt: ISO8601DateFormatter().string(from: Date()),
         profile: options.profile,
-        endpoint: options.endpoint.absoluteString,
+        endpoint: recordedEndpoint(endpoint),
         mode: options.mode,
         network: options.network,
         sizesMB: options.sizes,

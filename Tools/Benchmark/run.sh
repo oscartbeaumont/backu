@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the standalone transfer benchmark and runs the baseline-vs-new matrix
-# against the shaped, localhost and failure-injecting mock buckets.
+# against the shaped, loopback and failure-injecting mock buckets.
 #
 #   ./Tools/Benchmark/run.sh
 #
@@ -81,9 +81,9 @@ run_profile() {
 # limited high-RTT mobile link; adaptive parts/ranges can add up to ~10x here.
 run_profile shaped "$SHAPED_PORT" "$SIZES" "$PASS-shaped.json" wifi
 
-# Localhost: no shaping, so this is a correctness and no-regression guard. The
+# Loopback: no shaping, so this is a correctness and no-regression guard. The
 # downloader's latency probe keeps it on one stream.
-run_profile localhost "$PLAIN_PORT" "$SIZES" "$PASS-localhost.json" wired
+run_profile loopback "$PLAIN_PORT" "$SIZES" "$PASS-loopback.json" wired
 
 # Cellular: same shaped link, but the planner treats it as a metered radio and
 # caps concurrency at 4. Shows the network-aware decision, not a different mock.

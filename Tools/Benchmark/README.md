@@ -16,12 +16,12 @@ the app's real S3 sources. It measures:
 ./Tools/Benchmark/run.sh
 ```
 
-That builds `/tmp/backu-bench`, starts three mock buckets (shaped, localhost and
+That builds `/tmp/backu-bench`, starts three mock buckets (shaped, loopback and
 a 30 % failure-injecting one) on ports 9101–9103, and writes:
 
 ```
 Tools/Benchmark/results/pass3-shaped.json
-Tools/Benchmark/results/pass3-localhost.json
+Tools/Benchmark/results/pass3-loopback.json
 Tools/Benchmark/results/pass3-cellular.json
 Tools/Benchmark/results/pass3-retry.json
 ```
@@ -80,12 +80,12 @@ times the single-connection rate; eight see up to eight.
 That models one common case: a mobile or high-RTT link where one TCP stream
 cannot fill the pipe, so parallel parts/ranges help. It does **not** model a
 shared bottleneck, bufferbloat, packet loss, radio scheduling, or every real
-network. A link that is already single-stream fast (localhost, a good LAN) keeps
+network. A link that is already single-stream fast (loopback, a good LAN) keeps
 the single-stream path, which is why the downloader probes round-trip latency
 even when the caller already knows the size.
 
 Numbers are only comparable when the mock flags, object size, run count and
-warm-up count match. The JSON report records all of them. Localhost transfers
+warm-up count match. The JSON report records all of them. Loopback transfers
 finish in tens of milliseconds, so their medians are dominated by page-cache and
 scheduler noise; use the controlled A/B in the pass 2 report rather than a
 single harness run for those.

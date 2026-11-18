@@ -16,7 +16,7 @@ import json
 import sys
 from pathlib import Path
 
-PROFILES = ["shaped", "localhost", "cellular", "retry"]
+PROFILES = ["shaped", "loopback", "cellular", "retry"]
 
 
 def parse_args() -> argparse.Namespace:

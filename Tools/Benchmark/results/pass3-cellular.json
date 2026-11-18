@@ -1,6 +1,6 @@
 {
   "concurrency" : 0,
-  "endpoint" : "http:\/\/127.0.0.1:9101",
+  "endpoint" : "mock on port 9101",
   "generatedAt" : "2026-11-16T20:53:19Z",
   "memoryBudgetMB" : 0,
   "mode" : "both",

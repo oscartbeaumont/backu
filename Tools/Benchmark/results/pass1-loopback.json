@@ -1,10 +1,10 @@
 {
   "concurrency" : 4,
-  "endpoint" : "http:\/\/127.0.0.1:9102",
+  "endpoint" : "mock on port 9102",
   "generatedAt" : "2026-11-16T18:26:13Z",
   "mode" : "both",
   "partSizeMB" : 8,
-  "profile" : "localhost",
+  "profile" : "loopback",
   "runs" : 3,
   "scenarios" : [
     {
@@ -12,7 +12,7 @@
       "medianMegabytesPerSecond" : 375.7284810480936,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -42,7 +42,7 @@
       "medianMegabytesPerSecond" : 1039.222993062438,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -72,7 +72,7 @@
       "medianMegabytesPerSecond" : 396.7088978742522,
       "mode" : "new",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -102,7 +102,7 @@
       "medianMegabytesPerSecond" : 2388.0458330367946,
       "mode" : "new",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -132,7 +132,7 @@
       "medianMegabytesPerSecond" : 417.80877967389074,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -162,7 +162,7 @@
       "medianMegabytesPerSecond" : 2999.044275866692,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -192,7 +192,7 @@
       "medianMegabytesPerSecond" : 1023.871109975322,
       "mode" : "new",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 6,
       "retries" : 0,
       "samples" : [
@@ -222,7 +222,7 @@
       "medianMegabytesPerSecond" : 3386.5999192571658,
       "mode" : "new",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 2,
       "retries" : 0,
       "samples" : [
@@ -252,7 +252,7 @@
       "medianMegabytesPerSecond" : 437.73097450765846,
       "mode" : "baseline",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -282,7 +282,7 @@
       "medianMegabytesPerSecond" : 3771.365935042447,
       "mode" : "baseline",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 1,
       "retries" : 0,
       "samples" : [
@@ -312,7 +312,7 @@
       "medianMegabytesPerSecond" : 928.1414848475157,
       "mode" : "new",
       "operation" : "upload",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 18,
       "retries" : 0,
       "samples" : [
@@ -342,7 +342,7 @@
       "medianMegabytesPerSecond" : 5630.587756557489,
       "mode" : "new",
       "operation" : "download",
-      "profile" : "localhost",
+      "profile" : "loopback",
       "requests" : 2,
       "retries" : 0,
       "samples" : [
