@@ -40,17 +40,6 @@ enum LibrarySort: String, CaseIterable, Identifiable {
     }
 }
 
-/// Photos' three library zoom levels. Months is the date timeline: each month
-/// is a section with a header and a large card, so scrolling moves through time
-/// without needing a separate scrubber.
-enum LibraryLevel: String, CaseIterable, Identifiable {
-    case years = "Years"
-    case months = "Months"
-    case all = "All"
-
-    var id: String { rawValue }
-}
-
 /// One month of the timeline. Sections are built once per catalog/filter change
 /// so scrolling only lays out views; it never regroups the library.
 struct LibraryMonthSection: Identifiable {
@@ -153,10 +142,8 @@ struct LibraryScreen: View {
 
     @State private var filter: LibraryFilter = .all
     @State private var sort: LibrarySort = .captured
-    @State private var level: LibraryLevel = .all
     @State private var showFilterPanel = false
-    @State private var showAddServer = false
-    @State private var showBackupActivity = false
+    @State private var pendingLevelScroll: (target: String, anchor: UnitPoint)?
     @State private var isSelecting = false
     @State private var selectedPhotoIDs: Set<String> = []
     @State private var tileFrames: [String: CGRect] = [:]
@@ -217,6 +204,8 @@ struct LibraryScreen: View {
         return sizeClass == .compact ? base : min(8, base + columnExtra)
         #endif
     }
+
+    private var level: LibraryLevel { app.libraryLevel }
 
     private var gridSpacing: CGFloat { 2 }
 
@@ -327,10 +316,7 @@ struct LibraryScreen: View {
                     onFilter: {
                         withAnimation(.backuSnappy) { showFilterPanel.toggle() }
                     },
-                    onToggleSelection: toggleSelectionMode,
-                    pendingCount: summary.pending,
-                    onShowActivity: { showBackupActivity = true },
-                    onAddServer: { showAddServer = true }
+                    onToggleSelection: toggleSelectionMode
                 )
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -346,11 +332,7 @@ struct LibraryScreen: View {
                     )
                     .padding(.top, 6)
                     .padding(.bottom, 8 + bottomBarClearance)
-                } else {
-                    levelSwitcher(proxy: proxy)
                 }
-                #else
-                levelSwitcher(proxy: proxy)
                 #endif
             }
             .overlay {
@@ -391,6 +373,22 @@ struct LibraryScreen: View {
                     proxy.scrollTo("library.top", anchor: .top)
                 }
             }
+            .onChange(of: app.libraryLevel) { _, newLevel in
+                if newLevel != .all {
+                    prefetcher.stop()
+                    window.cancel()
+                }
+                let pending = pendingLevelScroll
+                pendingLevelScroll = nil
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(90))
+                    proxy.scrollTo(pending?.target ?? "library.top", anchor: pending?.anchor ?? .top)
+                    if newLevel == .all {
+                        window.invalidate()
+                        requestWindow(immediate: true)
+                    }
+                }
+            }
         }
         .task {
             rebuildContent()
@@ -410,14 +408,6 @@ struct LibraryScreen: View {
         .onDisappear {
             window.cancel()
             prefetcher.stop()
-        }
-        .sheet(isPresented: $showAddServer) {
-            AddServerFlow()
-                .environment(app)
-        }
-        .sheet(isPresented: $showBackupActivity) {
-            BackupActivityView()
-                .environment(app)
         }
         #if os(iOS)
         .sheet(isPresented: $showShareSheet, onDismiss: { shareURLs = [] }) {
@@ -460,17 +450,6 @@ struct LibraryScreen: View {
         #else
         return 0
         #endif
-    }
-
-    private func levelSwitcher(proxy: ScrollViewProxy) -> some View {
-        LibraryLevelSwitcher(
-            level: Binding(
-                get: { level },
-                set: { changeLevel($0, proxy: proxy) }
-            )
-        )
-        .padding(.top, 6)
-        .padding(.bottom, 8 + bottomBarClearance)
     }
 
     private func filterPanelOverlay(topInset: CGFloat) -> some View {
@@ -613,8 +592,7 @@ struct LibraryScreen: View {
                     changeLevel(
                         .all,
                         target: section.cover.id,
-                        anchor: UnitPoint(x: 0.5, y: 0.18),
-                        proxy: proxy
+                        anchor: UnitPoint(x: 0.5, y: 0.18)
                     )
                 } label: {
                     ZStack(alignment: .topLeading) {
@@ -651,8 +629,7 @@ struct LibraryScreen: View {
                     changeLevel(
                         .months,
                         target: target,
-                        anchor: UnitPoint(x: 0.5, y: 0.16),
-                        proxy: proxy
+                        anchor: UnitPoint(x: 0.5, y: 0.16)
                     )
                 } label: {
                     ZStack(alignment: .topLeading) {
@@ -790,7 +767,10 @@ struct LibraryScreen: View {
                 endSelection()
             } else {
                 showFilterPanel = false
-                level = .all
+                if app.libraryLevel != .all {
+                    pendingLevelScroll = ("library.top", .top)
+                    app.libraryLevel = .all
+                }
                 selectedPhotoIDs = []
                 isSelecting = true
             }
@@ -1081,28 +1061,12 @@ struct LibraryScreen: View {
     private func changeLevel(
         _ newLevel: LibraryLevel,
         target: String? = nil,
-        anchor: UnitPoint = .top,
-        proxy: ScrollViewProxy
+        anchor: UnitPoint = .top
     ) {
-        guard level != newLevel || target != nil else { return }
-        if newLevel != .all {
-            prefetcher.stop()
-            window.cancel()
-        }
+        guard app.libraryLevel != newLevel || target != nil else { return }
+        pendingLevelScroll = (target ?? "library.top", anchor)
         withAnimation(reduceMotion ? .easeInOut(duration: 0.18) : .smooth(duration: 0.28)) {
-            level = newLevel
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(90))
-            if let target {
-                proxy.scrollTo(target, anchor: anchor)
-            } else {
-                proxy.scrollTo("library.top", anchor: .top)
-            }
-            if newLevel == .all {
-                window.invalidate()
-                requestWindow(immediate: true)
-            }
+            app.libraryLevel = newLevel
         }
     }
 }

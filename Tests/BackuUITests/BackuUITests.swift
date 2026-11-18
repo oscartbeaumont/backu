@@ -32,6 +32,14 @@ final class BackuUITests: XCTestCase {
             sleep(1)
         }
 
+        // In timeline mode the bottom bar shows Years/Months/All. The Library
+        // circle reveals the normal tab bar.
+        let showTabs = app.buttons["tabs.show"]
+        if name != "Library", showTabs.exists {
+            showTabs.tap()
+            sleep(1)
+        }
+
         let custom = app.buttons["tab.\(name.lowercased())"]
         if custom.waitForExistence(timeout: 5) {
             custom.tap()
@@ -93,14 +101,13 @@ final class BackuUITests: XCTestCase {
         app.buttons["Done"].firstMatch.tap()
         app.buttons["Close"].firstMatch.tap()
 
-        // Back up the whole library to the mock bucket.
-        let backup = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Back up'")).firstMatch
-        XCTAssertTrue(backup.waitForExistence(timeout: 5), "Backup button missing")
+        // Back up the whole library to the mock bucket from Settings.
+        select("Settings", in: app)
+        let backup = app.buttons["Back Up Now"].firstMatch
+        XCTAssertTrue(backup.waitForExistence(timeout: 8), "Backup button missing")
         backup.tap()
-        let running = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Backing up'")).firstMatch
-        let finished = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH 'All' AND label CONTAINS 'backed up'")
-        ).firstMatch
+        let running = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Backing up'")).firstMatch
+        let finished = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Uploads up to date'")).firstMatch
         XCTAssertTrue(
             running.waitForExistence(timeout: 5) || finished.waitForExistence(timeout: 60),
             "Backup never started or finished"
@@ -125,9 +132,9 @@ final class BackuUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Oscar"].waitForExistence(timeout: 8), "Name was not saved")
         attach(app, "05b-people-named")
 
-        // Renaming dirties sidecars; the header must offer a sync, not hide it.
-        select("Library", in: app)
-        let sync = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Back up'")).firstMatch
+        // Renaming dirties sidecars; push the updated metadata from Settings.
+        select("Settings", in: app)
+        let sync = app.buttons["Back Up Now"].firstMatch
         XCTAssertTrue(sync.waitForExistence(timeout: 8), "No way to push the rename to the bucket")
         sync.tap()
         sleep(12)

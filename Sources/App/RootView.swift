@@ -5,6 +5,7 @@ struct RootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var columnVisibilityBeforeViewer: NavigationSplitViewVisibility?
+    @State private var libraryShowsTabs = false
     @Namespace private var viewerNamespace
 
     var body: some View {
@@ -113,9 +114,9 @@ struct RootView: View {
             if app.viewer == nil {
                 AppBottomBar(
                     selection: $app.activeTab,
-                    onSearch: {
-                        app.showSearch = true
-                    }
+                    level: $app.libraryLevel,
+                    showsLibraryTabs: $libraryShowsTabs,
+                    onSearch: { app.showSearch = true }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -162,46 +163,33 @@ struct RootView: View {
     }
 }
 
-/// Photos-style bottom bar: a glass capsule for the three library sections and
-/// a separate circular search button on the right.
+/// Photos-style bottom bar. On the Library tab it becomes the timeline
+/// switcher (Library circle · Years/Months/All · Search). Tapping the Library
+/// circle reveals the normal tab bar again so People and Settings stay
+/// reachable. The two states cross-fade with a short slide.
 struct AppBottomBar: View {
     @Binding var selection: AppTab
+    @Binding var level: LibraryLevel
+    @Binding var showsLibraryTabs: Bool
     var onSearch: () -> Void
     @Namespace private var namespace
 
+    private var isTimeline: Bool {
+        selection == .library && !showsLibraryTabs
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 2) {
-                ForEach(AppTab.allCases) { tab in
-                    Button {
-                        withAnimation(.backuSnappy) { selection = tab }
-                    } label: {
-                        VStack(spacing: 2) {
-                            Image(systemName: tab.symbol)
-                                .font(.system(size: 18, weight: .semibold))
-                                .frame(height: 22)
-                            Text(tab.title)
-                                .font(.caption2.weight(.medium))
-                        }
-                        .foregroundStyle(selection == tab ? Theme.accent : Color.secondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background {
-                            if selection == tab {
-                                Capsule()
-                                    .fill(Theme.accent.opacity(0.12))
-                                    .matchedGeometryEffect(id: "bottom.tab", in: namespace)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("tab.\(tab.rawValue)")
-                    .accessibilityAddTraits(selection == tab ? .isSelected : [])
+        HStack(spacing: 8) {
+            ZStack {
+                if isTimeline {
+                    timelineChrome
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else {
+                    tabsChrome
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
-            .padding(3)
-            .glassCapsule(interactive: true)
+            .animation(.snappy(duration: 0.28, extraBounce: 0.02), value: isTimeline)
 
             Button(action: onSearch) {
                 Image(systemName: "magnifyingglass")
@@ -213,9 +201,69 @@ struct AppBottomBar: View {
             .accessibilityLabel("Search")
             .accessibilityIdentifier("search.open")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 8)
+    }
+
+    private var timelineChrome: some View {
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                    showsLibraryTabs = true
+                }
+            } label: {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 48, height: 48)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .accessibilityLabel("Show Library tabs")
+            .accessibilityIdentifier("tabs.show")
+
+            LibraryLevelSwitcher(level: $level)
+        }
+    }
+
+    private var tabsChrome: some View {
+        HStack(spacing: 2) {
+            ForEach(AppTab.allCases) { tab in
+                Button {
+                    withAnimation(.snappy(duration: 0.28, extraBounce: 0.02)) {
+                        selection = tab
+                        if tab == .library {
+                            showsLibraryTabs = false
+                        }
+                    }
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: tab.symbol)
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(height: 22)
+                        Text(tab.title)
+                            .font(.caption2.weight(.medium))
+                    }
+                    .foregroundStyle(selection == tab ? Theme.accent : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background {
+                        if selection == tab {
+                            Capsule()
+                                .fill(Theme.accent.opacity(0.12))
+                                .matchedGeometryEffect(id: "bottom.tab", in: namespace)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tab.\(tab.rawValue)")
+                .accessibilityAddTraits(selection == tab ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .glassCapsule(interactive: true)
     }
 }
 

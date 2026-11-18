@@ -81,25 +81,15 @@ struct LibraryLevelSwitcher: View {
 }
 
 /// Floating Photos-style header: a large title on the left and the filter and
-/// Select controls on the right, all over the photo grid. The old in-flow
-/// header is gone, so the grid starts at the top of the screen.
+/// Select controls on the right, all over the photo grid. Backup controls live
+/// in Settings; the photo view stays as quiet as Photos.
 struct LibraryTopBar: View {
-    @Environment(AppModel.self) private var app
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var title: String
     var isSelecting: Bool
     var isFiltered: Bool
     var filterSymbol: String
     var onFilter: () -> Void
     var onToggleSelection: () -> Void
-    var pendingCount: Int
-    var onShowActivity: () -> Void
-    var onAddServer: () -> Void
-    @Namespace private var backupNamespace
-
-    private var backupMotion: Animation {
-        reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.34, extraBounce: 0.03)
-    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -115,6 +105,7 @@ struct LibraryTopBar: View {
                 #if os(iOS)
                 Button("Done", action: onToggleSelection)
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.primary)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, 16)
@@ -135,16 +126,11 @@ struct LibraryTopBar: View {
                 .accessibilityLabel(isFiltered ? "Filter applied" : "Filter and sort")
                 .accessibilityIdentifier("library.filter")
 
-                GlassEffectContainer(spacing: 10) {
-                    backupControl
-                        .glassEffectID("backup", in: backupNamespace)
-                }
-                .animation(backupMotion, value: app.backup.isRunning)
-
                 #if os(iOS)
                 Button(action: onToggleSelection) {
                     Text("Select")
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.primary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 16)
@@ -157,90 +143,8 @@ struct LibraryTopBar: View {
                 #endif
             }
         }
-        .sensoryFeedback(trigger: app.backup.isRunning) { _, running in
-            running ? .impact(weight: .medium) : .success
-        }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-    }
-
-
-    @ViewBuilder
-    private var backupControl: some View {
-        if app.backup.isRunning {
-            Button(action: onShowActivity) {
-                backupProgressPill
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Backup activity")
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
-        } else if app.servers.servers.isEmpty {
-            Button(action: onAddServer) {
-                Label("Add storage", systemImage: "externaldrive.badge.plus")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .frame(height: 42)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.capsule)
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
-        } else if pendingCount == 0 {
-            Button(action: onShowActivity) {
-                Image(systemName: "checkmark.icloud.fill")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(Theme.mint)
-                    .frame(width: 42, height: 42)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("All \(app.catalog.photos.count) photos backed up. Open backup activity")
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
-        } else {
-            Button {
-                app.startBackup()
-            } label: {
-                Image(systemName: "arrow.up.to.line.compact")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 42, height: 42)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel(app.backupDestinationCount > 1
-                ? "Back up \(pendingCount) photos to \(app.backupDestinationCount) buckets"
-                : "Back up \(pendingCount) photos to \(app.backupServer?.name ?? "storage")")
-            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
-        }
-    }
-
-    /// The floating backup control grows into a live progress pill while a run
-    /// is in flight, then shrinks back into its idle state.
-    private var backupProgressPill: some View {
-        Button {
-            app.backup.cancel()
-        } label: {
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.primary.opacity(0.16), lineWidth: 2.5)
-                    Circle()
-                        .trim(from: 0, to: max(0.03, app.backup.progress))
-                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .animation(reduceMotion ? nil : .smooth(duration: 0.45), value: app.backup.progress)
-                }
-                .frame(width: 18, height: 18)
-
-                Text("\(app.backup.completedCount)/\(app.backup.totalCount)")
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                    .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: app.backup.completedCount)
-            }
-            .padding(.horizontal, 13)
-            .frame(height: 42)
-        }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .accessibilityLabel("Backing up \(app.backup.completedCount) of \(app.backup.totalCount). Stop backup")
     }
 }
 

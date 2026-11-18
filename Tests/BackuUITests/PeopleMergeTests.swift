@@ -22,6 +22,9 @@ final class PeopleMergeTests: XCTestCase {
         if springboardAllow.waitForExistence(timeout: 2) { springboardAllow.tap() }
 
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 20), "Library never appeared")
+        if app.buttons["tabs.show"].waitForExistence(timeout: 3) {
+            app.buttons["tabs.show"].tap()
+        }
         app.buttons["tab.people"].tap()
         XCTAssertTrue(app.staticTexts["People & Pets"].waitForExistence(timeout: 10), "People screen missing")
 

@@ -27,6 +27,16 @@ enum AppTab: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+/// Photos' three library zoom levels. Months is the date timeline: each month
+/// is a section with a header and a collage, so scrolling moves through time.
+enum LibraryLevel: String, CaseIterable, Identifiable {
+    case years = "Years"
+    case months = "Months"
+    case all = "All"
+
+    var id: String { rawValue }
+}
+
 struct ViewerPresentation: Identifiable, Hashable {
     var id = UUID()
     var photoIDs: [String]
@@ -77,6 +87,7 @@ final class AppModel {
     var lastScanMessage: String?
     var errorMessage: String?
     var activeTab: AppTab = .library
+    var libraryLevel: LibraryLevel = .all
     var showSearch = false
     var viewer: ViewerPresentation?
     var isSyncingRemote = false
