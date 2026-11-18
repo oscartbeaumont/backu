@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A rectangle in normalized (0...1) image space with a top-left origin, which
@@ -36,6 +37,42 @@ struct NormRect: Codable, Hashable, Sendable {
             width: min(1, width + dx * 2),
             height: min(1, height + dy * 2)
         )
+    }
+}
+
+/// Stable face identity shared by every device.
+///
+/// A random UUID per analysis made two devices analysing the same photo
+/// produce different ids; each then published a delete for the other's faces.
+/// Deriving the id from the photo and the quantised box makes the same face
+/// the same object everywhere, while leaving `embeddingIndex` local.
+enum FaceIdentity {
+    static func canonical(photoID: String, kind: PhotoFace.Kind, rect: NormRect) -> UUID {
+        var canonical = photoID
+        if canonical.hasPrefix("remote:") {
+            canonical.removeFirst("remote:".count)
+        }
+        // 1% quantisation absorbs the tiny box differences between two
+        // analyses of the same bytes.
+        let seed = String(
+            format: "%@|%@|%.2f|%.2f|%.2f|%.2f",
+            canonical,
+            kind.rawValue,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height
+        )
+        let digest = Array(SHA256.hash(data: Data(seed.utf8)).prefix(16))
+        var bytes = digest
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }
 

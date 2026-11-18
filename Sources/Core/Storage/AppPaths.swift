@@ -62,6 +62,26 @@ enum AppPaths {
         supportDirectory.appendingPathComponent("places.json")
     }
 
+    /// Per-bucket replication state and cache for the metadata log. Tiny files;
+    /// the cache is a gzipped snapshot so a relaunch does not need the network.
+    static var metadataDirectory: URL {
+        let url = supportDirectory.appendingPathComponent("metadata", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static func metadataStateFile(_ serverID: UUID) -> URL {
+        metadataDirectory.appendingPathComponent("\(serverID.uuidString)-state.json")
+    }
+
+    static func metadataCacheFile(_ serverID: UUID) -> URL {
+        metadataDirectory.appendingPathComponent("\(serverID.uuidString)-cache.jsonl.gz")
+    }
+
+    static func metadataOutboxFile(_ serverID: UUID) -> URL {
+        metadataDirectory.appendingPathComponent("\(serverID.uuidString)-outbox.jsonl")
+    }
+
     static var uploadJournalFile: URL {
         supportDirectory.appendingPathComponent("upload-journal.json")
     }
@@ -73,7 +93,7 @@ enum AppPaths {
         for file in files ?? [] {
             try? FileManager.default.removeItem(at: file)
         }
-        for url in [embeddingsFile, thumbnailCache, imageCache, atlasCache] {
+        for url in [embeddingsFile, thumbnailCache, imageCache, atlasCache, metadataDirectory] {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             var mutable = url

@@ -179,6 +179,9 @@ final class BackupEngine {
     var lastError: String?
     var reclaimedCount = 0
     var lastRunDuration: TimeInterval?
+    /// Replaces the old whole-index upload. Set by AppModel; the engine only
+    /// knows that a bucket's metadata needs publishing.
+    var publishMetadata: (() async -> Void)?
 
     private var runTask: Task<Void, Never>?
     private var runStartedAt: Date?
@@ -304,15 +307,10 @@ final class BackupEngine {
             }
 
             if self.totalCount == 0 {
-                // Still publish each index so names and tags edited while every
+                // Still publish metadata so names and tags edited while every
                 // photo was already uploaded reach every bucket.
                 for plan in plans where !Task.isCancelled {
-                    await self.uploadIndex(
-                        client: plan.destination.client,
-                        catalog: catalog,
-                        server: plan.destination.server,
-                        device: DeviceInfo.name
-                    )
+                    await self.publishMetadata?()
                 }
                 self.isRunning = false
                 self.lastRunDuration = 0
@@ -527,14 +525,14 @@ final class BackupEngine {
             }
 
             if uploadedSinceIndex >= 20 || Date().timeIntervalSince(lastIndexUpload) > 60 {
-                await uploadIndex(client: client, catalog: catalog, server: server, device: device)
+                await publishMetadata?()
                 lastIndexUpload = Date()
                 uploadedSinceIndex = 0
             }
         }
 
         await atlasBatch.flush()
-        await uploadIndex(client: client, catalog: catalog, server: server, device: device)
+        await publishMetadata?()
     }
 
     private func finishRun(catalog: CatalogStore, destinations: [Destination]) async {
@@ -834,22 +832,6 @@ final class BackupEngine {
             fileURL: fileURL,
             key: key,
             contentType: contentType
-        )
-    }
-
-    private func uploadIndex(client: S3Client, catalog: CatalogStore, server: ServerConfig, device: String) async {
-        let document = RemoteIndexDocument.make(
-            photos: catalog.photos,
-            people: catalog.people,
-            serverID: server.id,
-            device: device
-        )
-        guard !document.isEmpty else { return }
-        guard let data = try? JSONFile.encoder(pretty: true).encode(document) else { return }
-        try? await client.putObject(
-            key: S3Client.join(server.normalizedPrefix, RemoteLibrary.indexKey),
-            data: data,
-            contentType: "application/json"
         )
     }
 

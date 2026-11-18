@@ -172,6 +172,56 @@ jobs:
           fi
           gh release create "$TAG" "${args[@]}"
 
+      # Internal TestFlight groups do not need Beta App Review. This runs after
+      # the GitHub Release is published so a slow Apple processor never blocks
+      # the release itself; the step is idempotent (a build already in the group
+      # is a success).
+      - name: Add iOS build to TestFlight group
+        if: inputs.platform == 'ios' || inputs.platform == 'both'
+        continue-on-error: true
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          BUNDLE_ID: me.otbeaumont.backu
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP || 'Internal' }}
+          PLATFORM: ios
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/testflight-group.py \
+            --key-path "$ASC_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --bundle-id "$BUNDLE_ID" \
+            --build-number "$BUILD_NUMBER" \
+            --group "$TESTFLIGHT_GROUP" \
+            --platform "$PLATFORM"
+
+      - name: Add macOS build to TestFlight group
+        if: inputs.platform == 'macos' || inputs.platform == 'both'
+        continue-on-error: true
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/asc/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          BUNDLE_ID: me.otbeaumont.backu
+          TESTFLIGHT_GROUP: ${{ vars.TESTFLIGHT_GROUP || 'Internal' }}
+          PLATFORM: macos
+        run: |
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install --quiet cryptography
+          "$RUNNER_TEMP/asc-venv/bin/python" scripts/testflight-group.py \
+            --key-path "$ASC_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer-id "$ASC_ISSUER_ID" \
+            --bundle-id "$BUNDLE_ID" \
+            --build-number "$BUILD_NUMBER" \
+            --group "$TESTFLIGHT_GROUP" \
+            --platform "$PLATFORM"
+
       - name: Write release summary
         if: always()
         env:
@@ -186,5 +236,6 @@ jobs:
             echo "- Tag: \`$TAG\`"
             echo "- TestFlight build: \`$BUILD_NUMBER\`"
             echo "- Platforms: \`$PLATFORM\`"
+            echo "- TestFlight group: \`${{ vars.TESTFLIGHT_GROUP || 'Internal' }}\` (see the group step for assignment status)"
             echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
           } >> "$GITHUB_STEP_SUMMARY"

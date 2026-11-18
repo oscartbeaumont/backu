@@ -576,6 +576,10 @@ extension S3Client {
             try? FileManager.default.removeItem(at: source)
         }
     }
+
+    /// A single streaming GET written straight to `destination`. No HEAD probe
+    /// and no in-memory body: the metadata journal reads a snapshot once, and a
+    /// probe would only add a round trip to a body it is about to read whole.
 }
 
 enum S3DownloadError: Error {

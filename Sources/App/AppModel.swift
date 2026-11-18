@@ -105,6 +105,8 @@ final class AppModel {
     private var backgroundObserverTask: Task<Void, Never>?
     private var lastKnownChange = Date.distantPast
     private var remoteSyncDismissTask: Task<Void, Never>?
+    private var metadataServices: [UUID: MetadataService] = [:]
+    private var metadataFlushTask: Task<Void, Never>?
 
     init(loadFromDisk: Bool = true) {
         #if DEBUG
@@ -122,6 +124,114 @@ final class AppModel {
         images.atlasEnabled = settings.atlasThumbnailsEnabled
         AppModel.shared = self
         installImageLoaders()
+        catalog.onMetadataDirty = { [weak self] in
+            self?.scheduleMetadataFlush()
+        }
+        backup.publishMetadata = { [weak self] in
+            await self?.publishLocalMetadata()
+        }
+    }
+
+    // MARK: - Metadata log
+
+    func metadataService(for server: ServerConfig) -> MetadataService {
+        if let existing = metadataServices[server.id] {
+            existing.configure(catalog: catalog)
+            return existing
+        }
+        let service = MetadataService(serverID: server.id)
+        service.configure(catalog: catalog)
+        metadataServices[server.id] = service
+        return service
+    }
+
+    /// Coalesces a burst of edits (a rename touches many photos) into one
+    /// flush. The writer appends records to the outbox before the debounce
+    /// fires, so a crash in this window is recoverable.
+    private func scheduleMetadataFlush() {
+        metadataFlushTask?.cancel()
+        metadataFlushTask = Task(priority: .utility) { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await self?.publishLocalMetadata()
+            self?.metadataFlushTask = nil
+        }
+    }
+
+    /// Diffs and publishes local edits to every enabled bucket. The catalog's
+    /// dirty set is drained once and handed to each service, so a change that
+    /// affects several replicas is written to all of them.
+    func publishLocalMetadata() async {
+        let services = enabledMetadataServices()
+        guard !services.isEmpty else { return }
+        // Drain once and hand the same delta to every replica. Draining per
+        // destination made deletes reach only the first bucket.
+        let delta = catalog.takeMetadataDelta()
+        for (server, client, service) in services {
+            _ = service.recordLocalChanges(delta: delta, catalog: catalog)
+            let store = S3MetadataStore(client: client, prefix: server.normalizedPrefix)
+            // A concurrent flush is a "retry later", not a success: the outbox
+            // still holds the records.
+            for _ in 0..<4 {
+                do {
+                    if try await service.flush(store: store) { break }
+                } catch {
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+    }
+
+    func flushMetadataNow() async {
+        catalog.saveNow()
+        await publishLocalMetadata()
+        // Backgrounding is the point where the merged-state cache is worth a
+        // write even if the throttled policy would have skipped it.
+        for service in metadataServices.values {
+            service.flushCacheIfNeeded()
+        }
+    }
+
+    private func enabledMetadataServices() -> [(ServerConfig, S3Client, MetadataService)] {
+        var result: [(ServerConfig, S3Client, MetadataService)] = []
+        for server in servers.servers where server.isEnabled {
+            guard let client = servers.client(for: server) else { continue }
+            result.append((server, client, metadataService(for: server)))
+        }
+        return result
+    }
+
+    /// Adopts the merged log into the catalog. `applyMergedMetadata` overwrites
+    /// shared fields for photos this device already knows (tags, favourites,
+    /// faces, names) without marking them dirty, so the next local diff cannot
+    /// undo another device's edit.
+    ///
+    /// A full sync reconciles photos missing from the list; an incremental one
+    /// only drops the ids the log says are gone, so neither costs O(library)
+    /// for a one-photo edit.
+    private func applyMerged(_ outcome: MetadataSyncOutcome, serverID: UUID) -> Int {
+        guard outcome.changed else { return 0 }
+        let added = catalog.applyMergedMetadata(
+            photos: outcome.photos,
+            people: outcome.people,
+            deletedPeople: outcome.deletedPeople,
+            deletedHashes: outcome.deletedHashes
+        )
+        if outcome.isFull {
+            catalog.reconcileRemote(
+                serverID: serverID,
+                presentIDs: Set(outcome.photos.map(\.id)),
+                deletedHashes: outcome.deletedHashes
+            )
+        } else if !outcome.removedPhotoIDs.isEmpty || !outcome.deletedHashes.isEmpty {
+            catalog.removeRemotePhotos(
+                serverID: serverID,
+                removedIDs: outcome.removedPhotoIDs,
+                deletedHashes: outcome.deletedHashes
+            )
+        }
+        return added
     }
 
     private func installImageLoaders() {
@@ -553,12 +663,18 @@ final class AppModel {
         Task { await faceStore.deleteAll() }
         try? FileManager.default.removeItem(at: AppPaths.imageCache)
         try? FileManager.default.removeItem(at: AppPaths.thumbnailCache)
+        try? FileManager.default.removeItem(at: AppPaths.metadataDirectory)
+        metadataServices.removeAll()
         showOnboarding = true
     }
 
     func removeServer(_ server: ServerConfig) {
         servers.remove(server)
         settings.backupServerIDs.removeAll { $0 == server.id }
+        metadataServices.removeValue(forKey: server.id)
+        try? FileManager.default.removeItem(at: AppPaths.metadataStateFile(server.id))
+        try? FileManager.default.removeItem(at: AppPaths.metadataCacheFile(server.id))
+        try? FileManager.default.removeItem(at: AppPaths.metadataOutboxFile(server.id))
         catalog.removeServerCopies(server.id)
     }
 
@@ -571,17 +687,7 @@ final class AppModel {
         var imported = 0
         for server in servers.servers where server.isEnabled {
             guard let client = servers.client(for: server) else { continue }
-            do {
-                let result = try await RemoteLibrary.load(
-                    client: client,
-                    server: server,
-                    knownPeople: catalog.people
-                )
-                catalog.mergePersonRecords(result.people)
-                imported += catalog.importRemotePhotos(result.photos)
-            } catch {
-                // A missing index on a new bucket is expected; stay quiet.
-            }
+            imported += await sync(server: server, client: client)
         }
         lastCloudSyncAt = Date()
         isSyncingRemote = false
@@ -592,23 +698,66 @@ final class AppModel {
         }
     }
 
+    /// Pulls the v2 log, migrates a pre-v2 bucket on first contact, and
+    /// compacts when enough segments have accumulated. Falls back to the old
+    /// single-document index only when the bucket has no v2 data at all.
+    @discardableResult
+    private func sync(server: ServerConfig, client: S3Client) async -> Int {
+        let service = metadataService(for: server)
+        let store = S3MetadataStore(client: client, prefix: server.normalizedPrefix)
+        let hadLocalChanges = catalog.hasMetadataDirty || service.hasOutbox
+        do {
+            // Probe first: a bucket with no v2 data must be migrated before any
+            // local change is published, or the migration branch is lost.
+            let probe = try await service.sync(store: store)
+            if !probe.sawLog {
+                if let legacy = try? await RemoteLibrary.load(
+                    client: client,
+                    server: server,
+                    knownPeople: catalog.people
+                ) {
+                    catalog.mergePersonRecords(legacy.people)
+                    _ = catalog.importRemotePhotos(legacy.photos)
+                }
+                await service.seedIfNeeded(catalog: catalog, store: store)
+                // Fold the seed segments into local state before the first
+                // snapshot, otherwise compaction would publish a partial view.
+                let seeded = (try? await service.sync(store: store)) ?? probe
+                _ = applyMerged(seeded, serverID: server.id)
+                await service.compactIfNeeded(store: store, force: true)
+                return 0
+            }
+
+            var imported = 0
+            if hadLocalChanges {
+                // Push before pull: the merged state is then guaranteed to
+                // include this device's edits, so adopting it cannot revert
+                // them.
+                await publishLocalMetadata()
+                if !service.hasOutbox {
+                    let outcome = try await service.sync(store: store)
+                    imported += applyMerged(outcome, serverID: server.id)
+                }
+            } else if probe.changed {
+                imported += applyMerged(probe, serverID: server.id)
+            }
+            await service.compactIfNeeded(store: store)
+            return imported
+        } catch {
+            // A missing bucket or a transient error is not worth interrupting
+            // the library for; the next sync retries.
+            return 0
+        }
+    }
+
     func importRemoteLibrary(server: ServerConfig) async {
         guard let client = servers.client(for: server) else { return }
-        do {
-            let result = try await RemoteLibrary.load(
-                client: client,
-                server: server,
-                knownPeople: catalog.people
-            )
-            catalog.mergePersonRecords(result.people)
-            let imported = catalog.importRemotePhotos(result.photos)
-            if imported > 0 {
-                showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in \(server.name)")
-            }
-            prefetchRemotePreviews()
-        } catch {
-            // Non-fatal: an empty bucket has no index yet.
+        let imported = await sync(server: server, client: client)
+        if imported > 0 {
+            showRemoteSyncMessage("\(imported) photo\(imported == 1 ? "" : "s") found in \(server.name)")
         }
+        prefetchRemotePreviews()
+        await publishLocalMetadata()
     }
 
     private var previewPrefetchTask: Task<Void, Never>?

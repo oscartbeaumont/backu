@@ -77,18 +77,24 @@ without the app:
 <folder>/                                   optional prefix; omit for the bucket root
   Photos/2025/06/IMG_4821-d282635d.jpg      original, byte for byte
   Photos/2025/06/IMG_4821-d282635d.jpg.json tags, people, EXIF, GPS and checksum
-  .backu/index.json                         searchable index and people registry
+  .backu/meta/v2/head.json                  pointer to the latest compressed index
+  .backu/meta/v2/snap/….jsonl.gz            compressed index snapshot
+  .backu/meta/v2/log/<device>/….jsonl.gz    append-only edits from each device
+  .backu/atlas/v1/….heic                    tiny thumbnail sheets for fast scrolling
 ```
 
-Point another S3 client at the bucket, or copy the folder elsewhere, and the
-library comes with you.
+The metadata is an append-only log: every device writes only its own segment,
+and a periodic compressed snapshot keeps a new device's first sync small.
+Nothing rewrites the whole index on an edit, so two phones backing up at once
+cannot overwrite each other. Point another S3 client at the bucket, or copy the
+folder elsewhere, and the library comes with you.
 
 ## Private by design
 
 | Data | Where it lives |
 | --- | --- |
 | Photo bytes | Your bucket |
-| Tags, names, face boxes, EXIF and GPS | Your bucket, in each photo's sidecar and `index.json` |
+| Tags, names, face boxes, EXIF and GPS | Your bucket, in each photo's sidecar and the metadata log |
 | Face feature vectors | This device only |
 | Access keys | The Keychain |
 | Search index | Memory, rebuilt from the local catalog |
