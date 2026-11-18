@@ -336,14 +336,14 @@ if options.network {
         // A bucket a fresh device can open: one snapshot, one head, one
         // post-snapshot segment. Used by the simulator smoke test.
         let root = options.seedPrefix
-        let snapshotKey = S3Client.join(
-            root,
-            MetadataLayout.snapshotKey(
-                generation: 1,
-                hlc: 1,
-                digest: SigV4Signer.sha256Hex(snapshotCompressed)
-            )
+        // head.snapshot is relative to the store's folder; the S3 adapter (and
+        // the real app) applies the prefix exactly once.
+        let relativeSnapshot = MetadataLayout.snapshotKey(
+            generation: 1,
+            hlc: 1,
+            digest: SigV4Signer.sha256Hex(snapshotCompressed)
         )
+        let snapshotKey = S3Client.join(root, relativeSnapshot)
         let segmentKey = S3Client.join(
             root,
             MetadataLayout.segmentKey(
@@ -355,7 +355,7 @@ if options.network {
         )
         let seededHead = MetadataHead(
             generation: 1,
-            snapshot: snapshotKey,
+            snapshot: relativeSnapshot,
             watermark: ["writer-a": 0],
             updatedAt: Date(),
             device: "MetaBench"

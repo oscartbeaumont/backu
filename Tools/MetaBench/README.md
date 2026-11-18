@@ -159,3 +159,34 @@ same script against one fixture to compare revisions.
   object; only S3 streams. The protocol keeps that as a default so a store can
   stay simple.
 
+## Protocol tests (in-memory, no S3)
+
+`Tests/BackuTests/MetadataProtocolTests.swift` drives the journal through
+`MetadataObjectStore`, whose production implementation is `S3MetadataStore` and
+whose test implementation is `InMemoryMetadataStore` with injectable PUT, GET
+and LIST failures, lost responses and object deletion. The cases are chosen
+around the ways a journal loses data:
+
+| case | what it proves |
+| --- | --- |
+| 304 on head with new segments | a steady-state sync still lists and applies edits since the last compaction |
+| cold start with a snapshot | head + snapshot + no segment GETs; a reader never writes |
+| PUT fails | outbox and sequence stay intact, retry reuses the same key |
+| PUT lands, response lost | retry overwrites the same key; no duplicate records |
+| flush while another flush runs | the busy caller is told to retry, and the records still drain once |
+| segment GET fails | sync throws before advancing the watermark |
+| corrupt segment / missing snapshot | retry succeeds after repair; no partial application |
+| list failure | the journal is left untouched |
+| corrupt head | never triggers migration, seeding, or a head overwrite |
+| stale compaction | an old watermark cannot move the head backwards or lose newer edits |
+| seed fails mid-batch | relaunch resumes by photo id with no duplicated records |
+| state file deleted | sequence probing prevents a writer reusing sequence 0 and becoming invisible |
+| nil-SHA copy | a valid record is an upsert, never a delete |
+| remote tag + local rescan | the next local diff does not revert the remote edit |
+| received future HLC | the local clock overtakes it, so a slow clock can still win later |
+| missing delimiter support | falls back to listing the log inline and still converges |
+| person delete | survives snapshot compaction and reaches a fresh reader as a deletion |
+
+The same test file is the fastest place to reproduce a journal bug: no mock
+server, no network, no simulator.
+

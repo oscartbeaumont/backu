@@ -429,7 +429,10 @@ struct MergedMetadata: Sendable {
     ) {
         var photos: [PhotoItem] = []
         photos.reserveCapacity(changes.changedPhotos.count)
-        for id in changes.changedPhotos {
+        // Deterministic order matters when two entities share a SHA-256: the
+        // catalog merges by hash, so the same input must produce the same last
+        // writer on every device.
+        for id in changes.changedPhotos.sorted() {
             guard let entity = self.photos[id] else { continue }
             photos.append(Self.item(for: entity, serverID: serverID).0)
         }
@@ -450,7 +453,7 @@ struct MergedMetadata: Sendable {
                 }
             }
             people.reserveCapacity(changes.changedPeople.count)
-            for key in changes.changedPeople {
+            for key in changes.changedPeople.sorted() {
                 guard let entity = self.people[key] else { continue }
                 people.append(entity.person.person(faceCount: counts[entity.person.id] ?? 0))
             }
