@@ -158,6 +158,7 @@ struct SearchScreen: View {
             HStack(spacing: 6) {
                 Text("\(results.count) result\(results.count == 1 ? "" : "s")")
                     .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("search.resultCount")
                 if !text.isEmpty {
                     Text("for “\(text)”")
                         .font(.subheadline)

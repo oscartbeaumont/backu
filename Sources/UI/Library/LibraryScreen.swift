@@ -47,6 +47,8 @@ struct LibraryMonthSection: Identifiable {
     var monthStart: Date
     var title: String
     var items: [LibraryItem]
+    /// Mirrors `items.map(\.photo)`, built once so a card body never allocates.
+    var photos: [PhotoItem]
     var cover: LibraryItem
     var dayText: String
 }
@@ -56,6 +58,7 @@ struct LibraryYearSection: Identifiable {
     var id: Int
     var year: Int
     var items: [LibraryItem]
+    var photos: [PhotoItem]
     var cover: LibraryItem
     var firstMonthID: String?
 }
@@ -66,6 +69,13 @@ struct LibraryYearSection: Identifiable {
 final class TimelineMetrics {
     var frame: CGRect = .zero
     var scrollTop: CGFloat = 0
+    /// Last scroll distance, used to tell a forward fling from a reversal.
+    var travelled: CGFloat = 0
+    var direction: ScrollDirection = .forward
+    var phase: ScrollPhase = .idle
+    /// Mean aspect ratio of the library, used to estimate row height at the
+    /// full-width level (where every row is a different height).
+    var averageAspect: CGFloat = 1
 }
 
 /// One row of the cached grid. Built once per catalog/filter change so a tile
@@ -84,16 +94,18 @@ struct LibrarySummary: Equatable {
     var pending = 0
 }
 
-/// Throttles prefetch-window changes. Scrolling is reported per tick, but the
-/// prefetcher re-arms at most every ~80 ms, so a fling stays cheap while a slow
-/// scroll still keeps the next screens warm.
+/// Throttles prefetch-window changes. Scrolling is reported per tick, and the
+/// prefetcher re-arms at most every ~50 ms while idle, so a settled grid stays
+/// cheap. During a drag or fling the window is applied immediately instead
+/// (see `LibraryScreen.timeline`), so the lead screens are warmed from the
+/// first tick rather than 80 ms later.
 @MainActor
 final class ScrollWindow {
     private var applied: Range<Int>?
     private var pending: Range<Int>?
     private var task: Task<Void, Never>?
     private var lastAppliedAt = Date.distantPast
-    private let interval: TimeInterval = 0.08
+    private let interval: TimeInterval = 0.05
 
     func request(
         _ range: Range<Int>,
@@ -108,7 +120,7 @@ final class ScrollWindow {
         pending = range
         guard task == nil else { return }
         task = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(80))
+            try? await Task.sleep(for: .milliseconds(50))
             guard let self, !Task.isCancelled, let next = self.pending else { return }
             self.applyNow(next, apply)
         }
@@ -169,6 +181,9 @@ struct LibraryScreen: View {
     @State private var pinchBaseColumns: Int?
     @State private var pinchPreviewColumns: Int?
     @State private var pinchHaptic = 0
+    #if DEBUG
+    @State private var monthPillHeight: CGFloat = 0
+    #endif
 
     private let calendar = Calendar(identifier: .gregorian)
 
@@ -183,6 +198,25 @@ struct LibraryScreen: View {
         formatter.dateFormat = "MMM yyyy"
         return formatter
     }()
+
+    #if DEBUG
+    /// Test seam for the date-pill overflow case: a full month name is wider
+    /// than a phone screen at large Dynamic Type, while the shipped "MMM yyyy"
+    /// form is not. Enabled with `BACKU_MONTH_TITLE_STYLE=long`.
+    private static let longMonthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM yyyy"
+        return formatter
+    }()
+
+    private var monthTitleFormatter: DateFormatter {
+        ProcessInfo.processInfo.environment["BACKU_MONTH_TITLE_STYLE"] == "long"
+            ? Self.longMonthFormatter
+            : Self.monthFormatter
+    }
+    #else
+    private var monthTitleFormatter: DateFormatter { Self.monthFormatter }
+    #endif
 
     /// Columns added on top of the stored preference for roomier layouts.
     private var columnExtra: Int {
@@ -217,69 +251,19 @@ struct LibraryScreen: View {
                 availableHeight: proxy.size.height
             )
         }
+        #if DEBUG
+        .modifier(DebugTextSizeModifier())
+        #endif
     }
 
     private func timeline(width: CGFloat, topInset: CGFloat, availableHeight: CGFloat) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    Color.clear
-                        .frame(height: 0)
-                        .id("library.top")
-
-                    // The floating title replaces the old in-flow header. On All
-                    // the grid runs under it; banners and the empty state start
-                    // below it. Years/Months reserve the title height through a
-                    // top safe-area inset so their date labels never sit under
-                    // the clock during a programmatic jump.
-                    if level == .all && (items.isEmpty || hasTopBanner) {
-                        Color.clear.frame(height: topInset + 54)
-                    }
-
-                    if app.authorization == .limited {
-                        PhotoAccessBanner(
-                            isLimited: true,
-                            onAction: { Task { await app.requestMorePhotos() } }
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
-                    } else if !app.hasPhotoAccess && !app.catalog.photos.isEmpty {
-                        PhotoAccessBanner(
-                            isLimited: false,
-                            onAction: { PhotoAccess.openSystemSettings() }
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
-                    }
-
-                    if app.backup.isRunning || app.backup.lastError != nil {
-                        BackupBanner()
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 12)
-                    }
-                    if app.remoteSyncMessage != nil {
-                        remoteBanner
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-
-                    if items.isEmpty {
-                        emptyState
-                    } else {
-                        Group {
-                            switch level {
-                            case .years:
-                                yearsTimeline(width: width, proxy: proxy)
-                            case .months:
-                                monthsTimeline(width: width, proxy: proxy)
-                            case .all:
-                                photoGrid(width: width)
-                            }
-                        }
-                        .transition(.opacity)
-                    }
-
-                    Color.clear.frame(height: 10)
-                }
+                // One lazy container per level: a LazyVGrid for All, a
+                // LazyVStack for Months/Years. The wrappers are plain VStacks,
+                // so no lazy container is nested inside another; headers are
+                // ordinary siblings and never consume a grid cell.
+                timelineContent(width: width, topInset: topInset)
             }
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.immediately)
@@ -288,6 +272,12 @@ struct LibraryScreen: View {
             .onPreferenceChange(TileFramePreferenceKey.self) { frames in
                 if isSelecting, tileFrames != frames { tileFrames = frames }
             }
+            #if DEBUG
+            // Measured on the ScrollView, outside the scroll content, so the
+            // probe element can never participate in a card's layout or its
+            // accessibility frame.
+            .onPreferenceChange(MonthPillHeightKey.self) { monthPillHeight = $0 }
+            #endif
             .safeAreaInset(edge: .top, spacing: 0) {
                 if level != .all {
                     Color.clear.frame(height: topInset + 54)
@@ -296,6 +286,26 @@ struct LibraryScreen: View {
             #if os(iOS)
             .ignoresSafeArea(edges: .top)
             #endif
+            .onScrollPhaseChange { _, phase in
+                metrics.phase = phase
+                // A drag or fling has begun: re-arm the prefetch window now
+                // rather than waiting out the idle throttle. This is the
+                // difference between the lead screens being warm and the fling
+                // outrunning the prefetcher.
+                if phase != .idle { updateTimeline() }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y
+            } action: { old, new in
+                guard abs(new - old) > 0.5 else { return }
+                let direction: ScrollDirection = new > old ? .forward : .backward
+                if direction != metrics.direction {
+                    metrics.direction = direction
+                    // Reversing direction moves the lead to the other side of
+                    // the viewport; apply that at once too.
+                    updateTimeline()
+                }
+            }
             .onGeometryChange(for: CGFloat.self) { view in
                 view.frame(in: .global).minY
             } action: { value in
@@ -353,6 +363,9 @@ struct LibraryScreen: View {
             }
             #if DEBUG
             .overlay(alignment: .bottomTrailing) { TileLoadProbeView() }
+            .overlay(alignment: .topTrailing) {
+                LibraryRuntimeProbeView(monthPillHeight: monthPillHeight)
+            }
             #endif
             .onAppear {
                 self.viewWidth = width
@@ -585,8 +598,161 @@ struct LibraryScreen: View {
 
     private var calendarMaxItems: Int { 42 }
 
-    private func monthsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
-        LazyVStack(spacing: 4) {
+    // MARK: Scroll content
+
+    /// The scroll content holds exactly one *lazy* container: a `LazyVGrid` for
+    /// the All grid, or the card `LazyVStack` for Months/Years. The wrappers
+    /// around them are plain `VStack`s, so nothing lazy is nested inside
+    /// anything lazy (the old All layout was a `LazyVGrid` inside a
+    /// `LazyVStack`, which made each grid row pay two layout passes). Headers
+    /// are ordinary siblings above the grid rather than grid cells, so they
+    /// can never consume a column and leave a blank first cell.
+    @ViewBuilder
+    private func timelineContent(width: CGFloat, topInset: CGFloat) -> some View {
+        Group {
+            if items.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    topAnchor
+                    // The floating title replaces the in-flow header. On All
+                    // the grid runs under it; the empty state starts below it.
+                    if level == .all {
+                        Color.clear.frame(height: topInset + 54)
+                    }
+                    banners
+                    emptyState
+                    Color.clear.frame(height: 10)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                switch level {
+                case .all:
+                    allGrid(width: width, topInset: topInset)
+                case .months:
+                    timelineScaffold {
+                        monthsTimeline(width: width)
+                    }
+                case .years:
+                    timelineScaffold {
+                        yearsTimeline(width: width)
+                    }
+                }
+            }
+        }
+        .transition(.opacity)
+    }
+
+    private var topAnchor: some View {
+        Color.clear
+            .frame(height: 0)
+            .id("library.top")
+    }
+
+    /// Banner rows shared by every level. They sit above the grid so a banner
+    /// always spans the full width.
+    @ViewBuilder
+    private var banners: some View {
+        if app.authorization == .limited {
+            PhotoAccessBanner(
+                isLimited: true,
+                onAction: { Task { await app.requestMorePhotos() } }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        } else if !app.hasPhotoAccess && !app.catalog.photos.isEmpty {
+            PhotoAccessBanner(
+                isLimited: false,
+                onAction: { PhotoAccess.openSystemSettings() }
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
+        if app.backup.isRunning || app.backup.lastError != nil {
+            BackupBanner()
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+        }
+        if app.remoteSyncMessage != nil {
+            remoteBanner
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    /// Plain wrapper for the Months/Years levels. It is deliberately *not* a
+    /// `LazyVStack`: the cards themselves own the only lazy container.
+    private func timelineScaffold<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            topAnchor
+            banners
+            content()
+            Color.clear.frame(height: 10)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The All level: header views, then a single `LazyVGrid`, then the footer.
+    /// `metrics.frame` is measured on the grid itself, so
+    /// `travelled = scrollTop - grid.minY` starts at the first photo and the
+    /// prefetch row math is not shifted by banner height.
+    private func allGrid(width: CGFloat, topInset: CGFloat) -> some View {
+        let count = max(columns, 1)
+        let side = tileSide(width: width)
+        let pixels = thumbnailPixels(side: side)
+        let scale = max(displayScale, 1)
+        return VStack(alignment: .leading, spacing: 0) {
+            topAnchor
+            if hasTopBanner {
+                Color.clear.frame(height: topInset + 54)
+                banners
+            }
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(side), spacing: gridSpacing), count: count),
+                spacing: gridSpacing
+            ) {
+                ForEach(items) { item in
+                    PhotoTile(
+                        photo: item.photo,
+                        columns: count,
+                        side: count <= 1 ? nil : side,
+                        aspectRatio: count <= 1 ? max(0.2, item.photo.aspectRatio) : nil,
+                        targetSize: count <= 1
+                            ? fullWidthTargetSize(item, width: width, scale: scale)
+                            : pixels,
+                        backupState: item.backupState,
+                        dateText: item.dateText,
+                        cornerRadius: 0,
+                        isSelecting: isSelecting,
+                        isSelected: selectedPhotoIDs.contains(item.id)
+                    ) {
+                        handleTileTap(item)
+                    }
+                    .equatable()
+                    .id(item.photo.id)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGRect.self) { view in
+                view.frame(in: .global)
+            } action: { frame in
+                metrics.frame = frame
+                updateTimeline()
+            }
+            Color.clear.frame(height: 10)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Photos' full-width level keeps each photo's own shape, so the request
+    /// matches the width and that photo's height (the prefetcher uses the
+    /// library mean, since a caching manager needs one size per window).
+    private func fullWidthTargetSize(_ item: LibraryItem, width: CGFloat, scale: CGFloat) -> CGSize {
+        let aspect = max(0.2, item.photo.aspectRatio)
+        return CGSize(width: width * scale, height: width / aspect * scale)
+    }
+
+    // MARK: Timeline levels
+
+    private func monthsTimeline(width: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: 4) {
             ForEach(monthSections) { section in
                 Button {
                     changeLevel(
@@ -595,21 +761,12 @@ struct LibraryScreen: View {
                         anchor: UnitPoint(x: 0.5, y: 0.18)
                     )
                 } label: {
-                    ZStack(alignment: .topLeading) {
-                        TimelineMosaic(
-                            photos: section.items.map(\.photo),
-                            columns: calendarColumns(for: section.items.count),
-                            maxItems: calendarMaxItems
-                        )
-                        TimelineDateLabel(title: section.title)
-                            .padding(10)
-                        if section.items.count > calendarMaxItems {
-                            TimelineCountBadge(remaining: section.items.count - calendarMaxItems)
-                                .padding(10)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                    timelineCard(
+                        photos: section.photos,
+                        title: section.title,
+                        columns: calendarColumns(for: section.photos.count),
+                        width: width
+                    )
                 }
                 .buttonStyle(.plain)
                 .id("month-\(section.id)")
@@ -621,8 +778,8 @@ struct LibraryScreen: View {
         .padding(.vertical, 2)
     }
 
-    private func yearsTimeline(width: CGFloat, proxy: ScrollViewProxy) -> some View {
-        LazyVStack(spacing: 4) {
+    private func yearsTimeline(width: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: 4) {
             ForEach(yearSections) { section in
                 Button {
                     let target = section.firstMonthID.map { "month-\($0)" }
@@ -632,21 +789,12 @@ struct LibraryScreen: View {
                         anchor: UnitPoint(x: 0.5, y: 0.16)
                     )
                 } label: {
-                    ZStack(alignment: .topLeading) {
-                        TimelineMosaic(
-                            photos: section.items.map(\.photo),
-                            columns: calendarColumns(for: section.items.count),
-                            maxItems: calendarMaxItems
-                        )
-                        TimelineDateLabel(title: String(section.year))
-                            .padding(10)
-                        if section.items.count > calendarMaxItems {
-                            TimelineCountBadge(remaining: section.items.count - calendarMaxItems)
-                                .padding(10)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                    timelineCard(
+                        photos: section.photos,
+                        title: String(section.year),
+                        columns: calendarColumns(for: section.photos.count),
+                        width: width
+                    )
                 }
                 .buttonStyle(.plain)
                 .id("year-\(section.year)")
@@ -658,69 +806,39 @@ struct LibraryScreen: View {
         .padding(.vertical, 2)
     }
 
-    @ViewBuilder
-    private func photoGrid(width: CGFloat) -> some View {
-        if columns <= 1 {
-            let scale = max(displayScale, 1)
-            LazyVStack(spacing: gridSpacing) {
-                ForEach(items) { item in
-                    let aspect = max(0.2, item.photo.aspectRatio)
-                    PhotoTile(
-                        photo: item.photo,
-                        columns: 1,
-                        side: nil,
-                        aspectRatio: aspect,
-                        targetSize: CGSize(width: width * scale, height: width / aspect * scale),
-                        backupState: item.backupState,
-                        dateText: item.dateText,
-                        cornerRadius: 0,
-                        isSelecting: isSelecting,
-                        isSelected: selectedPhotoIDs.contains(item.id)
-                    ) {
-                        handleTileTap(item)
-                    }
-                    .id(item.photo.id)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGRect.self) { view in
-                view.frame(in: .global)
-            } action: { frame in
-                metrics.frame = frame
-                updateTimeline()
-            }
-        } else {
-            let side = tileSide(width: width)
-            let pixels = thumbnailPixels(side: side)
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.fixed(side), spacing: gridSpacing), count: columns),
-                spacing: gridSpacing
-            ) {
-                ForEach(items) { item in
-                    PhotoTile(
-                        photo: item.photo,
-                        columns: columns,
-                        side: side,
-                        targetSize: pixels,
-                        backupState: item.backupState,
-                        dateText: item.dateText,
-                        cornerRadius: 0,
-                        isSelecting: isSelecting,
-                        isSelected: selectedPhotoIDs.contains(item.id)
-                    ) {
-                        handleTileTap(item)
-                    }
-                    .id(item.photo.id)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: CGRect.self) { view in
-                view.frame(in: .global)
-            } action: { frame in
-                metrics.frame = frame
-                updateTimeline()
+    /// One collage card, pinned to the viewport width.
+    ///
+    /// The date pill is an `overlay`, so its intrinsic text width can never
+    /// size the card. Previously the pill was a layout sibling in a `ZStack`:
+    /// a label wider than the screen (a long month name at a large Dynamic
+    /// Type size) grew the card past the viewport, and the enclosing centred
+    /// `LazyVStack` then placed the card at a negative x — clipping the pill's
+    /// leading cap. The card now fills the scroll content width and the stack
+    /// is leading-aligned, so its content can never be centred off-screen.
+    private func timelineCard(
+        photos: [PhotoItem],
+        title: String,
+        columns: Int,
+        width: CGFloat
+    ) -> some View {
+        TimelineMosaic(
+            photos: photos,
+            columns: columns,
+            maxItems: calendarMaxItems,
+            width: width
+        )
+        .frame(width: max(1, width), alignment: .topLeading)
+        .overlay(alignment: .topLeading) {
+            TimelineDateLabel(title: title)
+                .padding(10)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if photos.count > calendarMaxItems {
+                TimelineCountBadge(remaining: photos.count - calendarMaxItems)
+                    .padding(10)
             }
         }
+        .contentShape(Rectangle())
     }
 
     // MARK: Pinch to resize
@@ -933,16 +1051,19 @@ struct LibraryScreen: View {
         var pending = 0
         var built: [LibraryItem] = []
         built.reserveCapacity(photos.count)
+        var aspectTotal: CGFloat = 0
         for photo in photos {
             let state = app.photoBackupState(photo)
             if state == .backedUp { backedUp += 1 }
             if state != .backedUp { pending += 1 }
+            aspectTotal += max(0.2, photo.aspectRatio)
             built.append(LibraryItem(
                 photo: photo,
                 backupState: state,
                 dateText: libraryDate(photo).map { Self.dayFormatter.string(from: $0) }
             ))
         }
+        metrics.averageAspect = built.isEmpty ? 1 : aspectTotal / CGFloat(built.count)
         var pendingTotal = 0
         for photo in app.catalog.photos where app.photoBackupState(photo) != .backedUp {
             pendingTotal += 1
@@ -974,24 +1095,28 @@ struct LibraryScreen: View {
                 months.append(LibraryMonthSection(
                     id: monthID,
                     monthStart: monthStart,
-                    title: year > 0 ? Self.monthFormatter.string(from: monthStart) : "Undated",
+                    title: year > 0 ? monthTitleFormatter.string(from: monthStart) : "Undated",
                     items: [],
+                    photos: [],
                     cover: item,
                     dayText: String(parts.day ?? 0)
                 ))
             }
             months[months.count - 1].items.append(item)
+            months[months.count - 1].photos.append(item.photo)
 
             if years.last?.year != year {
                 years.append(LibraryYearSection(
                     id: year,
                     year: year,
                     items: [],
+                    photos: [],
                     cover: item,
                     firstMonthID: nil
                 ))
             }
             years[years.count - 1].items.append(item)
+            years[years.count - 1].photos.append(item.photo)
         }
 
         for index in years.indices {
@@ -1005,26 +1130,45 @@ struct LibraryScreen: View {
 
     // MARK: Scroll pipeline
 
-    /// Called on every scroll tick. It only does arithmetic: collapse the
-    /// large title and, in the All grid, keep the prefetch window moving.
+    /// The height of one grid row, in points. The full-width level has a
+    /// different height per photo, so it uses the library's mean aspect ratio
+    /// to keep the row estimate — and therefore the prefetch window — sane.
+    private func gridRowHeight(width: CGFloat) -> CGFloat {
+        if columns <= 1 {
+            let aspect = max(0.2, metrics.averageAspect)
+            return max(1, width / aspect + gridSpacing)
+        }
+        return max(tileSide(width: width) + gridSpacing, 1)
+    }
+
+    /// Called on every scroll tick. It only does arithmetic: derive the scroll
+    /// direction and row, then move the prefetch window.
     private func updateTimeline() {
+        guard level == .all else { return }
         let frame = metrics.frame
         guard frame.width > 0, viewHeight > 0 else { return }
-        let side = tileSide(width: frame.width)
-        let rowHeight = max(side + gridSpacing, 1)
+        let rowHeight = gridRowHeight(width: frame.width)
         let travelled = metrics.scrollTop - frame.minY
-
-        guard level == .all else { return }
+        let delta = travelled - metrics.travelled
+        if abs(delta) > 1 {
+            metrics.direction = delta > 0 ? .forward : .backward
+        }
+        metrics.travelled = travelled
         let row = max(0, Int(floor(travelled / rowHeight)))
-        requestWindow(firstRow: row, rowHeight: rowHeight)
+        // While a finger or the deceleration is moving the grid, apply the
+        // window on the tick instead of waiting out the idle throttle.
+        requestWindow(
+            firstRow: row,
+            rowHeight: rowHeight,
+            immediate: metrics.phase != .idle
+        )
     }
 
     private func requestWindow(firstRow: Int? = nil, rowHeight: CGFloat? = nil, immediate: Bool = false) {
         guard !photos.isEmpty, viewWidth > 1, viewHeight > 1 else { return }
         let frame = metrics.frame
         guard frame.width > 0 else { return }
-        let side = tileSide(width: viewWidth)
-        let height = max(rowHeight ?? (side + gridSpacing), 1)
+        let height = max(rowHeight ?? gridRowHeight(width: viewWidth), 1)
         let row: Int
         if let firstRow {
             row = firstRow
@@ -1040,9 +1184,30 @@ struct LibraryScreen: View {
         let upper = min(photos.count, upperRow * columns)
         guard lower < upper else { return }
 
-        let pixels = thumbnailPixels(side: side)
+        // The prefetcher and the tiles must agree on the pixel size for the
+        // caching manager to serve preheated images. Tiles get this exact
+        // `thumbnailPixels(side:)` value. At the full-width level every tile
+        // has its own height, so the decode pump is given the same per-photo
+        // size the tile will request (the caching manager still warms the
+        // mean size, since it needs one box per window).
+        let pixels: CGSize
+        let perPhotoPixelSize: ((PhotoItem) -> CGSize)?
+        if columns <= 1 {
+            let scale = max(displayScale, 1)
+            let aspect = max(0.2, metrics.averageAspect)
+            let width = viewWidth
+            pixels = CGSize(width: width * scale, height: width / aspect * scale)
+            perPhotoPixelSize = { photo in
+                let aspect = max(0.2, photo.aspectRatio)
+                return CGSize(width: width * scale, height: width / aspect * scale)
+            }
+        } else {
+            pixels = thumbnailPixels(side: tileSide(width: viewWidth))
+            perPhotoPixelSize = nil
+        }
         let snapshot = photos
         let rowCount = columns
+        let direction = metrics.direction
         window.request(lower..<upper, immediate: immediate) { range in
             prefetcher.update(
                 photos: snapshot,
@@ -1050,7 +1215,9 @@ struct LibraryScreen: View {
                 itemsPerRow: rowCount,
                 visibleRows: visibleRows,
                 targetPixelSize: pixels,
-                images: app.images
+                images: app.images,
+                direction: direction,
+                perPhotoPixelSize: perPhotoPixelSize
             )
         }
     }
@@ -1126,6 +1293,8 @@ struct BackupBanner: View {
             }
             .padding(12)
             .contentCard(radius: 14)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("library.backupBanner")
         }
     }
 }

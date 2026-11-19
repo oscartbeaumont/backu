@@ -99,6 +99,294 @@ final class ViewerInteractionTests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: velocity, thenHoldForDuration: 0.05)
     }
 
+    /// "Photo, 2 April 2026" (optionally followed by ", 2 people") → the date
+    /// the viewer's photo element reports for that same photo.
+    private func dateLabel(fromTileLabel label: String) -> String {
+        let parts = label.components(separatedBy: ", ")
+        return parts.count > 1 ? parts[1] : label
+    }
+
+    /// Waits for the viewer to settle on a photo instead of reading the value
+    /// in the frame the push begins, when the pager is still on its old page.
+    private func waitForViewerValue(
+        _ app: XCUIApplication,
+        equals expected: String,
+        timeout: TimeInterval = 10
+    ) -> String {
+        let photo = app.images["viewer.photo"].firstMatch
+        guard photo.waitForExistence(timeout: timeout) else { return "viewer.photo missing" }
+        let predicate = NSPredicate(format: "value == %@", expected)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: photo)
+        _ = XCTWaiter().wait(for: [expectation], timeout: timeout)
+        return photo.value as? String ?? "no value"
+    }
+
+    private func waitForPage(_ app: XCUIApplication, equals expected: Int, timeout: TimeInterval = 10) -> Int {
+        let deadline = Date().addingTimeInterval(timeout)
+        var latest = page(app)
+        while latest != expected, Date() < deadline {
+            usleep(100_000)
+            latest = page(app)
+        }
+        return latest
+    }
+
+    /// Tapping a tile must open *that* tile's photo, with the roll positioned on
+    /// it. `ViewerScreen`'s presentation-scoped `@State` used to survive into
+    /// the next push (SwiftUI reuses the `navigationDestination(item:)` view),
+    /// so after the first photo every later tap reopened the first one — the
+    /// presentation itself was right, which is why this checks the page within
+    /// the window as well as the photo on screen.
+    func testTappingTilesOpensTheTappedPhoto() throws {
+        let app = launch()
+        let tiles = app.buttons.matching(identifier: "library.tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 30), "No tiles")
+        XCTAssertGreaterThanOrEqual(
+            tiles.count, 10,
+            "The library only has \(tiles.count) tiles; this test needs ten to tap 0, 4 and 9"
+        )
+
+        var labels: [Int: String] = [:]
+        for index in 0..<12 where index < tiles.count {
+            labels[index] = tiles.element(boundBy: index).label
+        }
+        attach(
+            app,
+            text: "tiles: " + labels.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " · ")
+        )
+
+        for index in [0, 4, 9] {
+            let tile = tiles.element(boundBy: index)
+            // Read the date from the live tile on every tap. A label captured
+            // before the first viewer could be stale by the time of the third
+            // tap, and a stale expectation can pass while showing the wrong
+            // photo.
+            let expected = dateLabel(fromTileLabel: tile.label)
+            tile.tap()
+            XCTAssertTrue(
+                app.otherElements["viewer.page"].waitForExistence(timeout: 10),
+                "Tap \(index) never opened the viewer"
+            )
+
+            // The grid's first 60 tiles are the start of the viewer's window,
+            // so the tapped tile is page k + 1 of the presentation.
+            let shown = waitForViewerValue(app, equals: expected)
+            let landed = waitForPage(app, equals: index + 1)
+            attach(app, "tapped-tile-\(index)")
+            attach(app, text: "tap \(index): expected \(expected) · shown \(shown) · page \(landed) · \(probe(app))")
+            XCTAssertEqual(shown, expected, "Tap \(index) opened the wrong photo (page \(landed))")
+            XCTAssertEqual(landed, index + 1, "Tap \(index) opened \(expected) at the wrong position in the roll")
+
+            app.buttons["Close"].tap()
+            XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "Close did not return to the grid")
+            usleep(600_000)
+        }
+
+        // The tile menu's Details entry is a second way into the viewer, with
+        // the info panel already open. The last photo opened above was tile 9
+        // (page 10), so Details on tile 3 has to start from tile 3: the page
+        // position and the photo's own VoiceOver label both catch a viewer that
+        // reused the previous push.
+        let detailsIndex = 3
+        let detailsTile = tiles.element(boundBy: detailsIndex)
+        let detailsExpected = dateLabel(fromTileLabel: detailsTile.label)
+        detailsTile.press(forDuration: 1)
+        let details = app.buttons["Details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5), "The tile menu did not offer Details")
+        details.tap()
+        XCTAssertTrue(
+            app.navigationBars["Details"].waitForExistence(timeout: 5),
+            "Details did not open the info panel"
+        )
+        // The sheet names the file; the tile itself does not expose it, so this
+        // only proves the panel described a real photo, while the page and the
+        // photo's label below prove *which* one.
+        let fileName = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'IMG_'")).firstMatch
+        let named = fileName.waitForExistence(timeout: 5) ? fileName.label : "missing"
+        app.buttons["Done"].tap()
+        XCTAssertTrue(
+            app.navigationBars["Details"].waitForNonExistence(timeout: 5),
+            "The info sheet did not close"
+        )
+        XCTAssertTrue(
+            app.otherElements["viewer.page"].waitForExistence(timeout: 10),
+            "Details never opened the viewer"
+        )
+        let detailsShown = waitForViewerValue(app, equals: detailsExpected)
+        let detailsPage = waitForPage(app, equals: detailsIndex + 1)
+        let detailsPhoto = app.images["viewer.photo"].firstMatch
+        attach(app, "tile-details")
+        attach(
+            app,
+            text: "Details on tile \(detailsIndex): expected \(detailsExpected) · shown \(detailsShown) · page \(detailsPage) · label \(detailsPhoto.label) · file \(named)"
+        )
+        XCTAssertNotEqual(named, "missing", "The info panel did not name the photo's file")
+        XCTAssertEqual(detailsShown, detailsExpected, "The Details menu opened a different photo")
+        XCTAssertEqual(detailsPage, detailsIndex + 1, "The Details menu opened at the wrong position in the roll")
+        XCTAssertTrue(
+            detailsPhoto.label.hasPrefix("Photo \(detailsIndex + 1) of "),
+            "The Details menu opened a different photo in the roll: \(detailsPhoto.label)"
+        )
+        app.buttons["Close"].tap()
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "Close did not return to the grid")
+    }
+
+    /// A slow pinch must read as one continuous ramp, with the photo held on
+    /// the pinch point and no inset churn under the fingers. The zoom layout
+    /// used to reassign `contentInset` on every tick, which rewrote the content
+    /// offset mid-gesture and moved a zoom-out in visible steps; the probe
+    /// records every tick a pinch reports.
+    ///
+    /// Landscape is deliberate: the fixture photos are square, so in portrait
+    /// they fill the viewport exactly and insets are zero either way. In
+    /// landscape the fit is letterboxed — the layout where the old per-tick
+    /// inset rewrite shifted the photo, and where the new centring has to keep
+    /// it in the middle as it grows past the viewport.
+    ///
+    /// The run is measured on a pinch-in because XCUITest cannot deliver a
+    /// pinch-out once the photo is magnified — the probe records no
+    /// `scrollViewWillBeginZooming` at all for that gesture. Zoom-out runs the
+    /// same `scrollViewDidZoom` path in the other direction, and the probe's
+    /// inset count is what pins down the churn that made zoom-out step.
+    func testPinchZoomIsContinuous() throws {
+        let app = launch()
+        _ = openFirstPhoto(app)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        sleep(2)
+
+        let photo = app.images["viewer.photo"].firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 5), "The photo is missing after rotating")
+        photo.pinch(withScale: 3, velocity: 2)
+        sleep(1)
+        let state = probe(app)
+        attach(app, "landscape-pinch")
+        attach(app, text: "slow pinch: \(state)")
+
+        XCTAssertGreaterThan(value(state, key: "scale"), 2, "The pinch did not zoom: \(state)")
+        XCTAssertGreaterThanOrEqual(
+            value(state, key: "zoomN"), 8,
+            "The pinch reported too few samples to judge continuity: \(state)"
+        )
+        XCTAssertGreaterThanOrEqual(
+            value(state, key: "zoomSpan"), 1.2,
+            "The pinch did not travel across the zoom range: \(state)"
+        )
+        // Samples are clamped to the scroll view's zoom range, so the intended
+        // rubber band cannot read as a reversal. The run's top also has to be
+        // the scale the gesture settled on — a stale summary would not be.
+        XCTAssertEqual(
+            value(state, key: "zoomMax"), value(state, key: "scale"), accuracy: 0.05,
+            "The run did not end at its highest sample: \(state)"
+        )
+        XCTAssertLessThanOrEqual(value(state, key: "zoomBack"), 1, "The zoom reversed direction mid-pinch: \(state)")
+        XCTAssertLessThanOrEqual(value(state, key: "zoomStep"), 0.25, "The zoom moved in visible steps: \(state)")
+        XCTAssertEqual(value(state, key: "zoomInset"), 0, "The pinch rewrote contentInset under the fingers: \(state)")
+        XCTAssertLessThanOrEqual(value(state, key: "zoomDrift"), 0.03, "The photo drifted off the pinch point: \(state)")
+        XCTAssertLessThanOrEqual(value(state, key: "zoomCentreStep"), 0.03, "The photo jumped while zooming: \(state)")
+        // The gesture must settle inside the photo's bounds, not rest over the
+        // edge that the rubber band reached.
+        XCTAssertLessThanOrEqual(value(state, key: "over"), 1, "The pinch settled out of bounds: \(state)")
+
+        // Push past maximumZoomScale: the bounce above the limit is the
+        // intended rubber band. Clamped samples must keep it out of the
+        // summary, and the gesture must still settle in bounds.
+        photo.pinch(withScale: 2, velocity: 2)
+        sleep(1)
+        let overshoot = probe(app)
+        attach(app, "pinch-at-maximum")
+        attach(app, text: "pinch past maximum zoom: \(overshoot)")
+        // The second pinch has to be a new run: without this the assertions
+        // below could re-read the first pinch's summary and pass.
+        XCTAssertEqual(
+            value(overshoot, key: "zoomRuns"), value(state, key: "zoomRuns") + 1,
+            "The saturating pinch did not produce a new run: \(overshoot)"
+        )
+        // The live scale pins the gesture at the limit (the first pinch left it
+        // near 2.9), and the run has to have covered that distance in small
+        // steps. `zoomMax` is an equality because the probe clamps samples to
+        // the scroll view's range: it can only be 4 if the pinch reached the
+        // limit, and it would read the rubber-band peak if the clamp were lost.
+        XCTAssertEqual(value(overshoot, key: "scale"), 4, accuracy: 0.05, "The pinch did not reach maximum zoom: \(overshoot)")
+        XCTAssertEqual(value(overshoot, key: "zoomMax"), 4, accuracy: 0.02, "The run did not reach maximum zoom: \(overshoot)")
+        XCTAssertGreaterThanOrEqual(value(overshoot, key: "zoomSpan"), 1, "The second pinch did not span the range: \(overshoot)")
+        XCTAssertLessThanOrEqual(value(overshoot, key: "zoomStep"), 0.25, "The zoom moved in visible steps: \(overshoot)")
+        XCTAssertLessThanOrEqual(value(overshoot, key: "zoomBack"), 1, "The rubber band read as a reversed pinch: \(overshoot)")
+        XCTAssertEqual(value(overshoot, key: "zoomInset"), 0, "The pinch rewrote contentInset at maximum zoom: \(overshoot)")
+        XCTAssertLessThanOrEqual(value(overshoot, key: "over"), 1, "The pinch settled out of bounds at maximum zoom: \(overshoot)")
+
+        // Zoom back out. The offset the pinch left at the edge has to settle
+        // inside the photo — and to zero once it is back at fit — instead of
+        // leaving the viewer reporting a transient overpan.
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleTap()
+        sleep(1)
+        let reset = probe(app)
+        attach(app, "reset-from-maximum")
+        attach(app, text: "double-tap reset: \(reset)")
+        XCTAssertEqual(value(reset, key: "scale"), 1, accuracy: 0.05, "The reset did not return to fit: \(reset)")
+        XCTAssertLessThanOrEqual(value(reset, key: "over"), 1, "The zoom-out settled out of bounds: \(reset)")
+        // The reset is a programmatic zoom: it must not be recorded as a pinch
+        // run, so the summary read above is still the pinch's.
+        XCTAssertEqual(
+            value(reset, key: "zoomRuns"), value(overshoot, key: "zoomRuns"),
+            "The programmatic reset was recorded as a pinch run: \(reset)"
+        )
+    }
+
+    /// The floating date capsule must stay on screen and clear of the round
+    /// buttons at an accessibility text size, where a long date used to be
+    /// pushed past (or under) the edge.
+    func testTopBarFitsAtAccessibilityTextSize() throws {
+        let app = launch(environment: [
+            "BACKU_VIEWER_TEXT_SIZE": "UICTContentSizeCategoryAccessibilityXXXL"
+        ])
+        _ = openFirstPhoto(app)
+
+        let date = app.staticTexts["viewer.date"]
+        XCTAssertTrue(date.waitForExistence(timeout: 5), "The viewer date label is missing")
+        let window = app.windows.firstMatch.frame
+        let close = app.buttons["Close"].frame
+        let frame = date.frame
+        attach(app, "top-bar-accessibility-text")
+        attach(
+            app,
+            text: "date \"\(date.label)\" \(frame) · close \(close) · window \(window)"
+        )
+
+        XCTAssertGreaterThan(frame.width, 0, "The date label has no width")
+        // The default date label is about 20pt tall; anything under 28 means
+        // the oversized layout was not actually exercised.
+        XCTAssertGreaterThan(frame.height, 28, "The accessibility text size did not apply")
+        XCTAssertGreaterThanOrEqual(frame.minX, window.minX, "The date runs off the leading edge")
+        XCTAssertLessThanOrEqual(frame.maxX, window.maxX, "The date runs off the trailing edge")
+        XCTAssertTrue(frame.maxX <= close.minX || frame.minX >= close.maxX, "The date overlaps the close button")
+
+        let favourite = app.buttons["Remove favorite"].exists
+            ? app.buttons["Remove favorite"]
+            : app.buttons["Favorite"]
+        if favourite.exists {
+            XCTAssertTrue(
+                frame.maxX <= favourite.frame.minX || frame.minX >= favourite.frame.maxX,
+                "The date overlaps the favourite button"
+            )
+        }
+
+        // VoiceOver must meet Close before the date and time. The capsule is
+        // hoisted above the buttons to be laid out on its own, so the stack
+        // order (not the visual order) decides what a person hears first.
+        let tree = app.descendants(matching: .any).allElementsBoundByIndex
+        let closeIndex = tree.firstIndex { $0.elementType == .button && $0.label == "Close" }
+        let dateIndex = tree.firstIndex { $0.identifier == "viewer.date" }
+        attach(
+            app,
+            text: "accessibility order: close \(String(describing: closeIndex)) · date \(String(describing: dateIndex))"
+        )
+        XCTAssertNotNil(closeIndex, "The Close button is missing from the accessibility tree")
+        XCTAssertNotNil(dateIndex, "The date is missing from the accessibility tree")
+        if let closeIndex, let dateIndex {
+            XCTAssertLessThan(closeIndex, dateIndex, "VoiceOver reads the date before the Close button")
+        }
+    }
+
     func testViewerGestures() throws {
         let app = launch()
         attach(app, "viewer-01-library")

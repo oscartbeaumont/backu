@@ -34,20 +34,27 @@ final class AtlasStore {
     private let gridMemoryLimit = 3
     private let previewMemoryLimit = 24
 
-    private var decoded: [Key: Entry] = [:]
-    private var order: [Key] = []
-    private var inFlight: [Key: Task<AtlasDecodedSheet?, Never>] = [:]
+    // This is a cache, not view state. `cachedTile` is called synchronously
+    // from a tile's `body` and its LRU `touch` mutates `order`; making any of
+    // this observable would invalidate every realized tile on every cache hit,
+    // decode and eviction (the same problem `ImageCache` solved by ignoring
+    // its storage). Tiles paint from the synchronous lookup and their own
+    // `.task`, so no view needs these to publish.
+    @ObservationIgnored private var decoded: [Key: Entry] = [:]
+    @ObservationIgnored private var order: [Key] = []
+    @ObservationIgnored private var inFlight: [Key: Task<AtlasDecodedSheet?, Never>] = [:]
     /// Groups that failed to download. Retried after a cooldown instead of on
     /// every tile that scrolls past.
-    private var failedAt: [Key: Date] = [:]
-    private var pending: [Key] = []
-    private var active = 0
+    @ObservationIgnored private var failedAt: [Key: Date] = [:]
+    @ObservationIgnored private var pending: [Key] = []
+    @ObservationIgnored private var active = 0
     private let maxConcurrent = 4
     private let directory: URL
 
-    /// Test seam: requests counted by group + level.
-    private(set) var downloads = 0
-    private(set) var diskHits = 0
+    /// Test seam: requests counted by group + level. Read directly by the
+    /// integration tests; never by a view.
+    @ObservationIgnored private(set) var downloads = 0
+    @ObservationIgnored private(set) var diskHits = 0
 
     init(directory: URL = AppPaths.atlasCache) {
         self.directory = directory

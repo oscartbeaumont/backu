@@ -2,6 +2,14 @@ import CoreGraphics
 import Foundation
 import Photos
 
+/// Which way the grid is travelling. The prefetch window leans forward so a
+/// fling meets warm thumbnails, and still keeps a screen or two behind for the
+/// flick back.
+enum ScrollDirection {
+    case forward
+    case backward
+}
+
 /// Warms the thumbnails the grid is about to show.
 ///
 /// Local assets go through `PHCachingImageManager`, the mechanism Photos itself
@@ -23,15 +31,42 @@ final class ThumbnailPrefetcher {
     private var remoteTasks: [String: Task<Void, Never>] = [:]
     private let maxRemoteRequests = 3
 
-    /// Window of photos to keep warm, expanded by `visibleRows` screens on
-    /// either side of the viewport.
+    /// Local photos just beyond the viewport that are decoded into
+    /// `ImageCache` rather than only into PhotoKit's caching manager. A
+    /// `PHCachingImageManager` preheat still needs a request callback before a
+    /// tile can draw it; pre-decoding into the app cache is what lets a newly
+    /// realized tile paint in its *first* frame with no placeholder.
+    private struct DecodeRequest {
+        var photo: PhotoItem
+        var size: CGSize
+    }
+
+    private var decodeQueue: [DecodeRequest] = []
+    private var decodeTasks: [String: Task<Void, Never>] = [:]
+    private let maxDecodeRequests = 3
+
+    /// Screens kept warm behind the viewport, and ahead of it in the direction
+    /// of travel. Ahead matters more during a fling; behind keeps a reversal
+    /// from going blank.
+    private let trailScreens = 2
+    private let leadScreens = 3
+    private let decodeScreens = 2
+
+    /// Window of photos to keep warm, expanded by several screens on either
+    /// side of the viewport, weighted towards the direction of travel.
+    ///
+    /// `perPhotoPixelSize` is for the full-width level, where every tile has a
+    /// different height; without it the decode pump would warm a size no tile
+    /// ever asks for and the cache entries would be unused.
     func update(
         photos: [PhotoItem],
         visibleRange: Range<Int>,
         itemsPerRow: Int,
         visibleRows: Int,
         targetPixelSize: CGSize,
-        images: ImageCache
+        images: ImageCache,
+        direction: ScrollDirection = .forward,
+        perPhotoPixelSize: ((PhotoItem) -> CGSize)? = nil
     ) {
         guard !photos.isEmpty, targetPixelSize.width > 1, itemsPerRow > 0 else {
             stop()
@@ -40,8 +75,18 @@ final class ThumbnailPrefetcher {
         let rows = photos.count / max(1, itemsPerRow) + 1
         let firstRow = min(rows - 1, visibleRange.lowerBound / itemsPerRow)
         let lastRow = min(rows - 1, visibleRange.upperBound / itemsPerRow)
-        let lowerRow = max(0, firstRow - visibleRows * 2)
-        let upperRow = min(rows, lastRow + visibleRows * 3)
+        let ahead = max(2, visibleRows) * leadScreens
+        let behind = max(1, visibleRows) * trailScreens
+        let lowerRow: Int
+        let upperRow: Int
+        switch direction {
+        case .forward:
+            lowerRow = max(0, firstRow - behind)
+            upperRow = min(rows, lastRow + ahead)
+        case .backward:
+            lowerRow = max(0, firstRow - ahead)
+            upperRow = min(rows, lastRow + behind)
+        }
         let lower = min(photos.count, lowerRow * itemsPerRow)
         let upper = min(photos.count, upperRow * itemsPerRow)
         guard lower < upper else { return }
@@ -49,6 +94,16 @@ final class ThumbnailPrefetcher {
 
         updateLocal(window, targetPixelSize: targetPixelSize)
         updateRemote(window, targetPixelSize: targetPixelSize, images: images)
+        prefetchDecodes(
+            photos: photos,
+            visibleRange: visibleRange,
+            itemsPerRow: itemsPerRow,
+            visibleRows: visibleRows,
+            targetPixelSize: targetPixelSize,
+            images: images,
+            direction: direction,
+            perPhotoPixelSize: perPhotoPixelSize
+        )
     }
 
     func stop() {
@@ -64,6 +119,9 @@ final class ThumbnailPrefetcher {
         cachingSize = .zero
         for task in remoteTasks.values { task.cancel() }
         remoteTasks.removeAll()
+        for task in decodeTasks.values { task.cancel() }
+        decodeTasks.removeAll()
+        decodeQueue.removeAll()
         remoteWindow = []
         images = nil
     }
@@ -129,6 +187,64 @@ final class ThumbnailPrefetcher {
         }
         return photos.compactMap { photo in
             photo.localIdentifier.flatMap { assetCache[$0] }
+        }
+    }
+
+    // MARK: - Local pre-decode
+
+    /// Decodes the next screen or two into the app's thumbnail cache. The
+    /// caching manager below warms PhotoKit, but a tile can only paint
+    /// synchronously from `ImageCache`, so this is the work that removes the
+    /// blank first frame at the leading edge of a fling. Only the band just
+    /// beyond the viewport is queued: the wider window stays with
+    /// `PHCachingImageManager`, which is cheaper and bounded.
+    private func prefetchDecodes(
+        photos: [PhotoItem],
+        visibleRange: Range<Int>,
+        itemsPerRow: Int,
+        visibleRows: Int,
+        targetPixelSize: CGSize,
+        images: ImageCache,
+        direction: ScrollDirection,
+        perPhotoPixelSize: ((PhotoItem) -> CGSize)?
+    ) {
+        // At the full-width level a single thumbnail is several megabytes, so
+        // only the very next screen is decoded ahead. Multi-column tiles are
+        // small enough to warm a couple of screens.
+        let lead = itemsPerRow <= 1
+            ? 2
+            : max(itemsPerRow, visibleRows * itemsPerRow * decodeScreens)
+        var candidates: [PhotoItem] = []
+        switch direction {
+        case .forward:
+            let start = min(photos.count, visibleRange.upperBound)
+            let end = min(photos.count, start + lead)
+            if start < end { candidates = Array(photos[start..<end]) }
+        case .backward:
+            let end = max(0, visibleRange.lowerBound)
+            let start = max(0, end - lead)
+            if start < end { candidates = Array(photos[start..<end].reversed()) }
+        }
+        decodeQueue = candidates.map { photo in
+            DecodeRequest(photo: photo, size: perPhotoPixelSize?(photo) ?? targetPixelSize)
+        }
+        pumpDecode(images: images)
+    }
+
+    private func pumpDecode(images: ImageCache) {
+        while decodeTasks.count < maxDecodeRequests, !decodeQueue.isEmpty {
+            let request = decodeQueue.removeFirst()
+            let photo = request.photo
+            let size = request.size
+            guard size.width > 1, photo.localIdentifier != nil else { continue }
+            guard decodeTasks[photo.id] == nil else { continue }
+            guard images.cachedFinalThumbnail(for: photo, size: size) == nil else { continue }
+            decodeTasks[photo.id] = Task(priority: .utility) { [weak self] in
+                await images.prefetchThumbnail(for: photo, size: size)
+                guard let self else { return }
+                self.decodeTasks[photo.id] = nil
+                self.pumpDecode(images: images)
+            }
         }
     }
 

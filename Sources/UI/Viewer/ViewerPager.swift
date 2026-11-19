@@ -302,6 +302,11 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
 
     func update(photos: [PhotoItem], selection: String, reduceMotion: Bool) {
         self.reduceMotion = reduceMotion
+        // Take the new selection before rebuilding. `rebuildPages` settles the
+        // window on `selection`; rebuilding around the previous photo (which
+        // may not even exist in the new presentation window) left the pager
+        // resting on the wrong index until something else moved it.
+        self.selection = selection
         let ids = photos.map(\.id)
         if ids != photoIDs {
             photoIDs = ids
@@ -313,7 +318,6 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
                 page.reduceMotion = reduceMotion
             }
         }
-        self.selection = selection
         // Initial positioning happens in viewDidLayoutSubviews, once the page
         // width is known. This method can be called inside a SwiftUI update, so
         // it must not mutate observed state synchronously.
@@ -334,10 +338,13 @@ final class ViewerPagerController: UIViewController, UIScrollViewDelegate {
     // MARK: Page window
 
     /// Drops every controller and starts a fresh window around the selection.
-    /// Only called when the roll itself changes, never on a page change.
+    /// Called when the roll itself changes (including a new presentation, even
+    /// one whose photos happen to overlap), never on a page change.
     private func rebuildPages() {
         loadViewIfNeeded()
         let started = CFAbsoluteTimeGetCurrent()
+        edgeDragFrom = nil
+        edgeDragDirection = 0
         for (index, page) in pages {
             release(page, at: index)
         }
@@ -723,6 +730,14 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     private var handoffActive = false
     private var handoffStartTranslation: CGFloat = 0
     private var didResetPanAfterHandoff = false
+    /// Whether the zoom `UIScrollView` is reporting came from one of our own
+    /// animated `setZoomScale`/`zoom(to:)` calls rather than a pinch.
+    private var isProgrammaticZoom = false
+    #if DEBUG
+    /// Whether this page owns an open probe zoom run. Only a zoom this page
+    /// began records samples, so a neighbour's reset can never bleed into it.
+    private var zoomRunOpen = false
+    #endif
 
     /// Time a photo has to stay current before its full-resolution image is
     /// decoded. Flicking through a roll otherwise starts a 2400px decode for
@@ -876,6 +891,15 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     func setActivation(_ level: Activation) {
         let previous = activation
         activation = level
+        #if DEBUG
+        if level != .current, zoomRunOpen {
+            // Paged away mid-pinch: drop the partial run rather than have it
+            // published by this page's own zoom reset, or mixed into the next
+            // page's gesture.
+            zoomRunOpen = false
+            ViewerInteractionProbe.shared.cancelZoomRun()
+        }
+        #endif
         switch level {
         case .idle:
             guard previous != .idle else { return }
@@ -1077,7 +1101,6 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         guard let image = imageView.image, image.size.width > 0, image.size.height > 0 else {
             imageView.frame = .zero
             scrollView.contentSize = bounds
-            scrollView.contentInset = .zero
             return
         }
         let fit = Self.aspectFit(image.size, in: bounds)
@@ -1088,7 +1111,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         if zoom > 1.001 {
             scrollView.setZoomScale(zoom, animated: false)
         }
-        centerContent()
+        centerZoomingView()
         scrollView.contentOffset = clampedOffset(scrollView.contentOffset)
         updatePanAvailability()
     }
@@ -1112,17 +1135,27 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         return CGSize(width: size.width * scale, height: size.height * scale)
     }
 
-    private func centerContent() {
+    /// Keeps the photo centred without ever touching `contentInset`.
+    ///
+    /// Reassigning the inset on every zoom tick rewrites the content offset
+    /// underneath the pinch, which made a zoom-out move in visible steps (and
+    /// fought the pinch anchor on the way in). Moving the zooming view's centre
+    /// leaves the offset alone: while the scaled photo is smaller than the
+    /// viewport the centre is the viewport's, at the moment it fills the
+    /// viewport the two coincide, and once it is larger the centre is the
+    /// content's, so panning still clamps to the photo's edges.
+    private func centerZoomingView() {
+        guard imageView.bounds.width > 0, imageView.bounds.height > 0 else { return }
         let bounds = scrollView.bounds.size
         let content = scrollView.contentSize
-        let insets = UIEdgeInsets(
-            top: max(0, (bounds.height - content.height) / 2),
-            left: max(0, (bounds.width - content.width) / 2),
-            bottom: max(0, (bounds.height - content.height) / 2),
-            right: max(0, (bounds.width - content.width) / 2)
+        let offsetX = max(0, (bounds.width - content.width) / 2)
+        let offsetY = max(0, (bounds.height - content.height) / 2)
+        let center = CGPoint(
+            x: content.width / 2 + offsetX,
+            y: content.height / 2 + offsetY
         )
-        if scrollView.contentInset != insets {
-            scrollView.contentInset = insets
+        if imageView.center != center {
+            imageView.center = center
         }
     }
 
@@ -1146,9 +1179,35 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     /// sharpens after a pause and sharpens *at once* when zoomed.
     var isShowingFullImage: Bool { loadedFinal }
 
+    func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+        #if DEBUG
+        if !isProgrammaticZoom, activation == .current {
+            zoomRunOpen = true
+            ViewerInteractionProbe.shared.beginZoomRun(
+                from: scrollView.zoomScale,
+                centre: viewportFocus(),
+                inset: viewportInset(),
+                limits: scrollView.minimumZoomScale...scrollView.maximumZoomScale
+            )
+        }
+        #endif
+    }
+
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
-        centerContent()
+        centerZoomingView()
         updatePanAvailability()
+        #if DEBUG
+        // Only the photo on screen, and only a zoom this page started,
+        // describes the run. A neighbour resetting its zoom must not append to
+        // (or close) the gesture under the fingers.
+        if zoomRunOpen, activation == .current {
+            ViewerInteractionProbe.shared.zoomSample(
+                scrollView.zoomScale,
+                centre: viewportFocus(),
+                inset: viewportInset()
+            )
+        }
+        #endif
         // A pinch asks for detail now: start the full decode without waiting
         // out the delay that exists to protect flicking through the roll.
         if scrollView.zoomScale > 1.01 {
@@ -1158,10 +1217,21 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
 
     func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
         if scale <= 1.01 {
-            scrollView.setZoomScale(1, animated: false)
-            centerContent()
+            setZoomScale(1, animated: false)
         }
+        centerZoomingView()
+        // A pinch that ends inside the rubber band leaves the content offset
+        // past the edge until the next touch. Settle it here (at fit this puts
+        // the photo back at zero) so the viewer never rests out of bounds.
+        scrollView.contentOffset = clampedOffset(scrollView.contentOffset)
         updatePanAvailability()
+        #if DEBUG
+        if zoomRunOpen {
+            zoomRunOpen = false
+            ViewerInteractionProbe.shared.endZoomRun()
+        }
+        #endif
+        isProgrammaticZoom = false
         updateProbe()
     }
 
@@ -1179,14 +1249,28 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             || abs(scrollView.contentOffset.y) > 0.5
         guard needsReset else { return }
         if animated {
-            scrollView.setZoomScale(1, animated: true)
+            setZoomScale(1, animated: true)
         } else {
-            scrollView.setZoomScale(1, animated: false)
-            centerContent()
+            setZoomScale(1, animated: false)
+            centerZoomingView()
             scrollView.contentOffset = .zero
         }
         updatePanAvailability()
         updateProbe()
+    }
+
+    /// `UIScrollView` reports a programmatic animated zoom through the same
+    /// `willBeginZooming`/`didEndZooming` callbacks as a pinch. Marking those
+    /// keeps them out of the probe's pinch runs, so a double-tap reset cannot
+    /// replace (or add to) the summary of the pinch that came before it.
+    private func setZoomScale(_ scale: CGFloat, animated: Bool) {
+        if animated { isProgrammaticZoom = true }
+        scrollView.setZoomScale(scale, animated: animated)
+    }
+
+    private func zoom(to rect: CGRect, animated: Bool) {
+        if animated { isProgrammaticZoom = true }
+        scrollView.zoom(to: rect, animated: animated)
     }
 
     // MARK: Gestures
@@ -1206,7 +1290,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
     @objc private func handleDoubleTap() {
         guard imageView.image != nil else { return }
         if scrollView.zoomScale > 1.01 {
-            scrollView.setZoomScale(1, animated: !reduceMotion)
+            setZoomScale(1, animated: !reduceMotion)
             return
         }
         let target: CGFloat = 2.5
@@ -1221,7 +1305,7 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
             width: size.width,
             height: size.height
         )
-        scrollView.zoom(to: rect, animated: !reduceMotion)
+        zoom(to: rect, animated: !reduceMotion)
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -1320,25 +1404,46 @@ final class ViewerZoomPageController: UIViewController, UIScrollViewDelegate, UI
         #if DEBUG
         guard ViewerInteractionProbe.shared.isEnabled else { return }
         let bounds = scrollView.bounds
-        let zoom = max(scrollView.zoomScale, 0.01)
-        let imageSize = imageView.bounds.size
-        // `contentOffset` already includes the centring inset, so the point at
-        // the middle of the viewport is just offset + bounds / 2. Subtracting
-        // the inset again (as this used to) reports a different centre for
-        // every aspect ratio.
-        let centerX = imageSize.width > 0
-            ? (scrollView.contentOffset.x + bounds.width / 2) / zoom / imageSize.width
-            : 0.5
-        let centerY = imageSize.height > 0
-            ? (scrollView.contentOffset.y + bounds.height / 2) / zoom / imageSize.height
-            : 0.5
+        let focus = viewportFocus()
         let minX = -scrollView.adjustedContentInset.left
         let maxX = max(minX, scrollView.contentSize.width - bounds.width + scrollView.adjustedContentInset.right)
         let overpan = max(0, minX - scrollView.contentOffset.x)
             + max(0, scrollView.contentOffset.x - maxX)
-        onZoomMetrics?(scrollView.zoomScale, centerX, centerY, overpan)
+        onZoomMetrics?(scrollView.zoomScale, focus.x, focus.y, overpan)
         #endif
     }
+
+    #if DEBUG
+    /// The scroll view's insets as a size, so a pinch run can prove the zoom
+    /// layout never rewrites them mid-gesture (the churn that made a zoom-out
+    /// move in steps).
+    private func viewportInset() -> CGSize {
+        CGSize(
+            width: scrollView.contentInset.left + scrollView.contentInset.right,
+            height: scrollView.contentInset.top + scrollView.contentInset.bottom
+        )
+    }
+
+    /// Where the point at the centre of the viewport falls in the photo, as a
+    /// fraction of the photo's size — (0.5, 0.5) when the photo is centred.
+    /// The photo is centred by moving the zooming view rather than by insetting
+    /// the scroll view, so translate the point instead of reading
+    /// `contentOffset`, which no longer carries any centring.
+    private func viewportFocus() -> CGPoint {
+        guard imageView.bounds.width > 0, imageView.bounds.height > 0 else {
+            return CGPoint(x: 0.5, y: 0.5)
+        }
+        let bounds = scrollView.bounds
+        let point = scrollView.convert(
+            CGPoint(x: bounds.midX, y: bounds.midY),
+            to: imageView
+        )
+        return CGPoint(
+            x: point.x / imageView.bounds.width,
+            y: point.y / imageView.bounds.height
+        )
+    }
+    #endif
 }
 
 #if DEBUG

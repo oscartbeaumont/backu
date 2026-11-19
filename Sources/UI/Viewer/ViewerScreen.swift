@@ -1,6 +1,51 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 struct ViewerScreen: View {
+    let presentation: ViewerPresentation
+
+    var body: some View {
+        // `navigationDestination(item:)` reuses the destination's view — and
+        // its `@State` — when the viewer is pushed again, so the second push
+        // opened on the photo from the presentation before it (the first
+        // photo). Keying the session on the presentation's id gives every push
+        // fresh state: the start photo, panel, chrome and pull. A presentation
+        // mutated in place is unsupported; every push makes a new one.
+        ViewerSession(presentation: presentation)
+            .id(presentation.id)
+            .viewerDebugTextSize()
+    }
+}
+
+private extension View {
+    /// `BACKU_VIEWER_TEXT_SIZE=UICTContentSizeCategoryAccessibilityXXXL` pins
+    /// the viewer's text size for the UI tests. Simulator builds only take
+    /// `-UIPreferredContentSizeCategoryName` part way (it moved the date from
+    /// 17pt to 20pt rather than to the requested accessibility size), so the
+    /// large-text layout is exercised through the same kind of DEBUG-only
+    /// switch as `BACKU_REDUCE_MOTION` and `BACKU_PROBE`.
+    @ViewBuilder
+    func viewerDebugTextSize() -> some View {
+        #if DEBUG
+        #if os(iOS)
+        if let raw = ProcessInfo.processInfo.environment["BACKU_VIEWER_TEXT_SIZE"],
+           let size = DynamicTypeSize(UIContentSizeCategory(rawValue: raw)) {
+            environment(\.dynamicTypeSize, size)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+        #else
+        self
+        #endif
+    }
+}
+
+private struct ViewerSession: View {
     let presentation: ViewerPresentation
 
     @Environment(AppModel.self) private var app
@@ -246,49 +291,77 @@ struct ViewerScreen: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 10) {
-            Button(action: close) {
-                Image(systemName: closeSymbol)
-                    .scaledFont(16, weight: .bold)
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .accessibilityLabel("Close")
-
-            Spacer(minLength: 8)
-
-            VStack(spacing: 1) {
-                Text(photo?.takenAt?.dayLabel ?? "Photo")
-                    .scaledFont(17, weight: .semibold)
-                if let taken = photo?.takenAt {
-                    Text(taken.timeLabel)
-                        .scaledFont(13)
-                        .opacity(0.7)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .frame(minHeight: 44)
-            .glassCapsule()
-
-            Spacer(minLength: 8)
-
-            if let photo {
-                Button {
-                    app.toggleFavorite(photo.id)
-                } label: {
-                    Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
-                        .scaledFont(15, weight: .semibold)
+        // The date is laid out on its own, centred on the screen, and the two
+        // round buttons sit over the edges of the row. Squeezing the capsule
+        // between them in an HStack gave it whatever the spacers left over, so
+        // at an accessibility text size the date collapsed to its minimum scale
+        // instead of using the free width — and with no room left it ran into
+        // the buttons or off the edge.
+        //
+        // The buttons come first in the stack so VoiceOver reads Close before
+        // the date; they sit in the 78pt gutters the capsule is padded out of,
+        // so drawing order does not matter.
+        ZStack {
+            HStack(spacing: 8) {
+                Button(action: close) {
+                    Image(systemName: closeSymbol)
+                        .scaledFont(16, weight: .bold)
                         .frame(width: 44, height: 44)
-                        .foregroundStyle(photo.isFavorite ? Theme.accent : Color.primary)
-                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
-                .accessibilityLabel(photo.isFavorite ? "Remove favorite" : "Favorite")
+                .accessibilityLabel("Close")
+
+                Spacer(minLength: 8)
+
+                if let photo {
+                    Button {
+                        app.toggleFavorite(photo.id)
+                    } label: {
+                        Image(systemName: photo.isFavorite ? "heart.fill" : "heart")
+                            .scaledFont(15, weight: .semibold)
+                            .frame(width: 44, height: 44)
+                            .foregroundStyle(photo.isFavorite ? Theme.accent : Color.primary)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .accessibilityLabel(photo.isFavorite ? "Remove favorite" : "Favorite")
+                }
+            }
+
+            dateCapsule
+                .padding(.horizontal, 78)
+        }
+    }
+
+    /// The photo's date and time, kept on one line between the two round
+    /// buttons. A long month name at an accessibility text size used to run
+    /// past the screen edge; it now shrinks (and finally truncates) inside the
+    /// space the buttons leave, while still scaling in beyond the default size.
+    private var dateCapsule: some View {
+        VStack(spacing: 1) {
+            Text(photo?.takenAt?.dayLabel ?? "Photo")
+                .scaledFont(17, weight: .semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .accessibilityIdentifier("viewer.date")
+            if let taken = photo?.takenAt {
+                Text(taken.timeLabel)
+                    .scaledFont(13)
+                    .opacity(0.7)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         }
+        // Month names are long in several languages and the row is narrow at
+        // accessibility sizes; capping the growth (not disabling it) keeps the
+        // capsule inside the safe area instead of clipping at the edge.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
+        .glassCapsule()
     }
 
     private var closeSymbol: String {
@@ -315,6 +388,8 @@ struct ViewerScreen: View {
                             .scaledFont(16, weight: .semibold)
                         Text("Save")
                             .font(.caption2.weight(.medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
@@ -327,6 +402,9 @@ struct ViewerScreen: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
         .frame(maxWidth: 420)
+        // Keep the labels inside the glass and the glass inside the screen at
+        // accessibility sizes, where caption2 grows past the buttons' height.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .glassSurface(28)
         .padding(.bottom, 6)
     }
@@ -340,6 +418,8 @@ struct ViewerScreen: View {
                     .scaledFont(16, weight: .semibold)
                 Text(label)
                     .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity)
             .frame(height: 48)

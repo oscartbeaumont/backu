@@ -82,7 +82,7 @@ struct RootView: View {
         return NavigationStack {
             tabRoot
                 .toolbar(.hidden, for: .navigationBar)
-                .navigationDestination(item: $app.viewer) { presentation in
+                .navigationDestination(item: rootViewer) { presentation in
                     ViewerScreen(presentation: presentation)
                         .environment(app)
                 }
@@ -125,6 +125,26 @@ struct RootView: View {
     }
     #endif
 
+    /// While the search cover is presented it owns the viewer through its own
+    /// `NavigationStack`. If the root stack stayed bound to the same item it
+    /// would push a second viewer behind the cover — two live players for one
+    /// photo and a duplicate set of accessibility elements.
+    private var rootViewer: Binding<ViewerPresentation?> {
+        #if os(iOS)
+        Binding(
+            get: { app.showSearch ? nil : app.viewer },
+            set: { app.viewer = $0 }
+        )
+        #else
+        // The macOS search sheet has no destination of its own, so the split
+        // view keeps owning the viewer there.
+        Binding(
+            get: { app.viewer },
+            set: { app.viewer = $0 }
+        )
+        #endif
+    }
+
     private var splitRoot: some View {
         @Bindable var app = app
         return NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -139,7 +159,7 @@ struct RootView: View {
                     case .settings: SettingsScreen()
                     }
                 }
-                .navigationDestination(item: $app.viewer) { presentation in
+                .navigationDestination(item: rootViewer) { presentation in
                     ViewerScreen(presentation: presentation)
                         .environment(app)
                 }
@@ -175,6 +195,13 @@ struct AppBottomBar: View {
     @Namespace private var namespace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The circles keep their 56 pt size at every Dynamic Type size, so their
+    /// glyphs grow with the text setting but stop before they outrun the glass.
+    /// System tab bars do the same: the icons stay put and the labels carry the
+    /// growth, which is why an uncapped glyph would spill past the circle.
+    @ScaledMetric(relativeTo: .body) private var searchGlyphSize: CGFloat = 20
+    @ScaledMetric(relativeTo: .body) private var libraryGlyphSize: CGFloat = 19
+
     private var isTimeline: Bool {
         selection == .library && !showsLibraryTabs
     }
@@ -194,11 +221,10 @@ struct AppBottomBar: View {
 
             Button(action: onSearch) {
                 Image(systemName: "magnifyingglass")
-                    .scaledFont(20, weight: .semibold)
+                    .font(.system(size: min(searchGlyphSize, 28), weight: .semibold))
                     .frame(width: 56, height: 56)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(GlassSurfaceButtonStyle(outline: .circle, hitTarget: 56))
             .accessibilityLabel("Search")
             .accessibilityIdentifier("search.open")
         }
@@ -215,12 +241,11 @@ struct AppBottomBar: View {
                 }
             } label: {
                 Image(systemName: "photo.on.rectangle.angled")
-                    .scaledFont(19, weight: .semibold)
+                    .font(.system(size: min(libraryGlyphSize, 26), weight: .semibold))
                     .foregroundStyle(Theme.accent)
                     .frame(width: 56, height: 56)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(GlassSurfaceButtonStyle(outline: .circle, hitTarget: 56))
             .accessibilityLabel("Show Library tabs")
             .accessibilityIdentifier("tabs.show")
 

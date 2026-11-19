@@ -24,6 +24,15 @@ final class ScrollPerformanceTests: XCTestCase {
         """
     }
 
+    /// Automatic backup on against the refused endpoint: the failure banner is
+    /// guaranteed to appear, which is what the banner-layout regression needs.
+    private var bannerBootstrap: String {
+        """
+        {"servers":[{"name":"Perf","provider":"custom","endpoint":"http://127.0.0.1:9","region":"us-east-1","bucket":"perf","accessKeyID":"perf","secretAccessKey":"perf","pathStyle":true,"prefix":"Backu"}],
+         "settings":{"autoBackupEnabled":true,"backupOnCellular":false,"faceRecognitionEnabled":false,"gridColumns":3,"hasCompletedOnboarding":true,"showRemoteOnlyPhotos":true}}
+        """
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         try XCTSkipUnless(
@@ -67,7 +76,7 @@ final class ScrollPerformanceTests: XCTestCase {
         // is lifted, so the first sample catches the tiles still streaming in.
         settleToTop(app)
         sleep(1)
-        let transient = fling(app, times: 3)
+        let transient = fling(app, times: 3, captureSteps: true)
         let flingProbe = probe(app).map { "probe \($0)" } ?? "probe unavailable"
         sleep(2)
         let settled = loadingTiles(app)
@@ -75,6 +84,7 @@ final class ScrollPerformanceTests: XCTestCase {
         attach(app, "perf-02-settled")
         record("fast fling: peak \(transient.peak) loading, after settling \(settled.loading) of \(settled.visible) visible")
         record("fast fling probe: \(flingProbe) · settled \(settledProbe)")
+        record("fling frames: \(transient.frames)")
 
         // Warm second screen: time-to-ready after the fling, when the prefetch
         // window has had a chance to help.
@@ -103,6 +113,62 @@ final class ScrollPerformanceTests: XCTestCase {
         }
 
         record("scroll metric above; last settled placeholders \(loadingTiles(app).loading)")
+        record("measure frames: \(frames(app))")
+    }
+
+    /// A banner is a full-width row above the grid. It used to be laid out as
+    /// a grid cell that did not span, so its text was compressed into one
+    /// column and overlapped the status bar. This also re-checks the prefetch
+    /// probe with the banner's extra header height in the row math.
+    func testFlingWithBackupBanner() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["BACKU_RESET"] = "1"
+        app.launchEnvironment["BACKU_BOOTSTRAP"] = bannerBootstrap
+        app.launchEnvironment["BACKU_PROBE"] = "1"
+        app.launch()
+
+        let allow = app.buttons["Allow Full Access"]
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let springboardAllow = springboard.buttons["Allow Full Access"]
+        if springboardAllow.waitForExistence(timeout: 2) { springboardAllow.tap() }
+
+        XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 30), "Library never appeared")
+        let banner = app.descendants(matching: .any)
+            .matching(identifier: "library.backupBanner").firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 40), "Backup failure banner never appeared")
+        let window = app.windows.firstMatch.frame
+        XCTAssertGreaterThan(banner.frame.width, window.width * 0.8, "Banner is compressed: \(banner.frame)")
+        XCTAssertGreaterThanOrEqual(banner.frame.minX, window.minX - 0.5, "Banner starts left of the screen")
+        XCTAssertLessThanOrEqual(banner.frame.maxX, window.maxX + 0.5, "Banner runs past the screen")
+
+        let tiles = app.buttons.matching(identifier: "library.tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 60), "No photo tiles rendered")
+        XCTAssertGreaterThanOrEqual(
+            tiles.firstMatch.frame.minY, banner.frame.maxY - 0.5,
+            "The first photo row overlaps the banner"
+        )
+        attach(app, "perf-banner-01-all")
+
+        // Wait for the initial screen, then let the cold-start blanks age out
+        // of the probe's trailing three-second window before flinging. This is
+        // also the check that the peak genuinely decays with no tile changes
+        // (small libraries realize no new tiles during a fling).
+        _ = waitForReadyTiles(app, count: firstScreenTiles, timeout: 20)
+        settleToTop(app)
+        sleep(3)
+        let idle = probe(app)
+        record("banner idle probe: \(idle.map { "\($0)" } ?? "unavailable")")
+        XCTAssertGreaterThan(idle?.visible ?? 0, 0, "The idle probe saw no realized tiles, so peak 0 is meaningless")
+        XCTAssertEqual(idle?.now ?? -1, 0, "Tiles are still blank while idle")
+        XCTAssertEqual(idle?.peak ?? -1, 0, "The 3 s blank peak did not decay while idle")
+        let sample = fling(app, times: 3)
+        let result = probe(app)
+        attach(app, "perf-banner-02-after-fling")
+        record("banner fling: peak \(sample.peak) loading, after \(sample.loading) of \(sample.visible) · probe \(result.map { "\($0)" } ?? "unavailable")")
+        XCTAssertGreaterThan(result?.visible ?? 0, 0, "The post-fling probe saw no realized tiles")
+        XCTAssertEqual(result?.now ?? -1, 0, "Tiles are blank after the fling")
+        XCTAssertEqual(result?.peak ?? -1, 0, "Blank tiles during a fling with a banner")
     }
 
     // MARK: - Helpers
@@ -113,9 +179,11 @@ final class ScrollPerformanceTests: XCTestCase {
         var finalNow = 0
         var finalPeak = 0
         var visible = 0
+        var coldPeak = 0
+        var coldFinalPeak = 0
 
         var description: String {
-            "blank \(now) (peak3s \(peak)), final \(finalNow) (peak3s \(finalPeak)), realised \(visible)"
+            "blank \(now) (peak3s \(peak)), final \(finalNow) (peak3s \(finalPeak)), realised \(visible), coldPeak \(coldPeak)/\(coldFinalPeak)"
         }
     }
 
@@ -132,6 +200,8 @@ final class ScrollPerformanceTests: XCTestCase {
             case "finalNow": result.finalNow = value
             case "finalPeak": result.finalPeak = value
             case "visible": result.visible = value
+            case "coldPeak": result.coldPeak = value
+            case "coldFinalPeak": result.coldFinalPeak = value
             default: break
             }
         }
@@ -142,6 +212,41 @@ final class ScrollPerformanceTests: XCTestCase {
         var loading = 0
         var visible = 0
         var peak = 0
+        var frames = FrameSample()
+    }
+
+    private struct FrameSample: CustomStringConvertible {
+        var frames = 0
+        var dropped = 0
+        var worst = 0.0
+        var average = 0.0
+
+        var description: String {
+            String(
+                format: "frames=%d, dropped=%d, worst=%.1fms, avg=%.1fms",
+                frames, dropped, worst, average
+            )
+        }
+    }
+
+    /// Reads the in-app `CADisplayLink` probe. The window is the trailing two
+    /// seconds, so call it right after the fling.
+    private func frames(_ app: XCUIApplication) -> FrameSample {
+        let element = app.descendants(matching: .any).matching(identifier: "perf.frames").firstMatch
+        guard element.exists, let raw = element.value as? String else { return FrameSample() }
+        var sample = FrameSample()
+        for part in raw.split(separator: ";") {
+            let pair = part.split(separator: "=")
+            guard pair.count == 2, let value = Double(pair[1]) else { continue }
+            switch pair[0] {
+            case "frames": sample.frames = Int(value)
+            case "dropped": sample.dropped = Int(value)
+            case "worst": sample.worst = value
+            case "avg": sample.average = value
+            default: break
+            }
+        }
+        return sample
     }
 
     private func loadingTiles(_ app: XCUIApplication) -> TileSample {
@@ -181,21 +286,27 @@ final class ScrollPerformanceTests: XCTestCase {
     /// Fast flings with no idle wait between them. Returns the peak number of
     /// visible tiles that were still loading during/after the flings.
     @discardableResult
-    private func fling(_ app: XCUIApplication, times: Int) -> TileSample {
+    private func fling(_ app: XCUIApplication, times: Int, captureSteps: Bool = false) -> TileSample {
         var peak = 0
-        for _ in 0..<times {
+        for step in 0..<times {
             let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
             let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.18))
             start.press(forDuration: 0.01, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+            // Sample before taking a screenshot: the screenshot is a UI query
+            // and would widen the gap to the next sample, biasing the peak
+            // downward. These attachments are post-lift, not mid-drag.
             peak = max(peak, loadingTiles(app).loading)
+            if captureSteps { attach(app, "perf-02b-post-fling-step-\(step)") }
         }
         let deadline = Date().addingTimeInterval(1.2)
+        let flingFrames = frames(app)
         while Date() < deadline {
             peak = max(peak, loadingTiles(app).loading)
             usleep(60_000)
         }
         var sample = loadingTiles(app)
         sample.peak = peak
+        sample.frames = flingFrames
         return sample
     }
 

@@ -282,28 +282,50 @@ struct FlowLayout: Layout {
     }
 }
 
-extension Date {
-    var monthYearLabel: String {
+/// Shared formatters. `DateFormatter` is expensive to build (locale data,
+/// ICU state) and was previously constructed on every access, inside body
+/// evaluation for grid and viewer labels. DateFormatter is safe to read from
+/// multiple threads on Apple platforms, so one instance per format is enough.
+private enum DateFormatters {
+    static let day: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d MMMM yyyy"
+        return formatter
+    }()
+
+    static let monthYear: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "LLLL yyyy"
-        return formatter.string(from: self)
+        return formatter
+    }()
+
+    static let time: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+}
+
+extension Date {
+    var monthYearLabel: String {
+        DateFormatters.monthYear.string(from: self)
     }
 
     var dayLabel: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "d MMMM yyyy"
-        return formatter.string(from: self)
+        DateFormatters.day.string(from: self)
     }
 
     var timeLabel: String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        return formatter.string(from: self)
+        DateFormatters.time.string(from: self)
     }
 
     var relativeShort: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: self, relativeTo: Date())
+        DateFormatters.relative.localizedString(for: self, relativeTo: Date())
     }
 }

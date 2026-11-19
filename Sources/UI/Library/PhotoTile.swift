@@ -1,6 +1,22 @@
 import SwiftUI
 
-struct PhotoTile: View {
+/// Identity for a tile's load task: the photo plus the density it is displayed
+/// at. `CGSize` is `Equatable`, so a pinch that changes the target size
+/// restarts the task and reloads the bitmap.
+private struct TileLoadKey: Equatable {
+    var photoID: String
+    var size: CGSize
+}
+
+/// Shared, non-observable generation counter. `ImageCache.thumbnail` may
+/// resume a cancelled caller when a shared task completes, so a load must
+/// prove it is still the newest one before writing state. A class keeps the
+/// counter out of SwiftUI's observation graph (no body invalidation).
+private final class TileLoadToken {
+    var current = 0
+}
+
+struct PhotoTile: View, Equatable {
     let photo: PhotoItem
     var columns: Int = 3
     /// Fixed side in points for the edge-to-edge Library grid. Search and
@@ -25,7 +41,32 @@ struct PhotoTile: View {
     @State private var isFinal = false
     @State private var imageID = 0
     @State private var loadedPhotoID: String?
+    @State private var loadedSize: CGSize?
+    @State private var loadToken = TileLoadToken()
     @State private var isHovering = false
+
+    /// Library tiles are recreated on every body evaluation of the grid, but
+    /// their contents only change when the photo, its badges or the selection
+    /// state do. Comparing that surface (and ignoring the closure, which is
+    /// rebuilt every time) lets the grid wrap tiles in `EquatableView` so a
+    /// scroll never re-evaluates the body of a tile that has not changed.
+    static func == (lhs: PhotoTile, rhs: PhotoTile) -> Bool {
+        lhs.photo.id == rhs.photo.id
+            && lhs.photo.isVideo == rhs.photo.isVideo
+            && lhs.photo.isFavorite == rhs.photo.isFavorite
+            && lhs.photo.duration == rhs.photo.duration
+            && lhs.photo.takenAt == rhs.photo.takenAt
+            && lhs.photo.faces.count == rhs.photo.faces.count
+            && lhs.columns == rhs.columns
+            && lhs.side == rhs.side
+            && lhs.aspectRatio == rhs.aspectRatio
+            && lhs.targetSize == rhs.targetSize
+            && lhs.backupState == rhs.backupState
+            && lhs.dateText == rhs.dateText
+            && lhs.cornerRadius == rhs.cornerRadius
+            && lhs.isSelecting == rhs.isSelecting
+            && lhs.isSelected == rhs.isSelected
+    }
 
     private var resolvedTargetSize: CGSize {
         if let targetSize { return targetSize }
@@ -38,12 +79,21 @@ struct PhotoTile: View {
     }
 
     var body: some View {
+        // A synchronous cache lookup in `body` is what makes a returning or
+        // prefetched tile paint its picture in the first frame. Without it the
+        // tile always painted its placeholder until the `.task` below ran,
+        // which is the blank flash a fast fling exposes.
+        let cached = cachedEntry
+        let shown = image ?? cached?.image
+        let isReady = isFinal || (image == nil && (cached?.isFinal ?? false))
+
         Button(action: onOpen) {
             ZStack {
                 Color.clear
-                TilePlaceholder()
-                if let image {
-                    TileImage(image: image, imageID: imageID)
+                if let shown {
+                    TileImage(image: shown, imageID: imageID)
+                } else {
+                    TilePlaceholder()
                 }
             }
             .modifier(TileSizing(side: side, aspectRatio: aspectRatio))
@@ -113,7 +163,10 @@ struct PhotoTile: View {
         }
         .zoomTransitionSource(id: photo.id, in: zoomSourceActive ? zoomNamespace : nil)
         .onHover { isHovering = $0 }
-        .task(id: photo.id) { await load() }
+        // The id includes the target size: pinching to a new density must
+        // restart the load, otherwise the old bitmap stays upscaled in the new
+        // (much larger) slot forever.
+        .task(id: TileLoadKey(photoID: photo.id, size: resolvedTargetSize)) { await load() }
         .contextMenu {
             Button {
                 app.toggleFavorite(photo.id)
@@ -137,54 +190,102 @@ struct PhotoTile: View {
         .accessibilityValue(
             isSelecting
                 ? (isSelected ? "Selected" : "Not selected")
-                : (isFinal ? "Ready" : "Loading")
+                : (isReady ? "Ready" : "Loading")
         )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityIdentifier("library.tile")
         #if DEBUG
-        .onAppear { TileLoadProbe.shared.appeared(photo.id, blank: image == nil, final: isFinal) }
+        .onAppear { TileLoadProbe.shared.appeared(photo.id, blank: shown == nil, final: isReady) }
         .onDisappear { TileLoadProbe.shared.disappeared(photo.id) }
-        .onChange(of: image == nil) { _, isBlank in
+        .onChange(of: shown == nil) { _, isBlank in
             if !isBlank { TileLoadProbe.shared.painted(photo.id) }
         }
-        .onChange(of: isFinal) { _, ready in
+        .onChange(of: isReady) { _, ready in
             if ready { TileLoadProbe.shared.finished(photo.id) }
         }
         #endif
     }
 
-    /// Already-decoded thumbnails paint in the same transaction, so a tile
-    /// returning into view never flashes its placeholder. PhotoKit's degraded
-    /// pass then swaps in as soon as it arrives; the final image fades over it.
+    /// Best already-decoded image for this photo, at this density or at the
+    /// last density it was decoded for. NSCache lookups only: no request is
+    /// created, so it is safe to call from `body`.
+    private var cachedEntry: ImageCache.CachedThumbnail? {
+        app.images.cachedThumbnailEntry(for: photo, size: resolvedTargetSize)
+    }
+
+    /// Already-decoded thumbnails paint in the same transaction; PhotoKit's
+    /// degraded pass then swaps in as soon as it arrives; the final image
+    /// fades over it. When `body` already painted the cache, the final hit
+    /// here only confirms readiness and causes no visible change.
+    ///
+    /// A tile can have several loads in flight across a pinch: `.task(id:)`
+    /// cancels the old one, but `ImageCache.thumbnail` resumes its caller when
+    /// the shared decode finishes, cancellation or not. Every path therefore
+    /// proves it is still the current generation before touching `image`,
+    /// `imageID` or `isFinal`, so an old density can never overwrite a newer
+    /// one or claim "Ready".
     private func load() async {
+        guard !Task.isCancelled else { return }
+        loadToken.current += 1
+        let token = loadToken.current
         let size = resolvedTargetSize
+        let cached = cachedEntry
         if loadedPhotoID != photo.id {
             loadedPhotoID = photo.id
-            image = nil
+            loadedSize = size
+            if cached == nil {
+                image = nil
+                isFinal = false
+            }
+        } else if loadedSize != size {
+            // The grid density changed. Keep the current bitmap on screen
+            // (never blank) and mark it not-final so the new size is fetched
+            // and swapped in.
+            loadedSize = size
             isFinal = false
         }
+        guard !Task.isCancelled, loadToken.current == token, loadedSize == size else { return }
         if let final = app.images.cachedFinalThumbnail(for: photo, size: size) {
-            image = final
+            if image == nil {
+                // `body` is already drawing this exact cache entry; adopting it
+                // into state needs no new image identity, so nothing is
+                // re-inserted for a tile that is already correct.
+                image = final
+            } else if image !== final {
+                image = final
+                imageID += 1
+            }
             isFinal = true
+            #if DEBUG
+            LibraryImageProbe.shared.recordFinal(final, targetSize: size)
+            #endif
             return
         }
-        if image == nil, let quick = app.images.cachedThumbnail(for: photo, size: size) {
+        if image == nil, let quick = cached?.image {
+            // The same entry `body` fell back to, when the cache was filled
+            // between the body pass and this task.
             image = quick
-            imageID += 1
         }
         let loaded = await app.images.thumbnail(for: photo, size: size) { degraded in
-            guard !isFinal else { return }
+            // This closure is invoked from ImageCache's own Task, where
+            // `Task.isCancelled` would not describe this tile. The generation
+            // and the shared `loadedSize` are the authority here.
+            guard loadToken.current == token, loadedSize == size, !isFinal else { return }
             withRespectingReduceMotion(.easeOut(duration: 0.12), when: reduceMotion) {
                 image = degraded
                 imageID += 1
             }
         }
         guard let loaded else { return }
+        guard !Task.isCancelled, loadToken.current == token, loadedSize == size else { return }
         withRespectingReduceMotion(.easeOut(duration: 0.2), when: reduceMotion) {
             image = loaded
             imageID += 1
             isFinal = true
         }
+        #if DEBUG
+        LibraryImageProbe.shared.recordFinal(loaded, targetSize: size)
+        #endif
     }
 
     private var accessibilityLabel: String {

@@ -17,39 +17,44 @@ import UIKit
 @Observable
 final class ImageCache {
     /// Set by AppModel; fetches a thumbnail or original from a server.
-    var remoteThumbnailLoader: ((PhotoItem, CGSize) async -> PlatformImage?)?
-    var remoteImageLoader: ((PhotoItem) async -> PlatformImage?)?
+    @ObservationIgnored var remoteThumbnailLoader: ((PhotoItem, CGSize) async -> PlatformImage?)?
+    @ObservationIgnored var remoteImageLoader: ((PhotoItem) async -> PlatformImage?)?
 
     /// Immutable thumbnail atlases for remote-only photos. Local PhotoKit
     /// assets never touch it: Photos already caches and prefetches those.
-    var atlasStore: AtlasStore?
+    @ObservationIgnored var atlasStore: AtlasStore?
     /// Mirrors the Settings toggle. When off, every atlas path is inert and the
     /// app behaves exactly as it did before the feature existed.
     var atlasEnabled = false
     /// Resolves the S3 client for the server that owns a photo.
-    var atlasClient: ((UUID?) -> S3Client?)?
+    @ObservationIgnored var atlasClient: ((UUID?) -> S3Client?)?
     /// The folder prefix inside that server's bucket; sheets live under it.
-    var atlasPrefix: ((UUID?) -> String)?
+    @ObservationIgnored var atlasPrefix: ((UUID?) -> String)?
 
     private final class Box {
         let image: PlatformImage
         init(_ image: PlatformImage) { self.image = image }
     }
 
-    private let thumbnails = NSCache<NSString, Box>()
-    private let degradedThumbnails = NSCache<NSString, Box>()
+    // Cache storage and bookkeeping are deliberately not observable. Reading
+    // them from a tile's `body` must not make every realized tile depend on
+    // every cache fill: a prefetch completing would otherwise invalidate the
+    // whole grid, which is exactly the body work `EquatableView` avoids.
+    // Image arrival still reaches a tile through its own `.task` and `@State`.
+    @ObservationIgnored private let thumbnails = NSCache<NSString, Box>()
+    @ObservationIgnored private let degradedThumbnails = NSCache<NSString, Box>()
     /// Viewer-size (1200px) thumbnails live in their own cache. They are an
     /// order of magnitude larger than grid tiles, so letting them into the
     /// shared cache evicts every grid thumbnail in the library and pushes the
     /// footprint up by ~100 MB while paging. Keeping them separate also means
     /// closing the viewer returns to a grid that is still warm.
-    private let viewerThumbnails = NSCache<NSString, Box>()
-    private let fullImages = NSCache<NSString, Box>()
-    private var inFlight: [String: Task<PlatformImage?, Never>] = [:]
-    private var fullInFlight: [String: Task<PlatformImage?, Never>] = [:]
+    @ObservationIgnored private let viewerThumbnails = NSCache<NSString, Box>()
+    @ObservationIgnored private let fullImages = NSCache<NSString, Box>()
+    @ObservationIgnored private var inFlight: [String: Task<PlatformImage?, Never>] = [:]
+    @ObservationIgnored private var fullInFlight: [String: Task<PlatformImage?, Never>] = [:]
     /// Last thumbnail key per photo, used by the viewer's instant preview.
-    private var previewKeys: [String: NSString] = [:]
-    private var viewerPrefetch: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var previewKeys: [String: NSString] = [:]
+    @ObservationIgnored private var viewerPrefetch: [String: Task<Void, Never>] = [:]
     private let library = PhotoLibraryService.shared
 
     init() {
@@ -74,16 +79,43 @@ final class ImageCache {
         return "\(photo.id)|\(width)x\(height)" as NSString
     }
 
+    /// A thumbnail that can be drawn right now, plus whether it is the final
+    /// decode for this density (a degraded pass or an atlas preview is not).
+    struct CachedThumbnail {
+        var image: PlatformImage
+        var isFinal: Bool
+    }
+
     /// Synchronous lookup for tiles that are about to appear. Never creates a
     /// request, so it is safe to call from `body`/`onAppear`.
-    func cachedThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
+    ///
+    /// Besides the exact density it checks the last density this photo was
+    /// decoded for: changing the grid size then still paints the old image in
+    /// the first frame instead of going blank while the new size loads.
+    func cachedThumbnailEntry(for photo: PhotoItem, size: CGSize) -> CachedThumbnail? {
         let cacheKey = key(for: photo, size: size)
-        if let final = thumbnails.object(forKey: cacheKey) { return final.image }
-        if let degraded = degradedThumbnails.object(forKey: cacheKey)?.image { return degraded }
+        if let final = thumbnails.object(forKey: cacheKey) {
+            return CachedThumbnail(image: final.image, isFinal: true)
+        }
+        if let degraded = degradedThumbnails.object(forKey: cacheKey)?.image {
+            return CachedThumbnail(image: degraded, isFinal: false)
+        }
+        if let previous = previewKeys[photo.id],
+           previous != cacheKey,
+           let cached = thumbnails.object(forKey: previous)?.image
+            ?? degradedThumbnails.object(forKey: previous)?.image {
+            return CachedThumbnail(image: cached, isFinal: false)
+        }
         // A preview atlas cell is already decoded with its sheet: this is the
         // paint that makes a fast scroll show pictures instead of placeholders.
-        guard atlasEnabled else { return nil }
-        return atlasStore?.cachedTile(for: photo, level: .preview)
+        guard atlasEnabled, let preview = atlasStore?.cachedTile(for: photo, level: .preview) else {
+            return nil
+        }
+        return CachedThumbnail(image: preview, isFinal: false)
+    }
+
+    func cachedThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
+        cachedThumbnailEntry(for: photo, size: size)?.image
     }
 
     func cachedAtlasPreview(for photo: PhotoItem) -> PlatformImage? {
@@ -194,8 +226,14 @@ final class ImageCache {
     }
 
     func cachedViewerThumbnail(for photo: PhotoItem, size: CGSize) -> PlatformImage? {
-        cachedThumbnail(for: photo, size: size)
-            ?? viewerThumbnails.object(forKey: key(for: photo, size: size))?.image
+        // Exact sizes only: this must not inherit the grid's "last decoded
+        // density" fallback, or every photo that was ever shown in the grid
+        // would look like it already has a 1200 px viewer thumbnail and the
+        // viewer would stop prefetching its neighbours.
+        let cacheKey = key(for: photo, size: size)
+        if let image = thumbnails.object(forKey: cacheKey)?.image { return image }
+        if let image = viewerThumbnails.object(forKey: cacheKey)?.image { return image }
+        return degradedThumbnails.object(forKey: cacheKey)?.image
     }
 
     func hasViewerThumbnail(for photo: PhotoItem, size: CGSize) -> Bool {
@@ -352,7 +390,17 @@ final class ImageCache {
         return max(1, Int(image.size.width * image.size.height * 4))
     }
 
-    private var faceCache: [String: PlatformImage] = [:]
+    #if DEBUG
+    /// Test seam: stores an image the way a successful grid load would, with
+    /// no PhotoKit or network request.
+    func seedThumbnailForTesting(_ image: PlatformImage, for photo: PhotoItem, size: CGSize) {
+        let cacheKey = key(for: photo, size: size)
+        thumbnails.setObject(Box(image), forKey: cacheKey, cost: Self.cost(of: image))
+        previewKeys[photo.id] = cacheKey
+    }
+    #endif
+
+    @ObservationIgnored private var faceCache: [String: PlatformImage] = [:]
 
     func faceImage(photo: PhotoItem, face: PhotoFace, size: CGFloat = 900) async -> PlatformImage? {
         let cacheKey = "\(photo.id)-\(face.id)"

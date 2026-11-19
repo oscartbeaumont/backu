@@ -30,7 +30,8 @@ struct StatusBarScrim: View {
 ///
 /// The control is a glass capsule with a matched-geometry selection pill. It
 /// lives inside the bottom bar, so every timeline element shares the same
-/// 56 pt height.
+/// 56 pt height. The capsule stretches to the space the Library and Search
+/// circles leave, which keeps the bar's side margins identical to the tab bar.
 struct LibraryLevelSwitcher: View {
     @Binding var level: LibraryLevel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -65,8 +66,12 @@ struct LibraryLevelSwitcher: View {
                 .accessibilityIdentifier("library.level.\(option.rawValue.lowercased())")
             }
         }
+        // The bar is height-locked at 56 pt, so the labels stop at AX1: at AX5
+        // an uncapped label is wider than its third of the capsule and truncates
+        // to "M…", and even AX2 overflows this segment width.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .padding(3)
-        .frame(minWidth: 200, idealWidth: 240, maxWidth: 240, minHeight: 56, maxHeight: 56)
+        .frame(minWidth: 200, maxWidth: .infinity, minHeight: 56, maxHeight: 56)
         .glassCapsule(interactive: true)
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
         .animation(
@@ -81,6 +86,38 @@ struct LibraryLevelSwitcher: View {
     }
 }
 
+/// Liquid Glass button surface drawn at the label's exact size.
+///
+/// `.buttonStyle(.glass)` adds its own padding and highlight around the label,
+/// so a 42 pt label renders around 57 pt and a nominally 56 pt frame grows past
+/// the bar it sits in. Attaching the glass to the label and keeping the button
+/// plain makes circles and capsules exactly the size they are given; `hitTarget`
+/// adds an invisible tap area around smaller glass so it stays easy to hit.
+struct GlassSurfaceButtonStyle: ButtonStyle {
+    enum Outline {
+        case circle
+        case capsule
+    }
+
+    var outline: Outline
+    /// The smallest tappable size. The glass itself stays visually smaller.
+    var hitTarget: CGFloat = 44
+
+    private var shape: AnyShape {
+        switch outline {
+        case .circle: AnyShape(Circle())
+        case .capsule: AnyShape(Capsule())
+        }
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .glassEffect(.regular.interactive(), in: shape)
+            .frame(minWidth: outline == .circle ? hitTarget : nil, minHeight: hitTarget)
+            .contentShape(Rectangle())
+    }
+}
+
 /// Floating Photos-style header: a large title on the left and the filter and
 /// Select controls on the right, all over the photo grid. Backup controls live
 /// in Settings; the photo view stays as quiet as Photos.
@@ -92,8 +129,20 @@ struct LibraryTopBar: View {
     var onFilter: () -> Void
     var onToggleSelection: () -> Void
 
+    /// Chrome grows with Dynamic Type only up to 56 pt. Uncapped, the metrics
+    /// reached 98.67 pt at AX5 — nearly a fifth of the screen — which left the
+    /// large title no room and truncated it to "Libra…". The labels below also
+    /// stop at AX2, so their text always fits the capped glass. A fixed 34 pt
+    /// frame would spill its text instead; a cap keeps the row readable at both
+    /// ends. The button style's 44 pt hit target remains the tappable floor.
+    @ScaledMetric(relativeTo: .subheadline) private var scaledControlHeight: CGFloat = 34
+    @ScaledMetric(relativeTo: .subheadline) private var scaledFilterDiameter: CGFloat = 34
+
+    private var controlHeight: CGFloat { min(scaledControlHeight, 56) }
+    private var filterDiameter: CGFloat { min(scaledFilterDiameter, 56) }
+
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 6) {
             Text(title)
                 .font(.largeTitle.bold())
                 .lineLimit(1)
@@ -104,26 +153,28 @@ struct LibraryTopBar: View {
 
             if isSelecting {
                 #if os(iOS)
-                Button("Done", action: onToggleSelection)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.horizontal, 16)
-                    .frame(height: 42)
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-                    .accessibilityIdentifier("library.done")
+                Button(action: onToggleSelection) {
+                    Text("Done")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 12)
+                        .frame(height: controlHeight)
+                }
+                .buttonStyle(GlassSurfaceButtonStyle(outline: .capsule))
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+                .accessibilityIdentifier("library.done")
                 #endif
             } else {
                 Button(action: onFilter) {
                     Image(systemName: isFiltered ? filterSymbol : "line.3.horizontal.decrease")
-                        .scaledFont(16, weight: .semibold)
+                        .scaledFont(15, weight: .semibold)
                         .foregroundStyle(isFiltered ? Theme.accent : Color.primary)
-                        .frame(width: 42, height: 42)
+                        .frame(width: filterDiameter, height: filterDiameter)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
+                .buttonStyle(GlassSurfaceButtonStyle(outline: .circle))
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                 .accessibilityLabel(isFiltered ? "Filter applied" : "Filter and sort")
                 .accessibilityIdentifier("library.filter")
 
@@ -134,11 +185,11 @@ struct LibraryTopBar: View {
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, 16)
-                        .frame(height: 42)
+                        .padding(.horizontal, 12)
+                        .frame(height: controlHeight)
                 }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
+                .buttonStyle(GlassSurfaceButtonStyle(outline: .capsule))
+                .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                 .accessibilityLabel("Select photos")
                 .accessibilityIdentifier("library.select")
                 #endif
@@ -209,6 +260,9 @@ struct LibrarySelectionBar: View {
             .accessibilityLabel("Delete selected photos")
             .accessibilityIdentifier("library.selection.delete")
         }
+        // Fixed 270 × 48 pt chrome, so its type stops at AX1 like the level
+        // switcher; uncapped it truncates "Select All" to "Sele…" at AX5.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .padding(3)
         .frame(width: 270, height: 48)
         .glassCapsule(interactive: true)
