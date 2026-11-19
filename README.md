@@ -112,8 +112,8 @@ endpoint you entered.
 
 ## Build from source
 
-Requires Xcode 27 (iOS 26 / macOS 26 SDK) and
-[XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Requires Xcode 27 (iOS 27 / macOS 27 SDK, deployment target iOS 26 / macOS 26)
+and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
 brew install xcodegen

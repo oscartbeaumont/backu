@@ -43,7 +43,9 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload
-    runs-on: macos-latest
+    # Apple requires the iOS 27 SDK (ITMS-90725). macos-latest still ships
+    # Xcode 26.x, so archive on the image that carries Xcode 27.
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7

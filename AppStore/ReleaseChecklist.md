@@ -120,6 +120,12 @@ build, and only then pushes the `Release vX.Y.Z` commit and tag. Finally it
 creates a GitHub Release with generated notes. A failed archive or upload
 leaves `main` and the tag untouched.
 
+Every macOS job runs on the `xcode-27` runner image because App Store Connect
+rejects uploads built with an older SDK (ITMS-90725: iOS 27 SDK required from
+April 2027). `macos-latest` still ships Xcode 26.x, so do not switch back to it.
+`scripts/testflight.sh` also stops before archiving when the selected Xcode's
+SDK major version is below 27.
+
 After the release is published it also adds the build to the TestFlight group
 named by the repository variable `TESTFLIGHT_GROUP` (default `Internal`). That
 step polls Apple until the build finishes processing, then calls the App Store

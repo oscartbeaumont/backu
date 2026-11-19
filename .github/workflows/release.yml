@@ -52,7 +52,9 @@ jobs:
   release:
     name: Bump, upload and publish
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-latest
+    # Apple requires the iOS 27 SDK (ITMS-90725). macos-latest still ships
+    # Xcode 26.x, so archive on the image that carries Xcode 27.
+    runs-on: xcode-27
     timeout-minutes: 90
 
     steps:

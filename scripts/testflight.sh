@@ -17,6 +17,9 @@
 #   SKIP_UPLOAD=1        build and export only, do not upload
 #   KEYCHAIN_PATH        keychain to unlock in CI (optional)
 #
+# Requires Xcode 27 or later: App Store Connect rejects iOS uploads built with
+# an older SDK (ITMS-90725). The script checks the SDK version and stops early.
+#
 # The app record and bundle ID must already exist in App Store Connect. The
 # script cannot create the record: that needs the account owner.
 set -euo pipefail
@@ -59,6 +62,24 @@ for tool in xcodegen xcodebuild xcrun; do
   command -v "$tool" >/dev/null || { echo "missing $tool"; exit 1; }
 done
 [ -f "$ASC_KEY_PATH" ] || { echo "API key not found at $ASC_KEY_PATH"; exit 1; }
+
+# App Store Connect rejects binaries built with an outdated SDK (ITMS-90725):
+# iOS/iPadOS uploads must use the iOS 27 SDK or later. Check before archiving so
+# a stale Xcode fails here instead of after a "successful" upload.
+MIN_SDK_MAJOR=27
+if [ "$PLATFORM" = "ios" ]; then SDK="iphoneos"; else SDK="macosx"; fi
+SDK_VERSION="$(xcrun --sdk "$SDK" --show-sdk-version)"
+XCODE_VERSION="$(xcodebuild -version | sed -n '1s/^Xcode //p')"
+if ! awk -v have="$SDK_VERSION" -v need="$MIN_SDK_MAJOR" \
+  'BEGIN { exit !(have + 0 >= need) }'; then
+  {
+    echo "Xcode $XCODE_VERSION ships the $SDK $SDK_VERSION SDK."
+    echo "App Store Connect requires $SDK $MIN_SDK_MAJOR or later (ITMS-90725)."
+    echo "Select a newer Xcode (xcode-select or DEVELOPER_DIR) and retry."
+  } >&2
+  exit 1
+fi
+echo "→ Xcode $XCODE_VERSION, $SDK $SDK_VERSION"
 
 echo "→ Generating the project"
 xcodegen generate >/dev/null

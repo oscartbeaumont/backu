@@ -26,7 +26,9 @@ jobs:
 
   build:
     name: Build iOS + macOS
-    runs-on: macos-latest
+    # Apple requires the iOS 27 SDK (ITMS-90725). macos-latest still ships
+    # Xcode 26.x, so build on the image that carries Xcode 27.
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
       - name: Install XcodeGen
