@@ -28,6 +28,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var session: URLSession?
     private var sessionAllowsCellular = false
     private var nextJobID = 0
+    private let jobIDPrefix = UUID().uuidString
 
     struct UploadResult: Sendable {
         var status: Int
@@ -131,7 +132,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate, @unchecked Sen
         return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             nextJobID += 1
-            let jobID = "job-\(nextJobID)"
+            let jobID = "\(jobIDPrefix)-job-\(nextJobID)"
             continuations[jobID] = continuation
             progressHandlers[jobID] = progress
             lock.unlock()
