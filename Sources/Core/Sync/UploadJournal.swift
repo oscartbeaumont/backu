@@ -132,16 +132,18 @@ enum UploadReconciler {
             }
             do {
                 guard let head = try await client.headObject(key: record.objectKey) else {
-                    // Nothing landed; leave the photo for the normal queue.
-                    journal.finish(record)
+                    // The object may still be in flight; retry this record later.
                     continue
                 }
+                guard head.size == record.byteCount else { continue }
 
-                var sha = record.sha256 ?? photo.sha256
+                let expectedSHA = record.sha256 ?? photo.sha256
+                var sha = expectedSHA
                 var sidecarFound = false
                 if let data = try? await client.getObject(key: record.sidecarKey),
                    let sidecar = try? JSONFile.decoder.decode(SidecarDocument.self, from: data) {
-                    sha = sidecar.sha256 ?? sha
+                    if let expectedSHA, sidecar.sha256 != expectedSHA { continue }
+                    sha = sidecar.sha256 ?? expectedSHA
                     sidecarFound = true
                 }
 
