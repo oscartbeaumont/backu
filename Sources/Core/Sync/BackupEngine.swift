@@ -36,7 +36,7 @@ enum RemoteLibrary {
         var photos: [PhotoItem] = []
         var peopleByID: [UUID: Person] = [:]
 
-        for sidecar in sidecars.prefix(500) {
+        for sidecar in sidecars {
             guard let data = try? await client.getObject(key: sidecar.key),
                   let doc = try? JSONFile.decoder.decode(SidecarDocument.self, from: data) else { continue }
             var metadata = PhotoMetadata()
@@ -268,6 +268,8 @@ final class BackupEngine {
             // Reconcile every destination before planning. This reclaims work
             // that landed while the app was closed and makes the queue honest.
             var plans: [(destination: Destination, candidates: [PhotoItem])] = []
+            var pendingSidecarDirtyAt: [String: Date] = [:]
+            var candidateDestinationIDs: [String: Set<UUID>] = [:]
             for destination in destinations {
                 if Task.isCancelled { break }
                 await destination.client.abortStaleMultipartUploads()
@@ -287,6 +289,12 @@ final class BackupEngine {
                     force: force,
                     limit: perDestinationLimit
                 )
+                for photo in candidates where photo.sidecarDirtyAt != nil {
+                    if pendingSidecarDirtyAt[photo.id] == nil {
+                        pendingSidecarDirtyAt[photo.id] = photo.sidecarDirtyAt
+                    }
+                    candidateDestinationIDs[photo.id, default: []].insert(destination.server.id)
+                }
                 self.totalCount += candidates.count
                 self.totalBytes += candidates.reduce(into: 0) { total, photo in
                     total += Int64(photo.metadata.fileSize ?? 0)
@@ -300,7 +308,7 @@ final class BackupEngine {
                         phase: .queued,
                         progress: 0,
                         bytes: photo.copy(on: destination.server.id)?.byteCount ?? 0,
-                        isMetadataOnly: photo.copy(on: destination.server.id) != nil && photo.sidecarDirtyAt != nil
+                        isMetadataOnly: self.isMetadataOnly(photo, server: destination.server, force: force)
                     )
                 })
                 plans.append((destination, candidates))
@@ -336,11 +344,12 @@ final class BackupEngine {
             case .manual, .resume: self.status = "Uploading…"
             }
 
+            var writtenSidecars: [String: Set<UUID>] = [:]
             for plan in plans {
                 if Task.isCancelled { break }
                 self.activeServerID = plan.destination.server.id
                 self.updateDestination(plan.destination.server.id) { $0.isActive = true }
-                await self.runDestination(
+                let written = await self.runDestination(
                     destination: plan.destination,
                     candidates: plan.candidates,
                     catalog: catalog,
@@ -348,12 +357,27 @@ final class BackupEngine {
                     faceStore: faceStore,
                     force: force
                 )
+                for photoID in written {
+                    writtenSidecars[photoID, default: []].insert(plan.destination.server.id)
+                }
                 self.updateDestination(plan.destination.server.id) {
                     $0.isActive = false
                     $0.isFinished = true
                 }
             }
             self.activeServerID = nil
+
+            // Clear a sidecar edit only after every destination that had
+            // candidate work wrote it. A remote-only photo may exist on just
+            // one selected bucket; destinations without a copy have no sidecar
+            // to update and must not keep the flag pending forever.
+            for (photoID, serverIDs) in writtenSidecars {
+                guard let expectedIDs = candidateDestinationIDs[photoID],
+                      serverIDs == expectedIDs,
+                      let dirtyAt = pendingSidecarDirtyAt[photoID],
+                      catalog.photo(id: photoID)?.sidecarDirtyAt == dirtyAt else { continue }
+                catalog.mutatePhoto(photoID) { $0.sidecarDirtyAt = nil }
+            }
             await self.finishRun(catalog: catalog, destinations: destinations)
         }
     }
@@ -423,7 +447,7 @@ final class BackupEngine {
         BackgroundUploader.shared.cancelAll()
     }
 
-    private func candidatesForBackup(
+    func candidatesForBackup(
         catalog: CatalogStore,
         server: ServerConfig,
         force: Bool,
@@ -432,6 +456,9 @@ final class BackupEngine {
         var selected = catalog.photos.filter { photo in
             if force { return photo.isLocal }
             if let copy = photo.copy(on: server.id) {
+                // PhotoKit edits change the original bytes, so the old copy no
+                // longer represents this asset even when its id is unchanged.
+                if !isMetadataOnly(photo, server: server, force: force) { return photo.isLocal }
                 // Already has the bytes; a pending sidecar edit or a missing
                 // atlas group still needs a pass. Videos have no frame to pack,
                 // so they never become a permanent backfill candidate.
@@ -463,6 +490,13 @@ final class BackupEngine {
         return selected
     }
 
+    private func isMetadataOnly(_ photo: PhotoItem, server: ServerConfig, force: Bool) -> Bool {
+        guard !force, let copy = photo.copy(on: server.id) else { return false }
+        let modifiedAfterUpload = photo.isLocal
+            && (photo.modifiedAt.map { $0 > copy.uploadedAt } ?? false)
+        return !modifiedAfterUpload
+    }
+
     private func runDestination(
         destination: Destination,
         candidates: [PhotoItem],
@@ -470,7 +504,7 @@ final class BackupEngine {
         settings: AppSettings,
         faceStore: FaceEmbeddingStore,
         force: Bool
-    ) async {
+    ) async -> Set<String> {
         let server = destination.server
         let client = destination.client
         var lastIndexUpload = Date()
@@ -478,11 +512,12 @@ final class BackupEngine {
         let analyzer = FaceAnalyzer()
         let device = DeviceInfo.name
         let atlasBatch = AtlasBatch(server: server, client: client, catalog: catalog)
+        var writtenSidecars: Set<String> = []
 
         for photo in candidates {
             if Task.isCancelled { break }
             let itemID = Self.itemID(photoID: photo.id, serverID: server.id)
-            let isMetadataOnly = photo.copy(on: server.id) != nil && !force
+            let isMetadataOnly = self.isMetadataOnly(photo, server: server, force: force)
             updateItem(itemID) { $0.phase = isMetadataOnly ? .metadata : .preparing }
             status = isMetadataOnly
                 ? "Updating details for \(photo.filename)"
@@ -503,6 +538,7 @@ final class BackupEngine {
                     atlas: atlasBatch
                 )
                 completedCount += 1
+                if photo.sidecarDirtyAt != nil { writtenSidecars.insert(photo.id) }
                 uploadedSinceIndex += 1
                 updateDestination(server.id) { $0.completed += 1 }
                 updateItem(itemID) {
@@ -533,6 +569,7 @@ final class BackupEngine {
 
         await atlasBatch.flush()
         await publishMetadata?()
+        return writtenSidecars
     }
 
     private func finishRun(catalog: CatalogStore, destinations: [Destination]) async {
@@ -733,7 +770,8 @@ final class BackupEngine {
         let finalObjectKey = objectKey
             ?? current.copy(on: server.id)?.objectKey
             ?? S3Client.join(server.normalizedPrefix, Self.objectRelativeKey(for: current, in: server))
-        let sidecarKey = current.copy(on: server.id)?.sidecarKey ?? finalObjectKey + ".json"
+        let previousCopy = current.copy(on: server.id)
+        let sidecarKey = previousCopy?.sidecarKey ?? finalObjectKey + ".json"
         try await client.putObject(
             key: sidecarKey,
             data: try sidecar.data(),
@@ -746,16 +784,15 @@ final class BackupEngine {
                 objectKey: finalObjectKey,
                 sidecarKey: sidecarKey,
                 thumbnailKey: current.remoteThumbnailKey,
-                uploadedAt: Date(),
+                uploadedAt: isMetadataOnly ? (previousCopy?.uploadedAt ?? Date()) : Date(),
                 byteCount: byteCount,
                 etag: nil,
                 sha256: sha
             ),
             for: current.id
         )
-        catalog.mutatePhoto(current.id) { $0.sidecarDirtyAt = nil }
         journal.finish(photoID: current.id, serverID: server.id)
-        transferredBytes += byteCount
+        if !isMetadataOnly { transferredBytes += byteCount }
     }
 
     private func upload(

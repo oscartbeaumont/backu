@@ -61,7 +61,7 @@ struct S3RetryPolicy: Sendable {
                 return isRetryable(status: status)
             case .transport(let underlying):
                 return isRetryable(transport: underlying)
-            case .decoding, .invalidEndpoint, .missingCredentials:
+            case .decoding, .listTruncated, .invalidEndpoint, .missingCredentials:
                 return false
             }
         }

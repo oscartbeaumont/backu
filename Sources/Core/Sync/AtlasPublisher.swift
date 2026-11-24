@@ -41,10 +41,13 @@ final class AtlasBatch {
     var pendingCount: Int { pending.count }
 
     func add(photoID: String, digest: String, grid: CGImage, preview: CGImage) async {
-        pending.append(Pending(photoID: photoID, digest: digest, grid: grid, preview: preview))
+        // BackupEngine records each upload copy after add returns. Flush the
+        // previous group before accepting the next photo so those copies exist
+        // when the atlas pointers are recorded.
         if pending.count >= ThumbnailAtlas.groupCapacity {
             await flush()
         }
+        pending.append(Pending(photoID: photoID, digest: digest, grid: grid, preview: preview))
     }
 
     func flush() async {
