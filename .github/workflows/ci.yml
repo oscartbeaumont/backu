@@ -21,8 +21,8 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Run the stdlib S3 server suite
-        run: python3 Tools/MockS3/test_mock_s3.py
+      - name: Run all stdlib S3 server tests
+        run: python3 -m unittest discover -s Tools/MockS3 -p 'test_*.py' -v
 
   build:
     name: Build iOS + macOS

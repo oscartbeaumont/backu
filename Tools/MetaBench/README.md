@@ -64,10 +64,10 @@ every ~8 segments (up to 4,000 edits), not on every sync.
 
 ## Reproduce the earlier failure modes
 
-The mock bucket does not implement `delimiter` or `start-after`, which is a
-useful robustness test: the reader falls back to listing the log directly and
-still converges. A bearer of a real S3-compatible service gets the cheap
-delimiter path.
+The mock bucket implements `delimiter` and `start-after`, so local runs
+exercise the cheap delimiter path used by S3-compatible services. The
+in-memory protocol suite separately covers the fallback when a store lacks
+delimiter support.
 
 ## Optimisation pass
 
