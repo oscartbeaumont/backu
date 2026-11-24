@@ -170,7 +170,10 @@ struct SharedPhoto: Codable, Hashable, Sendable {
         case .duration: duration = other.duration
         case .metadata: metadata = other.metadata
         case .copies: copies = other.copies
-        case .sha256: sha256 = other.sha256
+        case .sha256:
+            // Content hashes are learned once. A later record that omitted the
+            // hash must not clear a value already shared by another device.
+            if let sha256 = other.sha256 { self.sha256 = sha256 }
         }
     }
 }
@@ -404,6 +407,19 @@ enum MetadataSegmentCodec {
                 throw MetadataError.invalidSegment
             }
             records.append(record)
+        }
+        return records
+    }
+
+    /// Local outboxes are recovered independently of remote log segments. A
+    /// partial line must not discard every valid edit still waiting to upload.
+    static func decodeLenient(_ data: Data) -> [MetaRecord] {
+        let decoder = JSONFile.decoder
+        var records: [MetaRecord] = []
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            if let record = try? decoder.decode(MetaRecord.self, from: Data(line)) {
+                records.append(record)
+            }
         }
         return records
     }

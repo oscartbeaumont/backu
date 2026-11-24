@@ -226,6 +226,51 @@ final class AuditMetadataRegressionTests: XCTestCase {
         XCTAssertTrue(service.outbox.contains { $0.photo?.sha256 == "learned-hash" })
     }
 
+    func testNilCatalogSHAFavoriteEditDoesNotEraseLearnedSharedSHA() async throws {
+        let serverID = newServerID()
+        let service = MetadataService(serverID: serverID, writerID: "writer-a")
+        let catalog = CatalogStore(loadFromDisk: false)
+        let item = photo(id: "asset:1", serverID: serverID, sha256: "learned-hash")
+        catalog.mergeScanned([item])
+        _ = service.recordLocalChanges(delta: catalog.takeMetadataDelta(), catalog: catalog)
+        let store = InMemoryMetadataStore()
+        try await service.flush(store: store)
+        _ = try await service.sync(store: store)
+        XCTAssertEqual(service.state.sharedPhoto(for: item.id)?.sha256, "learned-hash")
+
+        catalog.mutatePhoto(item.id) {
+            $0.sha256 = nil
+            $0.isFavorite = true
+        }
+        let recordCount = service.recordLocalChanges(
+            delta: catalog.takeMetadataDelta(),
+            catalog: catalog
+        )
+
+        XCTAssertEqual(recordCount, 1)
+        let patch = try XCTUnwrap(service.outbox.last)
+        XCTAssertEqual(patch.changed ?? [], ["isFavorite"])
+        XCTAssertNil(patch.photo?.sha256)
+
+        var patchedState = service.state
+        _ = patchedState.apply(
+            MetaRecord(
+                op: .photoPatch,
+                id: item.id,
+                hlc: service.replication.lastHLC + 1,
+                by: "writer-b",
+                photo: patch.photo,
+                changed: ["sha256"]
+            )
+        )
+        XCTAssertEqual(patchedState.sharedPhoto(for: item.id)?.sha256, "learned-hash")
+
+        try await service.flush(store: store)
+        _ = try await service.sync(store: store)
+        XCTAssertEqual(service.state.sharedPhoto(for: item.id)?.sha256, "learned-hash")
+        XCTAssertEqual(service.state.sharedPhoto(for: item.id)?.isFavorite, true)
+    }
+
     func testMalformedJSONLineAbortsSegmentInsteadOfAdvancingWatermark() async throws {
         let serverID = newServerID()
         let reader = MetadataService(serverID: serverID, writerID: "reader")
@@ -260,6 +305,111 @@ final class AuditMetadataRegressionTests: XCTestCase {
 
         XCTAssertNil(reader.replication.watermark["writer-a"])
         XCTAssertTrue(reader.state.isEmpty)
+    }
+
+    func testColdSnapshotRetryMaterializesFullStateAfterMalformedSegment() async throws {
+        let serverID = newServerID()
+        let reader = MetadataService(serverID: serverID, writerID: "reader")
+        let snapshotPhoto = photo(id: "asset:snapshot", serverID: serverID, sha256: "snapshot-hash")
+        let segmentPhoto = photo(id: "asset:segment", serverID: serverID, sha256: "segment-hash")
+
+        var snapshotState = MergedMetadata()
+        snapshotState.apply(
+            MetaRecord(
+                op: .photoUpsert,
+                id: snapshotPhoto.id,
+                hlc: 10,
+                by: "writer-a",
+                photo: SharedPhoto(photo: snapshotPhoto, serverID: serverID)
+            )
+        )
+        let snapshotData = try Gzip.compress(
+            snapshotState.encodeSnapshot(generation: 1, watermark: ["writer-a": 0])
+        )
+        let snapshotKey = MetadataLayout.snapshotKey(
+            generation: 1,
+            hlc: 10,
+            digest: SigV4Signer.sha256Hex(snapshotData)
+        )
+        let head = MetadataHead(
+            generation: 1,
+            snapshot: snapshotKey,
+            watermark: ["writer-a": 0],
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            device: "test"
+        )
+        let segmentRecord = MetaRecord(
+            op: .photoUpsert,
+            id: segmentPhoto.id,
+            hlc: 20,
+            by: "writer-a",
+            photo: SharedPhoto(photo: segmentPhoto, serverID: serverID)
+        )
+        let validRaw = try MetadataSegmentCodec.encode([segmentRecord])
+        var malformedRaw = validRaw
+        malformedRaw.append(Data("{not valid json}\n".utf8))
+        let malformedData = try Gzip.compress(malformedRaw)
+        let segmentKey = MetadataLayout.segmentKey(
+            writer: "writer-a",
+            sequence: 1,
+            hlc: segmentRecord.hlc,
+            digest: SigV4Signer.sha256Hex(malformedData)
+        )
+        let store = InMemoryMetadataStore()
+        await store.seed(MetadataLayout.headKey, try JSONFile.encoder().encode(head))
+        await store.seed(snapshotKey, snapshotData)
+        await store.seed(segmentKey, malformedData)
+
+        do {
+            _ = try await reader.sync(store: store)
+            XCTFail("A malformed pending segment must abort the cold sync")
+        } catch MetadataError.invalidSegment {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertTrue(reader.state.isEmpty)
+        XCTAssertNil(reader.replication.snapshotKey)
+        XCTAssertNil(reader.replication.watermark["writer-a"])
+
+        await store.seed(segmentKey, try Gzip.compress(validRaw))
+        let retry = try await reader.sync(store: store)
+
+        XCTAssertTrue(retry.isFull)
+        XCTAssertEqual(
+            Set(retry.photos.map(\.id)),
+            ["remote:asset:snapshot", "remote:asset:segment"]
+        )
+        XCTAssertEqual(reader.state.photos.count, 2)
+        XCTAssertEqual(reader.replication.watermark["writer-a"], 1)
+    }
+
+    func testMalformedOutboxLinePreservesValidPendingRecords() throws {
+        let serverID = newServerID()
+        let first = photo(id: "asset:first", serverID: serverID)
+        let second = photo(id: "asset:second", serverID: serverID)
+        let firstRecord = MetaRecord(
+            op: .photoUpsert,
+            id: first.id,
+            hlc: 10,
+            by: "writer-a",
+            photo: SharedPhoto(photo: first, serverID: serverID)
+        )
+        let secondRecord = MetaRecord(
+            op: .photoUpsert,
+            id: second.id,
+            hlc: 11,
+            by: "writer-a",
+            photo: SharedPhoto(photo: second, serverID: serverID)
+        )
+        var raw = try MetadataSegmentCodec.encode([firstRecord])
+        raw.append(Data("{not valid json}\n".utf8))
+        raw.append(try MetadataSegmentCodec.encode([secondRecord]))
+        try raw.write(to: AppPaths.metadataOutboxFile(serverID), options: .atomic)
+
+        let service = MetadataService(serverID: serverID, writerID: "writer-a")
+
+        XCTAssertEqual(service.outbox.map(\.id), [first.id, second.id])
     }
 
     func testLegacyHashDeduplicationPreservesRemoteTags() {
