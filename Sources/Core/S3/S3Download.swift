@@ -27,6 +27,7 @@ extension S3Client {
     ) async throws {
         let started = Date()
         let hint = sizeHint.flatMap { $0 > 0 ? $0 : nil }
+        var sizeIsHint = hint != nil
         var size: Int64 = hint ?? 0
         var roundTrip: TimeInterval?
         var etag: String?
@@ -51,6 +52,7 @@ extension S3Client {
                     throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
                 }
                 size = head.size
+                sizeIsHint = false
                 etag = head.etag
                 supportsRanges = head.acceptRanges != false
                 needsProbe = false
@@ -125,13 +127,15 @@ extension S3Client {
             var recovered = preconditionRetries > 0
             while true {
                 do {
-                    try await downloadSingle(
+                    let downloadedSize = try await downloadSingle(
                         key: key,
                         to: destination,
                         size: size,
+                        sizeIsHint: sizeIsHint,
                         etag: etag,
                         progress: progress
                     )
+                    size = downloadedSize
                     break
                 } catch let error as S3Error {
                     guard !recovered,
@@ -139,7 +143,6 @@ extension S3Client {
                           status == 412 else { throw error }
                     recovered = true
                     try? FileManager.default.removeItem(at: destination.appendingPathExtension("part"))
-                    try? FileManager.default.removeItem(at: destination)
                     invalidateCachedHead(key: key)
                     let (head, latency) = try await headObjectForDownload(key: key, useCache: false)
                     roundTrip = latency
@@ -147,6 +150,7 @@ extension S3Client {
                         throw S3Error.http(status: 404, code: "NoSuchKey", message: nil, requestID: nil)
                     }
                     size = head.size
+                    sizeIsHint = false
                     etag = head.etag
                 }
             }
@@ -177,19 +181,18 @@ extension S3Client {
         key: String,
         to destination: URL,
         size: Int64,
+        sizeIsHint: Bool,
         etag: String?,
         progress: (@Sendable (Double) -> Void)?
-    ) async throws {
+    ) async throws -> Int64 {
         let partial = destination.appendingPathExtension("part")
         var offset = fileSize(partial)
-        if offset > size {
+        // A hint cannot identify a partial's object version, and a full-length
+        // partial has no ETag to compare. Fetch the object instead of promoting
+        // either one based only on its length.
+        if offset >= size || sizeIsHint {
             try? FileManager.default.removeItem(at: partial)
             offset = 0
-        }
-        if offset == size {
-            try replace(destination: destination, with: partial)
-            progress?(1)
-            return
         }
 
         let requestOffset = offset
@@ -233,13 +236,13 @@ extension S3Client {
                 try validateContentRange(http, offset: 0, size: size)
             }
             let written = fileSize(temporary)
-            guard written == size else {
+            guard sizeIsHint || written == size else {
                 throw S3Error.decoding("Downloaded \(written) of \(size) bytes")
             }
             try? FileManager.default.removeItem(at: partial)
             try replace(destination: destination, with: temporary)
             progress?(1)
-            return
+            return written
         }
         guard http.statusCode == 206 else {
             throw S3Error.http(
@@ -258,6 +261,7 @@ extension S3Client {
         }
         try replace(destination: destination, with: partial)
         progress?(1)
+        return size
     }
 
     // MARK: - Parallel ranges

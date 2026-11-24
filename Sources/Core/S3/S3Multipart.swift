@@ -14,6 +14,14 @@ struct S3MultipartPart: Sendable, Hashable {
     var size: Int64
 }
 
+struct S3MultipartCompletionUncertainError: LocalizedError {
+    var underlying: S3Error
+
+    var errorDescription: String? {
+        underlying.errorDescription
+    }
+}
+
 extension S3Client {
     /// POST /key?uploads
     func createMultipartUpload(key: String, contentType: String) async throws -> S3MultipartUpload {
@@ -134,10 +142,18 @@ extension S3Client {
         )
         request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         sign(&request, payloadHash: SigV4Signer.sha256Hex(body))
-        let (data, response) = try await self.upload(request, data: body)
-        try validate(response, data: data)
+        let result = try await uploadWithRetryCount(request, data: body)
+        do {
+            try validate(result.response, data: result.data)
+        } catch let error as S3Error {
+            if result.retryableResponses > 0,
+               case let .http(404, "NoSuchUpload", _, _) = error {
+                throw S3MultipartCompletionUncertainError(underlying: error)
+            }
+            throw error
+        }
         invalidateCachedHead(key: upload.key)
-        return MultipartResponseParser.etag(from: data) ?? ""
+        return MultipartResponseParser.etag(from: result.data) ?? ""
     }
 
     /// DELETE /key?uploadId=…
@@ -406,6 +422,7 @@ struct MultipartUploader: Sendable {
             )
             let (body, response) = try await client.upload(request, fileURL: fileURL)
             try client.validate(response, data: body)
+            client.invalidateCachedHead(key: key)
             progress?(1)
             record(
                 direction: .upload,
@@ -533,9 +550,11 @@ struct MultipartUploader: Sendable {
         )
     }
 
-    /// A transport failure after the server committed leaves the upload id
-    /// invalid (CompleteMultipartUpload is single-shot). If the object is there
-    /// with the expected size, the complete actually succeeded.
+    /// CompleteMultipartUpload is single-shot. A retryable response followed by
+    /// NoSuchUpload may mean the server committed before its response was lost;
+    /// reconcile that specific ambiguity with fresh HEAD metadata. A transport
+    /// failure alone never proves completion, even if an old object has the
+    /// same size.
     private func complete(
         upload: S3MultipartUpload,
         parts: [S3MultipartPart],
@@ -543,11 +562,16 @@ struct MultipartUploader: Sendable {
     ) async throws {
         do {
             _ = try await client.completeMultipartUpload(upload: upload, parts: parts)
-        } catch let error as S3Error {
-            guard case .transport = error else { throw error }
-            if let head = (try? await client.headObject(key: upload.key)) ?? nil, head.size == size {
-                return
+        } catch let error as S3MultipartCompletionUncertainError {
+            guard case let .http(404, "NoSuchUpload", _, _) = error.underlying,
+                  let head = try? await client.headObject(key: upload.key),
+                  head.size == size,
+                  head.etag?.isEmpty == false else {
+                throw error.underlying
             }
+            client.invalidateCachedHead(key: upload.key)
+            return
+        } catch let error as S3Error {
             throw error
         }
     }

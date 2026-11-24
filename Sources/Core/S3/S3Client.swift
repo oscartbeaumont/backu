@@ -24,6 +24,12 @@ struct S3ObjectHead: Sendable {
     var acceptRanges: Bool?
 }
 
+struct S3HTTPResult: Sendable {
+    var data: Data
+    var response: HTTPURLResponse
+    var retryableResponses: Int
+}
+
 enum S3Error: LocalizedError {
     case invalidEndpoint
     case http(status: Int, code: String?, message: String?, requestID: String?)
@@ -139,11 +145,17 @@ struct S3Client: Sendable {
 
     /// Lists every object under a prefix, following continuation tokens.
     func listAllObjects(prefix: String, limit: Int = 20_000) async throws -> [S3Object] {
+        guard limit > 0 else { return [] }
         var results: [S3Object] = []
         var token: String?
         repeat {
-            let page = try await listObjects(prefix: prefix, continuationToken: token)
-            results.append(contentsOf: page.objects)
+            let remaining = limit - results.count
+            let page = try await listObjects(
+                prefix: prefix,
+                continuationToken: token,
+                maxKeys: min(1000, remaining)
+            )
+            results.append(contentsOf: page.objects.prefix(remaining))
             token = page.isTruncated ? page.nextToken : nil
             if results.count >= limit { break }
         } while token != nil
@@ -347,13 +359,14 @@ struct S3Client: Sendable {
         _ request: URLRequest,
         retryTransportErrors: Bool = true
     ) async throws -> (Data, HTTPURLResponse) {
-        try await sendWithRetry(retryTransportErrors: retryTransportErrors) {
+        let result = try await sendWithRetry(retryTransportErrors: retryTransportErrors) {
             let (data, response) = try await self.session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return (data, http)
+            return S3HTTPResult(data: data, response: http, retryableResponses: 0)
         }
+        return (result.data, result.response)
     }
 
     func upload(
@@ -361,12 +374,21 @@ struct S3Client: Sendable {
         data: Data,
         policy: S3RetryPolicy = .default
     ) async throws -> (Data, HTTPURLResponse) {
+        let result = try await uploadWithRetryCount(request, data: data, policy: policy)
+        return (result.data, result.response)
+    }
+
+    func uploadWithRetryCount(
+        _ request: URLRequest,
+        data: Data,
+        policy: S3RetryPolicy = .default
+    ) async throws -> S3HTTPResult {
         try await sendWithRetry(policy: policy) {
             let (body, response) = try await self.session.upload(for: request, from: data)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return (body, http)
+            return S3HTTPResult(data: body, response: http, retryableResponses: 0)
         }
     }
 
@@ -375,13 +397,14 @@ struct S3Client: Sendable {
         fileURL: URL,
         policy: S3RetryPolicy = .default
     ) async throws -> (Data, HTTPURLResponse) {
-        try await sendWithRetry(policy: policy) {
+        let result = try await sendWithRetry(policy: policy) {
             let (body, response) = try await self.session.upload(for: request, fromFile: fileURL)
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return (body, http)
+            return S3HTTPResult(data: body, response: http, retryableResponses: 0)
         }
+        return (result.data, result.response)
     }
 
     /// Runs one HTTP exchange with retries for transient statuses and transport
@@ -395,25 +418,28 @@ struct S3Client: Sendable {
     private func sendWithRetry(
         retryTransportErrors: Bool = true,
         policy: S3RetryPolicy = .default,
-        _ operation: () async throws -> (Data, HTTPURLResponse)
-    ) async throws -> (Data, HTTPURLResponse) {
+        _ operation: () async throws -> S3HTTPResult
+    ) async throws -> S3HTTPResult {
         var attempt = 0
+        var retryableResponses = 0
         while true {
             metrics?.recordRequest()
             do {
-                let (data, response) = try await operation()
-                if S3RetryPolicy.isRetryable(status: response.statusCode),
+                var result = try await operation()
+                if S3RetryPolicy.isRetryable(status: result.response.statusCode),
                    attempt + 1 < policy.maxAttempts {
+                    retryableResponses += 1
                     attempt += 1
                     metrics?.recordRetryableResponse()
                     metrics?.recordRetry()
                     try await policy.sleepBeforeRetry(
                         attempt: attempt,
-                        retryAfter: S3RetryHeaders.retryAfter(response)
+                        retryAfter: S3RetryHeaders.retryAfter(result.response)
                     )
                     continue
                 }
-                return (data, response)
+                result.retryableResponses = retryableResponses
+                return result
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -435,13 +461,23 @@ struct S3Client: Sendable {
     }
 
     func validate(_ response: HTTPURLResponse, data: Data) throws {
-        guard (200..<300).contains(response.statusCode) else {
-            let parsed = S3ErrorParser.parse(data)
+        let isSuccess = (200..<300).contains(response.statusCode)
+        let isXML = response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("xml") == true
+        let parsed = !isSuccess || isXML ? S3ErrorParser.parse(data) : (code: nil, message: nil, requestID: nil)
+        if let code = parsed.code {
             throw S3Error.http(
                 status: response.statusCode,
-                code: parsed.code,
+                code: code,
                 message: parsed.message,
                 requestID: parsed.requestID ?? response.value(forHTTPHeaderField: "x-amz-request-id")
+            )
+        }
+        guard isSuccess else {
+            throw S3Error.http(
+                status: response.statusCode,
+                code: nil,
+                message: nil,
+                requestID: response.value(forHTTPHeaderField: "x-amz-request-id")
             )
         }
     }
@@ -496,10 +532,10 @@ private final class ListObjectsParser: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let commonPrefixDepth, depth == commonPrefixDepth + 1, elementName == "Prefix" {
-            commonPrefixes.append(value)
+            commonPrefixes.append(text)
         }
         if let contentsDepth, depth == contentsDepth + 1 {
-            current[elementName] = value
+            current[elementName] = elementName == "Key" ? text : value
         } else if contentsDepth == nil {
             switch elementName {
             case "NextContinuationToken": nextToken = value
@@ -539,6 +575,7 @@ private final class S3ErrorParser: NSObject, XMLParserDelegate {
     private(set) var requestID: String?
     private var text = ""
     private var depth = 0
+    private var rootElement: String?
 
     static func parse(_ data: Data) -> (code: String?, message: String?, requestID: String?) {
         guard !data.isEmpty else { return (nil, nil, nil) }
@@ -550,6 +587,7 @@ private final class S3ErrorParser: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        if depth == 0 { rootElement = elementName }
         depth += 1
         text = ""
     }
@@ -561,9 +599,9 @@ private final class S3ErrorParser: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         switch elementName {
-        case "Code": if depth == 2 { code = value }
-        case "Message": if depth == 2 { message = value }
-        case "RequestId": if depth == 2 { requestID = value }
+        case "Code": if rootElement == "Error", depth == 2 { code = value }
+        case "Message": if rootElement == "Error", depth == 2 { message = value }
+        case "RequestId": if rootElement == "Error", depth == 2 { requestID = value }
         default: break
         }
         depth -= 1
