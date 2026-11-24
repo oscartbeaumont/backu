@@ -28,6 +28,12 @@ final class AtlasStore {
         var cost: Int
     }
 
+    private struct QueuedRequest {
+        var key: Key
+        var client: S3Client
+        var prefix: String
+    }
+
     /// Decoded sheets are large: one 6×6 grid sheet is 2304² × 4 B ≈ 21 MB.
     /// Four covers the current screen, the next one and one behind; previews
     /// are 384² ≈ 0.6 MB and are kept for far more of the library.
@@ -46,7 +52,7 @@ final class AtlasStore {
     /// Groups that failed to download. Retried after a cooldown instead of on
     /// every tile that scrolls past.
     @ObservationIgnored private var failedAt: [Key: Date] = [:]
-    @ObservationIgnored private var pending: [Key] = []
+    @ObservationIgnored private var pending: [QueuedRequest] = []
     @ObservationIgnored private var active = 0
     private let maxConcurrent = 4
     private let directory: URL
@@ -161,6 +167,7 @@ final class AtlasStore {
         let batchSize = maxConcurrent
         var index = 0
         while index < missing.count {
+            guard !Task.isCancelled else { return }
             let batch = missing[index..<min(missing.count, index + batchSize)]
             await withTaskGroup(of: Void.self) { group in
                 for next in batch {
@@ -268,23 +275,29 @@ final class AtlasStore {
     // MARK: - Queueing
 
     private func enqueue(_ key: Key, client: S3Client?, prefix: String, priority: TaskPriority) {
-        if decoded[key] != nil || inFlight[key] != nil || pending.contains(key) { return }
+        guard let client else { return }
+        if decoded[key] != nil || inFlight[key] != nil || pending.contains(where: { $0.key == key }) { return }
         if let at = failedAt[key], Date().timeIntervalSince(at) < 30 { return }
-        pending.append(key)
-        pump(client: client, prefix: prefix)
+        pending.append(QueuedRequest(key: key, client: client, prefix: prefix))
+        pump()
     }
 
-    private func pump(client: S3Client?, prefix: String = "") {
-        guard let client else { return }
+    private func pump() {
         while active < maxConcurrent, !pending.isEmpty {
-            let key = pending.removeFirst()
+            let request = pending.removeFirst()
+            let key = request.key
             if decoded[key] != nil || inFlight[key] != nil { continue }
             active += 1
             Task(priority: key.level == .grid ? .utility : .utility) { [weak self] in
                 guard let self else { return }
-                _ = await self.sheet(group: key.group, level: key.level, client: client, prefix: prefix)
+                _ = await self.sheet(
+                    group: key.group,
+                    level: key.level,
+                    client: request.client,
+                    prefix: request.prefix
+                )
                 self.active = max(0, self.active - 1)
-                self.pump(client: client, prefix: prefix)
+                self.pump()
             }
         }
     }

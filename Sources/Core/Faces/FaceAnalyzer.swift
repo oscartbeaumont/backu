@@ -38,9 +38,12 @@ struct FaceAnalyzer: Sendable {
         do {
             for observation in observations {
                 let box = observation.boundingBox.cgRect
-                let shortEdge = min(box.width, box.height)
+                let shortEdgeFraction = min(
+                    box.width * CGFloat(image.width),
+                    box.height * CGFloat(image.height)
+                ) / CGFloat(min(image.width, image.height))
                 guard Double(observation.confidence) >= minimumConfidence,
-                      shortEdge >= minimumFaceFraction else { continue }
+                      shortEdgeFraction >= minimumFaceFraction else { continue }
                 let rect = NormRect(
                     visionX: box.origin.x,
                     visionY: box.origin.y,
@@ -67,9 +70,12 @@ struct FaceAnalyzer: Sendable {
         do {
             for observation in animals {
                 let box = observation.boundingBox.cgRect
-                let shortEdge = min(box.width, box.height)
+                let shortEdgeFraction = min(
+                    box.width * CGFloat(image.width),
+                    box.height * CGFloat(image.height)
+                ) / CGFloat(min(image.width, image.height))
                 guard Double(observation.confidence) >= minimumConfidence,
-                      shortEdge >= minimumFaceFraction else { continue }
+                      shortEdgeFraction >= minimumFaceFraction else { continue }
                 guard let label = observation.labels.first, label.confidence > 0.35 else { continue }
                 let rect = NormRect(
                     visionX: box.origin.x,

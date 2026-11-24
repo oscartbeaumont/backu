@@ -173,8 +173,12 @@ final class ImageCache {
     /// Any thumbnail already decoded for this photo, at any density. The viewer
     /// uses it as the instant underlay while the full image streams in.
     func cachedPreview(for photo: PhotoItem) -> PlatformImage? {
-        guard let cacheKey = previewKeys[photo.id] else { return nil }
-        return thumbnails.object(forKey: cacheKey)?.image ?? degradedThumbnails.object(forKey: cacheKey)?.image
+        if let cacheKey = previewKeys[photo.id],
+           let image = thumbnails.object(forKey: cacheKey)?.image
+            ?? degradedThumbnails.object(forKey: cacheKey)?.image {
+            return image
+        }
+        return cachedAtlasPreview(for: photo)
     }
 
     func thumbnail(
@@ -403,7 +407,7 @@ final class ImageCache {
     @ObservationIgnored private var faceCache: [String: PlatformImage] = [:]
 
     func faceImage(photo: PhotoItem, face: PhotoFace, size: CGFloat = 900) async -> PlatformImage? {
-        let cacheKey = "\(photo.id)-\(face.id)"
+        let cacheKey = "\(photo.id)-\(face.id)-\(Int(size.rounded()))"
         if let cached = faceCache[cacheKey] { return cached }
         guard let source = await thumbnail(for: photo, size: CGSize(width: size, height: size)),
               let cropped = ImageUtilities.crop(source, to: face.rect) else { return nil }
@@ -442,7 +446,7 @@ enum RemoteAssetLoader {
         let key = thumbnail
             // Older indexes may have no thumbnail; fall back to the original
             // rather than leaving a permanent placeholder.
-            ? (photo.remoteThumbnailKey ?? copy?.thumbnailKey ?? copy?.objectKey)
+            ? (copy?.thumbnailKey ?? photo.remoteThumbnailKey ?? copy?.objectKey)
             : copy?.objectKey
         guard let key else { return nil }
 
