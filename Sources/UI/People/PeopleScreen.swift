@@ -581,7 +581,15 @@ struct PersonDetailScreen: View {
     private var photoGrid: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
             ForEach(photos) { photo in
-                PhotoTile(photo: photo, columns: 3) {
+                PhotoTile(
+                    photo: photo,
+                    columns: 3,
+                    onDetails: {
+                        var presentation = app.photosForViewer(startingAt: photo.id, within: photos)
+                        presentation.panel = .info
+                        app.viewer = presentation
+                    }
+                ) {
                     app.viewer = app.photosForViewer(startingAt: photo.id, within: photos)
                 }
             }
