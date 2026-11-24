@@ -44,11 +44,12 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import formatdate, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Iterable
+from typing import BinaryIO, Iterable
 from urllib.parse import parse_qsl, quote, unquote
 from xml.sax.saxutils import escape
 
@@ -398,7 +399,19 @@ class SigV4Verifier:
                 payload_hash = payload_hash.lower()
 
         signed_header_names = match.group("signed_headers")
-        signed_headers_list = [name for name in signed_header_names.split(";") if name]
+        signed_headers_list = signed_header_names.split(";")
+        if (
+            not signed_headers_list
+            or any(not name for name in signed_headers_list)
+            or any(name != name.lower() for name in signed_headers_list)
+            or signed_headers_list != sorted(set(signed_headers_list))
+            or "host" not in signed_headers_list
+        ):
+            raise S3Error(
+                400,
+                "AuthorizationHeaderMalformed",
+                "SignedHeaders must be lowercase, sorted, unique, and include host.",
+            )
 
         canonical_header_lines = []
         for name in signed_headers_list:
@@ -477,6 +490,7 @@ class ObjectStore:
         self._uploads_lock = threading.Lock()
         self._items: dict[str, dict] = {}
         self._uploads: dict[str, dict] = {}
+        self._staged_objects: dict[tuple[str, str, int], str] = {}
         self._load()
 
     # -- disk layout ------------------------------------------------------- #
@@ -542,6 +556,9 @@ class ObjectStore:
             "lastModified": time.time(),
         }
         with self._lock:
+            staged = self._staged_objects.pop((key, etag, threading.get_ident()), None)
+            if staged is not None:
+                os.replace(staged, self._object_path(key))
             temporary = self._meta_path(key) + ".tmp"
             with open(temporary, "w", encoding="utf-8") as handle:
                 json.dump(item, handle, indent=2, sort_keys=True, ensure_ascii=False)
@@ -551,14 +568,33 @@ class ObjectStore:
             self._write_index()
         return item
 
+    def _stage_object(self, key: str, etag: str, path: str) -> None:
+        token = (key, etag, threading.get_ident())
+        with self._lock:
+            self._staged_objects[token] = path
+
+    def _discard_staged_object(self, key: str, etag: str, path: str) -> None:
+        token = (key, etag, threading.get_ident())
+        with self._lock:
+            if self._staged_objects.get(token) == path:
+                self._staged_objects.pop(token, None)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
     # -- operations -------------------------------------------------------- #
 
     def put(self, key: str, body: bytes, content_type: str) -> dict:
         etag = hashlib.md5(body).hexdigest()  # noqa: S324 - S3 ETags are MD5
-        with self._lock:
-            with open(self._object_path(key), "wb") as handle:
+        temporary = f"{self._object_path(key)}.tmp-put-{uuid.uuid4().hex}"
+        try:
+            with open(temporary, "wb") as handle:
                 handle.write(body)
-        return self._commit(key, len(body), etag, content_type)
+            self._stage_object(key, etag, temporary)
+            return self._commit(key, len(body), etag, content_type)
+        finally:
+            self._discard_staged_object(key, etag, temporary)
 
     def head(self, key: str) -> dict | None:
         with self._lock:
@@ -577,28 +613,36 @@ class ObjectStore:
             return None
         return path, size
 
-    def read_range(self, key: str, start: int, end: int) -> bytes | None:
-        found = self.object_file(key)
-        if found is None:
-            return None
-        path, _ = found
-        length = end - start + 1
-        try:
-            with open(path, "rb") as handle:
-                handle.seek(start)
-                return handle.read(length)
-        except FileNotFoundError:
-            return None
-
-    def get(self, key: str) -> tuple[dict, bytes] | None:
+    def open_object(self, key: str) -> tuple[dict, BinaryIO] | None:
+        """Open a consistent metadata/bytes snapshot for a streaming read."""
         with self._lock:
             item = self._items.get(key)
             if item is None:
                 return None
-            path = self._object_path(key)
+            try:
+                handle = open(self._object_path(key), "rb")
+            except FileNotFoundError:
+                return None
+            return dict(item), handle
+
+    def read_range(self, key: str, start: int, end: int) -> bytes | None:
+        found = self.open_object(key)
+        if found is None:
+            return None
+        _, handle = found
+        length = end - start + 1
+        with handle:
+            handle.seek(start)
+            return handle.read(length)
+
+    def get(self, key: str) -> tuple[dict, bytes] | None:
+        found = self.open_object(key)
+        if found is None:
+            return None
+        item, handle = found
         try:
-            with open(path, "rb") as handle:
-                return dict(item), handle.read()
+            with handle:
+                return item, handle.read()
         except FileNotFoundError:
             return None
 
@@ -742,7 +786,6 @@ class ObjectStore:
                             if not chunk:
                                 break
                             destination.write(chunk)
-            os.replace(temporary, path)
         except Exception:
             try:
                 os.remove(temporary)
@@ -750,7 +793,11 @@ class ObjectStore:
                 pass
             raise
         etag = f"{digest.hexdigest()}-{len(resolved)}"
-        item = self._commit(key, total, etag, upload["contentType"])
+        try:
+            self._stage_object(key, etag, temporary)
+            item = self._commit(key, total, etag, upload["contentType"])
+        finally:
+            self._discard_staged_object(key, etag, temporary)
         with self._uploads_lock:
             self._uploads.pop(upload_id, None)
         shutil.rmtree(self._upload_dir(upload_id), ignore_errors=True)
@@ -884,14 +931,14 @@ class MockS3Handler(BaseHTTPRequestHandler):
     def _send_file(
         self,
         status: int,
-        path: str,
+        source: str | BinaryIO,
         size: int,
         content_type: str | None = None,
         headers: Iterable[tuple[str, str]] | None = None,
         offset: int = 0,
         length: int | None = None,
     ) -> None:
-        """Stream a file (or a byte range of one) with shaping, never buffering it."""
+        """Stream an open object (or a path) with shaping, never buffering it."""
         length = size - offset if length is None else length
         self.send_response(status)
         if content_type:
@@ -906,7 +953,8 @@ class MockS3Handler(BaseHTTPRequestHandler):
         if self.command == "HEAD":
             return
         try:
-            with open(path, "rb") as handle:
+            source_context = open(source, "rb") if isinstance(source, str) else nullcontext(source)
+            with source_context as handle:
                 handle.seek(offset)
                 remaining = length
                 while remaining > 0:
@@ -1194,45 +1242,50 @@ class MockS3Handler(BaseHTTPRequestHandler):
         self._bytes = len(body)
 
     def _get_object(self, key: str) -> None:
-        item = self.store.head(key)
-        found = self.store.object_file(key)
-        if item is None or found is None:
+        found = self.store.open_object(key)
+        if found is None:
             raise S3Error(
                 404,
                 "NoSuchKey",
                 f"The specified key does not exist: {key!r}.",
                 extra={"Key": key},
             )
-        self._require_if_match(item)
-        path, size = found
-        common_headers = [
-            ("ETag", f'"{item["etag"]}"'),
-            ("Last-Modified", _http_date(item["lastModified"])),
-            ("Accept-Ranges", "bytes"),
-        ]
-        raw_range = self.headers.get("Range")
-        if raw_range:
-            start, end = _parse_range(raw_range, size)
+        item, handle = found
+        try:
+            self._require_if_match(item)
+            if self._if_none_match(item):
+                self._send_not_modified(item)
+                return
+            common_headers = [
+                ("ETag", f'"{item["etag"]}"'),
+                ("Last-Modified", _http_date(item["lastModified"])),
+                ("Accept-Ranges", "bytes"),
+            ]
+            raw_range = self.headers.get("Range")
+            if raw_range:
+                start, end = _parse_range(raw_range, item["size"])
+                self._send_file(
+                    206,
+                    handle,
+                    item["size"],
+                    content_type=item["contentType"],
+                    headers=[
+                        ("Content-Range", f"bytes {start}-{end}/{item['size']}"),
+                        *common_headers,
+                    ],
+                    offset=start,
+                    length=end - start + 1,
+                )
+                return
             self._send_file(
-                206,
-                path,
-                size,
+                200,
+                handle,
+                item["size"],
                 content_type=item["contentType"],
-                headers=[
-                    ("Content-Range", f"bytes {start}-{end}/{size}"),
-                    *common_headers,
-                ],
-                offset=start,
-                length=end - start + 1,
+                headers=common_headers,
             )
-            return
-        self._send_file(
-            200,
-            path,
-            size,
-            content_type=item["contentType"],
-            headers=common_headers,
-        )
+        finally:
+            handle.close()
 
     def _head_object(self, key: str) -> None:
         item = self.store.head(key)
@@ -1244,6 +1297,9 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 extra={"Key": key},
             )
         self._require_if_match(item)
+        if self._if_none_match(item):
+            self._send_not_modified(item)
+            return
         self._send(
             200,
             b"",
@@ -1275,8 +1331,30 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 "At least one of the preconditions you specified did not hold.",
             )
 
+    def _if_none_match(self, item: dict) -> bool:
+        raw = (self.headers.get("If-None-Match") or "").strip()
+        if not raw:
+            return False
+        quoted = f'"{item["etag"]}"'
+        candidates = {value.strip().removeprefix("W/") for value in raw.split(",")}
+        return "*" in candidates or quoted in candidates or item["etag"] in candidates
+
+    def _send_not_modified(self, item: dict) -> None:
+        self._send(
+            304,
+            b"",
+            headers=[
+                ("ETag", f'"{item["etag"]}"'),
+                ("Last-Modified", _http_date(item["lastModified"])),
+                ("Accept-Ranges", "bytes"),
+            ],
+            content_length=item["size"],
+        )
+
     def _list_objects(self, params: dict[str, str]) -> None:
         prefix = params.get("prefix", "")
+        delimiter = params.get("delimiter", "")
+        start_after = params.get("start-after")
         max_keys_raw = params.get("max-keys", "1000")
         try:
             max_keys = int(max_keys_raw)
@@ -1307,15 +1385,31 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 ) from error
 
         keys = [key for key in self.store.keys() if key.startswith(prefix)]
+        if start_after is not None:
+            keys = [key for key in keys if key > start_after]
+
+        common_prefixes: set[str] = set()
+        if delimiter:
+            contents = []
+            for key in keys:
+                remainder = key[len(prefix):]
+                head, separator, _ = remainder.partition(delimiter)
+                if separator:
+                    common_prefixes.add(prefix + head + delimiter)
+                else:
+                    contents.append(key)
+            keys = contents
+
+        entries = sorted([*keys, *common_prefixes])
         if after is not None:
-            keys = [key for key in keys if key > after]
+            entries = [entry for entry in entries if entry > after]
 
         if max_keys == 0:
             page: list[str] = []
             truncated = False
         else:
-            page = keys[:max_keys]
-            truncated = len(keys) > max_keys
+            page = entries[:max_keys]
+            truncated = len(entries) > max_keys
 
         next_token = None
         if truncated and page:
@@ -1326,6 +1420,8 @@ class MockS3Handler(BaseHTTPRequestHandler):
             f'<ListBucketResult xmlns="{XMLNS}">',
             f"<Name>{_xml_text(self.config.bucket)}</Name>",
             f"<Prefix>{_xml_text(prefix)}</Prefix>",
+            f"<Delimiter>{_xml_text(delimiter)}</Delimiter>" if delimiter else "",
+            f"<StartAfter>{_xml_text(start_after)}</StartAfter>" if start_after is not None else "",
         ]
         if token:
             parts.append(f"<ContinuationToken>{_xml_text(token)}</ContinuationToken>")
@@ -1335,7 +1431,15 @@ class MockS3Handler(BaseHTTPRequestHandler):
         if next_token:
             parts.append(f"<NextContinuationToken>{_xml_text(next_token)}</NextContinuationToken>")
 
-        for key in page:
+        for entry in page:
+            if entry in common_prefixes:
+                parts.append(
+                    "<CommonPrefixes>"
+                    f"<Prefix>{_xml_text(entry)}</Prefix>"
+                    "</CommonPrefixes>"
+                )
+                continue
+            key = entry
             item = self.store.head(key)
             if item is None:  # deleted between the snapshot and now
                 continue
