@@ -53,7 +53,11 @@ enum DemoBootstrap {
         }
 
         for server in payload.servers ?? [] {
-            guard app.servers.servers.contains(where: { $0.bucket == server.bucket && $0.endpoint == (server.endpoint ?? "") }) == false else { continue }
+            guard app.servers.servers.contains(where: {
+                $0.bucket == server.bucket
+                    && $0.endpoint == (server.endpoint ?? "")
+                    && $0.prefix == (server.prefix ?? "Backu")
+            }) == false else { continue }
             let provider = StorageProvider(rawValue: server.provider ?? "custom") ?? .custom
             let config = ServerConfig(
                 name: server.name,

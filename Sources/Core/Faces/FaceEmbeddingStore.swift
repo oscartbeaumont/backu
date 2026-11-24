@@ -49,6 +49,7 @@ actor FaceEmbeddingStore {
 
     @discardableResult
     func append(_ vector: [Float]) -> Int {
+        guard !vector.isEmpty, vector.count <= Self.dimension else { return -1 }
         guard let handle = fileHandle() else { return -1 }
         var payload = Data(capacity: vector.count * 4 + 4)
         let count = UInt32(vector.count)
