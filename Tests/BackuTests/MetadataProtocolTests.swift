@@ -77,7 +77,7 @@ final class MetadataProtocolTests: XCTestCase {
         var records: [MetaRecord] = []
         for key in await store.keys(under: ".backu/meta/v2/log/\(writer)/") {
             guard let data = await store.data(for: key) else { continue }
-            records.append(contentsOf: MetadataSegmentCodec.decode(try Gzip.decompress(data)))
+            records.append(contentsOf: try MetadataSegmentCodec.decode(try Gzip.decompress(data)))
         }
         return records
     }

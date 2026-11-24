@@ -114,6 +114,7 @@ final class CatalogStore {
     private func rebuildLookups() {
         photoByID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         personByID = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        recomputePeopleCounts()
         reindexPhotos()
     }
 
@@ -696,29 +697,31 @@ final class CatalogStore {
         guard let index = photos.firstIndex(where: { $0.id == photoID }) else { return }
         // Preserve names the user already assigned by matching face geometry.
         var existingFaces = photos[index].faces
+        var replacementFaces: [PhotoFace] = []
         for face in faces {
             if let matchIndex = existingFaces.firstIndex(where: { existing in
                 abs(existing.rect.x - face.rect.x) < 0.06
                     && abs(existing.rect.y - face.rect.y) < 0.06
                     && existing.kind == face.kind
             }) {
-                existingFaces[matchIndex] = PhotoFace(
-                    id: existingFaces[matchIndex].id,
-                    personID: existingFaces[matchIndex].personID,
+                let existing = existingFaces.remove(at: matchIndex)
+                replacementFaces.append(PhotoFace(
+                    id: existing.id,
+                    personID: existing.personID,
                     kind: face.kind,
                     rect: face.rect,
                     quality: face.quality,
-                    embeddingIndex: face.embeddingIndex ?? existingFaces[matchIndex].embeddingIndex
-                )
+                    embeddingIndex: face.embeddingIndex ?? existing.embeddingIndex
+                ))
             } else {
-                existingFaces.append(face)
+                replacementFaces.append(face)
             }
         }
         // Re-key to the shared identity. Embeddings live at
         // `embeddingIndex`, so this is safe and makes a second device's
         // analysis of the same bytes address the same faces.
         var seenFaces = Set<UUID>()
-        existingFaces = existingFaces.compactMap { face in
+        existingFaces = replacementFaces.compactMap { face in
             var keyed = face
             keyed.id = FaceIdentity.canonical(photoID: photoID, kind: face.kind, rect: face.rect)
             return seenFaces.insert(keyed.id).inserted ? keyed : nil
@@ -849,7 +852,10 @@ final class CatalogStore {
     }
 
     func mergePeople(_ source: UUID, into target: UUID) {
-        guard source != target else { return }
+        guard source != target,
+              personByID[source] != nil,
+              personByID[target] != nil
+        else { return }
         deletedPersonIDs.insert(source)
         for index in photos.indices {
             var changed = false
@@ -946,6 +952,9 @@ final class CatalogStore {
             if photos[targetIndex].remoteThumbnailKey == nil {
                 photos[targetIndex].remoteThumbnailKey = photos[twin].remoteThumbnailKey
             }
+            photos[targetIndex].tags = Array(
+                Set(photos[targetIndex].tags).union(photos[twin].tags)
+            ).sorted()
             // Keep people discovered on the other device attached to the local
             // photo so naming them still means something.
             for twinFace in photos[twin].faces {
@@ -1018,6 +1027,7 @@ final class CatalogStore {
 
     func importRemotePhotos(_ remote: [PhotoItem]) -> Int {
         var imported = 0
+        var changed = false
         var byHash: [String: String] = [:]
         for photo in photos {
             if let sha = photo.sha256, byHash[sha] == nil {
@@ -1037,7 +1047,9 @@ final class CatalogStore {
                         local.copies.append(copy)
                     }
                     local.remoteThumbnailKey = local.remoteThumbnailKey ?? item.remoteThumbnailKey
+                    local.tags = Array(Set(local.tags).union(item.tags)).sorted()
                     upsertInMemory(local)
+                    changed = true
                 }
                 continue
             }
@@ -1049,7 +1061,9 @@ final class CatalogStore {
                         existing.copies.append(copy)
                     }
                     existing.remoteThumbnailKey = existing.remoteThumbnailKey ?? item.remoteThumbnailKey
+                    existing.tags = Array(Set(existing.tags).union(item.tags)).sorted()
                     upsertInMemory(existing)
+                    changed = true
                 }
                 continue
             }
@@ -1059,9 +1073,10 @@ final class CatalogStore {
                 upsertInMemory(item)
                 if let sha = item.sha256 { byHash[sha] = item.id }
                 imported += 1
+                changed = true
             }
         }
-        if imported > 0 {
+        if changed {
             sortIfNeeded()
             bump()
             saveSoon()

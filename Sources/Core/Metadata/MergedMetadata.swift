@@ -610,6 +610,7 @@ struct MergedMetadata: Sendable {
             builder.parse(Data(line))
         }
         guard let header = builder.header else { throw MetadataError.invalidSnapshot }
+        builder.metadata.rebuildDerivedIndexes()
         return DecodedSnapshot(metadata: builder.metadata, header: header)
     }
 
@@ -643,6 +644,7 @@ struct MergedMetadata: Sendable {
         }
         if !line.isEmpty { builder.parse(line) }
         guard let header = builder.header else { throw MetadataError.invalidSnapshot }
+        builder.metadata.rebuildDerivedIndexes()
         return DecodedSnapshot(metadata: builder.metadata, header: header)
     }
 

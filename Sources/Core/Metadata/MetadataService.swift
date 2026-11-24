@@ -504,7 +504,7 @@ final class MetadataService {
                         case .notModified: throw MetadataError.invalidSegment
                         }
                         let raw = try Gzip.decompress(compressed)
-                        return (segment.writer, segment.sequence, MetadataSegmentCodec.decode(raw))
+                        return (segment.writer, segment.sequence, try MetadataSegmentCodec.decode(raw))
                     }
                 }
                 var collected: [(String, Int, [MetaRecord])] = []
@@ -1052,7 +1052,7 @@ final class MetadataService {
         guard let data = try? Data(contentsOf: AppPaths.metadataOutboxFile(serverID)) else {
             return []
         }
-        return MetadataSegmentCodec.decode(data)
+        return (try? MetadataSegmentCodec.decode(data)) ?? []
     }
 
     private func loadCache() {
@@ -1142,6 +1142,7 @@ extension SharedPhoto {
         case .duration: return duration == other.duration
         case .metadata: return metadata == other.metadata
         case .copies: return copies == other.copies
+        case .sha256: return sha256 == other.sha256
         }
     }
 }

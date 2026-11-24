@@ -106,7 +106,7 @@ final class MetadataFormatTests: XCTestCase {
             makeRecord(.personDelete, id: UUID().uuidString, hlc: 2, by: "a")
         ]
         let encoded = try MetadataSegmentCodec.encode(records)
-        let decoded = MetadataSegmentCodec.decode(encoded)
+        let decoded = try MetadataSegmentCodec.decode(encoded)
         XCTAssertEqual(decoded.count, 2)
         XCTAssertEqual(decoded[0].photo?.id, "p1")
         XCTAssertEqual(decoded[1].op, .personDelete)
