@@ -32,6 +32,7 @@ struct PhotoTile: View, Equatable {
     var cornerRadius: CGFloat = Theme.tileRadius
     var isSelecting: Bool = false
     var isSelected: Bool = false
+    var onDetails: () -> Void
     var onOpen: () -> Void
     @Environment(AppModel.self) private var app
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -174,9 +175,7 @@ struct PhotoTile: View, Equatable {
                 Label(photo.isFavorite ? "Remove from Favorites" : "Favorite", systemImage: photo.isFavorite ? "heart.slash" : "heart")
             }
             Button {
-                var presentation = app.photosForViewer(startingAt: photo.id, within: app.catalog.photos)
-                presentation.panel = .info
-                app.viewer = presentation
+                onDetails()
             } label: {
                 Label("Details", systemImage: "info.circle")
             }
