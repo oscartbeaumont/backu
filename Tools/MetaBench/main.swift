@@ -248,6 +248,7 @@ for index in 0..<min(options.edits, photos.count) {
 }
 let segmentRaw = try MetadataSegmentCodec.encode(editRecords)
 let segmentCompressed = try Gzip.compress(segmentRaw)
+let actualEdits = editRecords.count
 
 // One segment per 500 records is the writer's chunk size.
 let seedRecords = photos.enumerated().map { index, photo in
@@ -288,6 +289,8 @@ let v2EditRecordBytes = Double(segmentCompressed.count) / Double(max(1, editReco
 var uploads: [String: Double] = [:]
 var fetches: [String: Double] = [:]
 var notes: [String] = []
+var networkFailed = false
+let networkKeys: Set<String> = ["v1-index.json", "v2-snapshot.jsonl.gz", "v2-segment.jsonl.gz"]
 notes.append(String(format: "v2 state build + merge: %.0f ms", seedMilliseconds))
 notes.append(String(format: "v2 snapshot gzip: %.0f ms", snapshotGzipMilliseconds))
 
@@ -310,6 +313,7 @@ if options.network {
             try await client.putObject(key: "\(prefix)/\(key)", data: data, contentType: "application/octet-stream")
             uploads[key] = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         } catch {
+            networkFailed = true
             notes.append("upload \(key) failed: \(error.localizedDescription)")
         }
     }
@@ -320,6 +324,7 @@ if options.network {
             _ = try await client.getObject(key: "\(prefix)/\(key)")
             fetches[key] = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
         } catch {
+            networkFailed = true
             notes.append("fetch \(key) failed: \(error.localizedDescription)")
         }
     }
@@ -370,6 +375,7 @@ if options.network {
             )
             print("→ Seeded \(root) with a snapshot and one segment")
         } catch {
+            networkFailed = true
             notes.append("seed failed: \(error.localizedDescription)")
         }
     }
@@ -379,7 +385,7 @@ if options.network {
 
 let report = Report(
     photos: options.photos,
-    edits: options.edits,
+    edits: actualEdits,
     v1CompactBytes: v1Compact.count,
     v1PrettyBytes: v1Pretty.count,
     v1EncodeMilliseconds: v1EncodeMilliseconds,
@@ -406,7 +412,7 @@ print("  v1 index (compact)      \(kb(v1Compact.count))   \(String(format: "%.0f
 print("  v1 index (pretty)       \(kb(v1Pretty.count))")
 print("  v2 snapshot (gzip)      \(kb(snapshotCompressed.count))   \(String(format: "%.0f", snapshotGzipMilliseconds)) ms gzip")
 print("  v2 seed (migration)     \(kb(seedBytes)) in \(seedSegments) segments")
-print("  v2 \(options.edits) edits segment   \(kb(segmentCompressed.count))  (\(String(format: "%.0f", v2EditRecordBytes)) B/edit)")
+print("  v2 \(actualEdits) edits segment   \(kb(segmentCompressed.count))  (\(String(format: "%.0f", v2EditRecordBytes)) B/edit)")
 print("  v2 head                 \(kb(headBytes))")
 print("")
 print("  one editing session      v1 \(kb(v1Compact.count)) / 1 PUT   →   v2 \(kb(segmentCompressed.count)) / 1 PUT")
@@ -426,4 +432,10 @@ if let output = options.output {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     try encoder.encode(report).write(to: URL(fileURLWithPath: output))
     print("\nReport written to \(output)")
+}
+if options.network && (
+    networkFailed || Set(uploads.keys) != networkKeys || Set(fetches.keys) != networkKeys
+) {
+    FileHandle.standardError.write(Data("Network measurements failed; report is incomplete.\n".utf8))
+    exit(1)
 }

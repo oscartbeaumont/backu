@@ -24,7 +24,11 @@ echo "→ Building $BENCH_BIN"
 swiftc -O -o "$BENCH_BIN" \
   Sources/Core/Models/StorageProvider.swift \
   Sources/Core/Models/ServerConfig.swift \
+  Sources/Core/Models/PhotoItem.swift \
+  Sources/Core/Models/Person.swift \
   Sources/Core/S3/*.swift \
+  Sources/Core/Storage/AppPaths.swift \
+  Sources/Core/Sync/Sidecar.swift \
   Sources/Core/Library/ThumbnailAtlas.swift \
   Tools/AtlasBench/main.swift
 
@@ -39,7 +43,7 @@ trap cleanup EXIT INT TERM
 start_mock() {
   local port="$1"
   shift
-  rm -rf "$WORK/$port"
+  rm -rf "${WORK:?}/$port"
   mkdir -p "$WORK/$port"
   python3 "$MOCK" --port "$port" --data-dir "$WORK/$port" "$@" \
     >"$WORK/mock-$port.log" 2>&1 &

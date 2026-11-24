@@ -16,7 +16,9 @@ python3 Tools/MockS3/mock_s3.py --port 9002 --bucket photo-archive-offsite --reg
   --data-dir /private/tmp/backu-shots-offsite --quiet &
 
 # iPhone 6.9" and iPad 13"
+xcrun simctl shutdown "iPhone 17 Pro Max"      # or the current 6.9" device
 xcrun simctl erase "iPhone 17 Pro Max"        # or the current 6.9" device
+xcrun simctl shutdown "iPad Pro 13-inch (M5)"
 xcrun simctl erase "iPad Pro 13-inch (M5)"
 # boot, addmedia the marketing library, install the debug app, grant photos
 ```

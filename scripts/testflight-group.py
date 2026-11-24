@@ -25,6 +25,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 try:
@@ -148,16 +149,34 @@ def find_group(token: str, app_id: str, name: str) -> dict:
 
 
 def wait_for_build(
-    token: str, app_id: str, build_number: str, timeout: int, poll: int
+    token: str,
+    app_id: str,
+    build_number: str,
+    timeout: int,
+    poll: int,
+    refresh_token: Callable[[], str] | None = None,
+    token_issued_at: float | None = None,
 ) -> dict:
     deadline = time.time() + timeout
+    issued_at = time.time() if token_issued_at is None else token_issued_at
+    refreshed_after_401 = False
     last_state = None
     while time.time() < deadline:
+        if refresh_token is not None and time.time() >= issued_at + TOKEN_LIFETIME:
+            token = refresh_token()
+            issued_at = time.time()
+            refreshed_after_401 = False
         status, body = request(
             token,
             "GET",
             f"/builds?filter[app]={app_id}&filter[version]={build_number}&limit=1",
         )
+        if status == 401 and refresh_token is not None and not refreshed_after_401:
+            token = refresh_token()
+            issued_at = time.time()
+            refreshed_after_401 = True
+            continue
+        refreshed_after_401 = False
         if status == 200 and body.get("data"):
             build = body["data"][0]
             state = build.get("attributes", {}).get("processingState")
@@ -191,15 +210,36 @@ def main() -> None:
     args = parser.parse_args()
 
     token = make_token(args.key_path, args.key_id, args.issuer_id)
-    app = find_app(token, args.bundle_id, args.platform)
+    token_issued_at = time.time()
+
+    def refresh_token() -> str:
+        nonlocal token, token_issued_at
+        token = make_token(args.key_path, args.key_id, args.issuer_id)
+        token_issued_at = time.time()
+        return token
+
+    def current_token() -> str:
+        if time.time() >= token_issued_at + TOKEN_LIFETIME:
+            return refresh_token()
+        return token
+
+    app = find_app(current_token(), args.bundle_id, args.platform)
     app_id = app["id"]
-    group = find_group(token, app_id, args.group)
+    group = find_group(current_token(), app_id, args.group)
     group_id = group["id"]
     print(
         f"→ {args.bundle_id} build {args.build_number} → "
         f"{group.get('attributes', {}).get('name')}"
     )
-    build = wait_for_build(token, app_id, args.build_number, args.timeout, args.poll)
+    build = wait_for_build(
+        token,
+        app_id,
+        args.build_number,
+        args.timeout,
+        args.poll,
+        refresh_token=refresh_token,
+        token_issued_at=token_issued_at,
+    )
 
     # App Store Connect rejects a builds relationship for an internal group
     # with "Builds cannot be assigned to this internal group": internal testers
@@ -213,7 +253,7 @@ def main() -> None:
         return
 
     status, body = request(
-        token,
+        current_token(),
         "POST",
         f"/betaGroups/{group_id}/relationships/builds",
         {"data": [{"type": "builds", "id": build["id"]}]},

@@ -318,6 +318,10 @@ func run() async -> Int32 {
         print("--mode must be baseline, new or both")
         return 2
     }
+    guard !options.sizes.isEmpty && options.sizes.allSatisfy({ $0 > 0 }) else {
+        print("--sizes must contain positive MiB values")
+        return 2
+    }
 
     let connection = S3Connection(
         endpoint: endpoint,
