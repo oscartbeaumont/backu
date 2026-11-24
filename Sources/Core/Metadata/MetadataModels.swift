@@ -126,10 +126,10 @@ struct SharedPhoto: Codable, Hashable, Sendable {
     var copies: [SharedCopy]
 
     /// Field names used in patch records. Anything not listed here is either
-    /// immutable (id, sha) or device-local (localIdentifier, analyzedAt).
+    /// immutable (id) or device-local (localIdentifier, analyzedAt).
     enum Field: String, CaseIterable {
         case filename, takenAt, addedAt, modifiedAt, isVideo, isFavorite
-        case pixelWidth, pixelHeight, duration, metadata, copies
+        case pixelWidth, pixelHeight, duration, metadata, copies, sha256
     }
 
     init(photo: PhotoItem, serverID: UUID) {
@@ -170,6 +170,10 @@ struct SharedPhoto: Codable, Hashable, Sendable {
         case .duration: duration = other.duration
         case .metadata: metadata = other.metadata
         case .copies: copies = other.copies
+        case .sha256:
+            // Content hashes are learned once. A later record that omitted the
+            // hash must not clear a value already shared by another device.
+            if let sha256 = other.sha256 { self.sha256 = sha256 }
         }
     }
 }
@@ -395,7 +399,21 @@ enum MetadataSegmentCodec {
         return output
     }
 
-    static func decode(_ data: Data) -> [MetaRecord] {
+    static func decode(_ data: Data) throws -> [MetaRecord] {
+        let decoder = JSONFile.decoder
+        var records: [MetaRecord] = []
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            guard let record = try? decoder.decode(MetaRecord.self, from: Data(line)) else {
+                throw MetadataError.invalidSegment
+            }
+            records.append(record)
+        }
+        return records
+    }
+
+    /// Local outboxes are recovered independently of remote log segments. A
+    /// partial line must not discard every valid edit still waiting to upload.
+    static func decodeLenient(_ data: Data) -> [MetaRecord] {
         let decoder = JSONFile.decoder
         var records: [MetaRecord] = []
         for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
