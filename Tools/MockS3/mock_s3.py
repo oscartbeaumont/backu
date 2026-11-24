@@ -1385,8 +1385,6 @@ class MockS3Handler(BaseHTTPRequestHandler):
                 ) from error
 
         keys = [key for key in self.store.keys() if key.startswith(prefix)]
-        if start_after is not None:
-            keys = [key for key in keys if key > start_after]
 
         common_prefixes: set[str] = set()
         if delimiter:
@@ -1401,6 +1399,8 @@ class MockS3Handler(BaseHTTPRequestHandler):
             keys = contents
 
         entries = sorted([*keys, *common_prefixes])
+        if start_after is not None:
+            entries = [entry for entry in entries if entry > start_after]
         if after is not None:
             entries = [entry for entry in entries if entry > after]
 

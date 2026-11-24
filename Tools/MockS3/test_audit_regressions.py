@@ -178,6 +178,19 @@ class AuditMockS3RegressionTests(unittest.TestCase):
             [f"{self.prefix}z.txt"],
         )
 
+    def test_list_start_after_filters_common_prefixes(self) -> None:
+        self.prefix = "probe/"
+        self.put("probe/a/1", b"1")
+        self.put("probe/a/2", b"2")
+
+        root = self.list(("delimiter", "/"), ("start-after", "probe/a/1"))
+        common = [
+            element.text or ""
+            for element in root.findall("s3:CommonPrefixes/s3:Prefix", NS)
+        ]
+        self.assertEqual(self.keys(root), [])
+        self.assertEqual(common, [])
+
     def test_if_none_match_returns_304_without_a_body(self) -> None:
         key = f"{self.prefix}conditional.txt"
         self.put(key, b"current")
