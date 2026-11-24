@@ -125,6 +125,13 @@ final class BenchStore: MetadataObjectStore, @unchecked Sendable {
         etags[key] = "etag-\(counter)"
     }
 
+    func deleteObject(_ key: String) async throws {
+        lock.lock()
+        defer { lock.unlock() }
+        objects.removeValue(forKey: key)
+        etags.removeValue(forKey: key)
+    }
+
     func listObjects(
         prefix: String,
         delimiter: String?,

@@ -40,7 +40,7 @@ struct PhotoMetadata: Codable, Hashable, Sendable {
     var exposureDescription: String? {
         var parts: [String] = []
         if let fNumber { parts.append("ƒ/\(format(fNumber))") }
-        if let exposureTime { parts.append(formatShutter(exposureTime)) }
+        if let exposureTime, exposureTime > 0 { parts.append(formatShutter(exposureTime)) }
         if let iso { parts.append("ISO \(iso)") }
         if let focalLength { parts.append("\(Int(focalLength.rounded())) mm") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")

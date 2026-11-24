@@ -119,11 +119,12 @@ struct SigV4Signer: Sendable {
 
     static func hostHeader(for url: URL) -> String? {
         guard let host = url.host else { return nil }
-        guard let port = url.port else { return host }
+        let authorityHost = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        guard let port = url.port else { return authorityHost }
         if (url.scheme == "https" && port == 443) || (url.scheme == "http" && port == 80) {
-            return host
+            return authorityHost
         }
-        return "\(host):\(port)"
+        return "\(authorityHost):\(port)"
     }
 
     /// RFC 3986 encoding. S3 requires `/` to stay unencoded in the path but

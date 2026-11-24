@@ -14,6 +14,14 @@ struct S3MultipartPart: Sendable, Hashable {
     var size: Int64
 }
 
+struct S3MultipartCompletionUncertainError: LocalizedError {
+    var underlying: S3Error
+
+    var errorDescription: String? {
+        underlying.errorDescription
+    }
+}
+
 extension S3Client {
     /// POST /key?uploads
     func createMultipartUpload(key: String, contentType: String) async throws -> S3MultipartUpload {
@@ -134,10 +142,18 @@ extension S3Client {
         )
         request.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         sign(&request, payloadHash: SigV4Signer.sha256Hex(body))
-        let (data, response) = try await self.upload(request, data: body)
-        try validate(response, data: data)
+        let result = try await uploadWithRetryCount(request, data: body)
+        do {
+            try validate(result.response, data: result.data, rejectEmbeddedError: true)
+        } catch let error as S3Error {
+            if result.retriedAttempts > 0,
+               case let .http(404, "NoSuchUpload", _, _) = error {
+                throw S3MultipartCompletionUncertainError(underlying: error)
+            }
+            throw error
+        }
         invalidateCachedHead(key: upload.key)
-        return MultipartResponseParser.etag(from: data) ?? ""
+        return MultipartResponseParser.etag(from: result.data) ?? ""
     }
 
     /// DELETE /key?uploadId=…
@@ -346,6 +362,24 @@ struct MultipartUploader: Sendable {
     static let minimumPartSize = TransferPlanner.minimumUploadPartSize
     static let maximumParts = TransferPlanner.maximumParts
 
+    private enum PreUploadObjectIdentity: Sendable {
+        case absent
+        case existing(etag: String)
+        case unknown
+
+        func provesReplacement(with head: S3ObjectHead, expectedSize: Int64) -> Bool {
+            guard head.size == expectedSize, let etag = head.etag, !etag.isEmpty else { return false }
+            switch self {
+            case .absent:
+                return true
+            case let .existing(previousETag):
+                return etag != previousETag
+            case .unknown:
+                return false
+            }
+        }
+    }
+
     var client: S3Client
     var partSize: Int?
     var concurrency: Int?
@@ -406,6 +440,7 @@ struct MultipartUploader: Sendable {
             )
             let (body, response) = try await client.upload(request, fileURL: fileURL)
             try client.validate(response, data: body)
+            client.invalidateCachedHead(key: key)
             progress?(1)
             record(
                 direction: .upload,
@@ -439,6 +474,7 @@ struct MultipartUploader: Sendable {
             if let tempRoot { try? FileManager.default.removeItem(at: tempRoot) }
         }
 
+        let preUploadIdentity = await capturePreUploadIdentity(key: key)
         let upload: S3MultipartUpload
         do {
             upload = try await client.createMultipartUpload(key: key, contentType: contentType)
@@ -469,7 +505,12 @@ struct MultipartUploader: Sendable {
             guard parts.count == partCount else {
                 throw S3Error.decoding("Only \(parts.count) of \(partCount) parts uploaded")
             }
-            try await complete(upload: upload, parts: parts, size: size)
+            try await complete(
+                upload: upload,
+                parts: parts,
+                size: size,
+                preUploadIdentity: preUploadIdentity
+            )
             journal?.finish(uploadId: upload.uploadId)
             let hash = try await hashTask.value
             progress?(1)
@@ -480,6 +521,13 @@ struct MultipartUploader: Sendable {
                 plan: plan
             )
             return hash
+        } catch let error as S3MultipartCompletionUncertainError {
+            // The upload id is gone, but the object identity did not prove a
+            // commit. Keep the journal for recovery instead of treating this
+            // as a confirmed abort.
+            hashTask.cancel()
+            tuning.penalise(serverKey: client.connection.transferTuningKey, direction: .upload)
+            throw error
         } catch {
             let aborted = await abort(upload)
             if aborted {
@@ -533,21 +581,39 @@ struct MultipartUploader: Sendable {
         )
     }
 
-    /// A transport failure after the server committed leaves the upload id
-    /// invalid (CompleteMultipartUpload is single-shot). If the object is there
-    /// with the expected size, the complete actually succeeded.
+    /// Snapshot the object before creating the upload so a same-sized old
+    /// object cannot masquerade as a committed replacement. An unknown snapshot
+    /// blocks uncertain-completion recovery without blocking a normal upload.
+    private func capturePreUploadIdentity(key: String) async -> PreUploadObjectIdentity {
+        do {
+            guard let head = try await client.headObject(key: key) else { return .absent }
+            guard let etag = head.etag, !etag.isEmpty else { return .unknown }
+            return .existing(etag: etag)
+        } catch {
+            return .unknown
+        }
+    }
+
+    /// CompleteMultipartUpload is single-shot. Any retry followed by NoSuchUpload
+    /// leaves the outcome ambiguous. Recover only when fresh HEAD metadata proves
+    /// the object appeared or its ETag changed to an object of the expected size.
     private func complete(
         upload: S3MultipartUpload,
         parts: [S3MultipartPart],
-        size: Int64
+        size: Int64,
+        preUploadIdentity: PreUploadObjectIdentity
     ) async throws {
         do {
             _ = try await client.completeMultipartUpload(upload: upload, parts: parts)
-        } catch let error as S3Error {
-            guard case .transport = error else { throw error }
-            if let head = (try? await client.headObject(key: upload.key)) ?? nil, head.size == size {
-                return
+        } catch let error as S3MultipartCompletionUncertainError {
+            guard case let .http(404, "NoSuchUpload", _, _) = error.underlying,
+                  let head = try? await client.headObject(key: upload.key),
+                  preUploadIdentity.provesReplacement(with: head, expectedSize: size) else {
+                throw error
             }
+            client.invalidateCachedHead(key: upload.key)
+            return
+        } catch let error as S3Error {
             throw error
         }
     }

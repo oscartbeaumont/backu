@@ -243,6 +243,11 @@ final class MetadataService {
         if let head { replication.headSnapshot = head.snapshot }
         var changed = false
         var snapshotLoaded = false
+        var stagedState: MergedMetadata?
+        var stagedSnapshotKey: String?
+        var stagedSnapshotGeneration = 0
+        var watermark = replication.watermark
+        var segmentsSinceSnapshot = replication.segmentsSinceSnapshot
         let headSnapshot = head?.snapshot ?? replication.headSnapshot
         let needsSnapshot = headSnapshot != replication.snapshotKey
             || (!cacheLoaded && replication.snapshotKey != nil)
@@ -252,23 +257,20 @@ final class MetadataService {
             // memory is the merged state rather than the state plus 60 MB of
             // JSON text.
             let decoded = try await Self.loadSnapshot(snapshotKey, from: store)
-            state = decoded.metadata
-            replication.snapshotKey = snapshotKey
-            replication.headSnapshot = snapshotKey
-            replication.generation = max(decoded.header.generation, head?.generation ?? 0)
+            stagedState = decoded.metadata
+            stagedSnapshotKey = snapshotKey
+            stagedSnapshotGeneration = max(decoded.header.generation, head?.generation ?? 0)
             // The snapshot's own watermark is authority: the state file may
             // have advanced past a cache write that never landed.
-            replication.watermark = decoded.header.watermark
-            replication.segmentsSinceSnapshot = 0
-            replication.editsSinceSnapshot = 0
-            cacheLoaded = true
+            watermark = decoded.header.watermark
+            segmentsSinceSnapshot = 0
             changed = true
             snapshotLoaded = true
         }
 
         // A 304 only skips the head *body*; segments still have to be listed or
         // edits made since the last compaction never arrive.
-        let listing = try await pendingSegments(store: store)
+        let listing = try await pendingSegments(store: store, watermark: watermark)
         if !probedSequence {
             probedSequence = true
             adoptSequence(from: listing.maxSequences)
@@ -281,22 +283,44 @@ final class MetadataService {
             var records: [MetaRecord] = []
             for item in downloaded {
                 records.append(contentsOf: item.records)
-                replication.watermark[item.writer] = max(
-                    replication.watermark[item.writer] ?? -1,
+                watermark[item.writer] = max(
+                    watermark[item.writer] ?? -1,
                     item.sequence
                 )
                 // Our own segments were already counted when they were written;
                 // counting them again here would compact twice as eagerly as
                 // the configured policy says.
                 if item.writer != replication.writerID {
-                    replication.segmentsSinceSnapshot += 1
+                    segmentsSinceSnapshot += 1
                 }
             }
-            changes = state.apply(records)
+            if var snapshotState = stagedState {
+                changes = snapshotState.apply(records)
+                stagedState = snapshotState
+            } else {
+                changes = state.apply(records)
+            }
             appliedRecords = records.count
             observe(records)
             changed = true
         }
+
+        // A snapshot and the segments after it form one read. Commit the
+        // merged state and its pointers only after every pending segment has
+        // decoded, otherwise a retry can skip the snapshot and materialise only
+        // the segment tail.
+        if let stagedState {
+            state = stagedState
+            if let stagedSnapshotKey {
+                replication.snapshotKey = stagedSnapshotKey
+                replication.headSnapshot = stagedSnapshotKey
+                replication.generation = stagedSnapshotGeneration
+                replication.editsSinceSnapshot = 0
+                cacheLoaded = true
+            }
+        }
+        replication.watermark = watermark
+        replication.segmentsSinceSnapshot = segmentsSinceSnapshot
 
         if !stateFileExisted {
             stateFileExisted = true
@@ -385,7 +409,10 @@ final class MetadataService {
     ///
     /// The same listing recovers a lost sequence counter, so a state-file loss
     /// costs no extra request.
-    private func pendingSegments(store: MetadataObjectStore) async throws -> SegmentListing {
+    private func pendingSegments(
+        store: MetadataObjectStore,
+        watermark: [String: Int]
+    ) async throws -> SegmentListing {
         let logPrefix = MetadataLayout.logPrefix + "/"
         var writers = Set<String>()
         var listing = SegmentListing()
@@ -416,7 +443,7 @@ final class MetadataService {
                     listing.maxSequences[parsed.writer] ?? -1,
                     parsed.sequence
                 )
-                if parsed.sequence > (replication.watermark[parsed.writer] ?? -1) {
+                if parsed.sequence > (watermark[parsed.writer] ?? -1) {
                     listing.pending.append(
                         PendingSegment(key: key, writer: parsed.writer, sequence: parsed.sequence)
                     )
@@ -431,7 +458,7 @@ final class MetadataService {
         if listing.pending.isEmpty {
             for writer in writers {
                 let prefix = MetadataLayout.writerPrefix(writer)
-                let startSequence = (replication.watermark[writer] ?? -1) + 1
+                let startSequence = (watermark[writer] ?? -1) + 1
                 var startAfter: String? = (probeSelf && writer == replication.writerID)
                     ? nil
                     : String(format: "%@/%012d", prefix, startSequence)
@@ -452,7 +479,7 @@ final class MetadataService {
                             listing.maxSequences[writer] ?? -1,
                             parsed.sequence
                         )
-                        guard parsed.sequence > (replication.watermark[writer] ?? -1) else { continue }
+                        guard parsed.sequence > (watermark[writer] ?? -1) else { continue }
                         listing.pending.append(
                             PendingSegment(key: key, writer: writer, sequence: parsed.sequence)
                         )
@@ -504,7 +531,7 @@ final class MetadataService {
                         case .notModified: throw MetadataError.invalidSegment
                         }
                         let raw = try Gzip.decompress(compressed)
-                        return (segment.writer, segment.sequence, MetadataSegmentCodec.decode(raw))
+                        return (segment.writer, segment.sequence, try MetadataSegmentCodec.decode(raw))
                     }
                 }
                 var collected: [(String, Int, [MetaRecord])] = []
@@ -606,6 +633,7 @@ final class MetadataService {
         var changed: [String] = []
         if let existing {
             for field in SharedPhoto.Field.allCases where !shared.matches(existing.photo, field: field) {
+                guard field != .sha256 || shared.sha256 != nil else { continue }
                 changed.append(field.rawValue)
             }
         }
@@ -1052,7 +1080,7 @@ final class MetadataService {
         guard let data = try? Data(contentsOf: AppPaths.metadataOutboxFile(serverID)) else {
             return []
         }
-        return MetadataSegmentCodec.decode(data)
+        return MetadataSegmentCodec.decodeLenient(data)
     }
 
     private func loadCache() {
@@ -1142,6 +1170,7 @@ extension SharedPhoto {
         case .duration: return duration == other.duration
         case .metadata: return metadata == other.metadata
         case .copies: return copies == other.copies
+        case .sha256: return sha256 == other.sha256
         }
     }
 }

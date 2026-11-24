@@ -370,6 +370,11 @@ enum AtlasDecoder {
         guard let image = CGImageSourceCreateImageAtIndex(source, 0, options as CFDictionary) else {
             return nil
         }
-        return AtlasDecodedSheet(group: group, level: level, layout: layout, image: image)
+        let resolvedLayout = layout ?? level.layout
+        guard image.width == resolvedLayout.pixelWidth,
+              image.height == resolvedLayout.pixelHeight else {
+            return nil
+        }
+        return AtlasDecodedSheet(group: group, level: level, layout: resolvedLayout, image: image)
     }
 }

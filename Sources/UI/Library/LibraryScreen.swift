@@ -721,7 +721,12 @@ struct LibraryScreen: View {
                         dateText: item.dateText,
                         cornerRadius: 0,
                         isSelecting: isSelecting,
-                        isSelected: selectedPhotoIDs.contains(item.id)
+                        isSelected: selectedPhotoIDs.contains(item.id),
+                        onDetails: {
+                            var presentation = app.photosForViewer(startingAt: item.photo.id, within: photos)
+                            presentation.panel = .info
+                            app.viewer = presentation
+                        }
                     ) {
                         handleTileTap(item)
                     }

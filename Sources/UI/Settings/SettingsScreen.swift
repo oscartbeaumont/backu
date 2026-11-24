@@ -794,6 +794,7 @@ struct SettingsToggle: View {
             Spacer(minLength: 8)
             Toggle("", isOn: $isOn)
                 .labelsHidden()
+                .accessibilityLabel(title)
                 .tint(Theme.accent)
         }
     }

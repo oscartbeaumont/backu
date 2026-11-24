@@ -42,7 +42,19 @@ let fixtures: [Fixture] = [
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let rawDirectory = root.appendingPathComponent("Tests/Fixtures/raw")
 let outputDirectory = root.appendingPathComponent("Tests/Fixtures/library")
-try? FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+let missingSources = fixtures.map(\.source).filter {
+    !FileManager.default.fileExists(atPath: rawDirectory.appendingPathComponent($0).path)
+}
+guard missingSources.isEmpty else {
+    print("missing required fixture sources: \(missingSources.joined(separator: ", "))")
+    exit(1)
+}
+do {
+    try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+} catch {
+    print("cannot create fixture output directory: \(error.localizedDescription)")
+    exit(1)
+}
 
 func loadImage(_ url: URL, maxPixel: Int) -> CGImage? {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
@@ -56,10 +68,12 @@ func loadImage(_ url: URL, maxPixel: Int) -> CGImage? {
 }
 
 var written = 0
+var failed = 0
 for fixture in fixtures {
     let sourceURL = rawDirectory.appendingPathComponent(fixture.source)
     guard let image = loadImage(sourceURL, maxPixel: 1600) else {
-        print("skip \(fixture.source): cannot read")
+        print("failed \(fixture.source): cannot read")
+        failed += 1
         continue
     }
     let outputURL = outputDirectory.appendingPathComponent(fixture.output)
@@ -103,7 +117,8 @@ for fixture in fixtures {
         1,
         nil
     ) else {
-        print("skip \(fixture.output): cannot create destination")
+        print("failed \(fixture.output): cannot create destination")
+        failed += 1
         continue
     }
     CGImageDestinationAddImage(destination, image, properties as CFDictionary)
@@ -112,11 +127,12 @@ for fixture in fixtures {
         print("wrote \(fixture.output) \(image.width)x\(image.height) · \(fixture.place)")
     } else {
         print("failed \(fixture.output)")
+        failed += 1
     }
 }
 // One deliberately large, high-entropy photo so the multipart upload path is
 // exercised by the UI test (small fixtures stay on the single-PUT fast path).
-func writeNoiseFixture() {
+func writeNoiseFixture() -> Bool {
     let width = 5000
     let height = 4000
     let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -129,8 +145,8 @@ func writeNoiseFixture() {
         space: colorSpace,
         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
     ), let buffer = context.data else {
-        print("skip large fixture: no context")
-        return
+        print("failed large fixture: no context")
+        return false
     }
     let pixels = buffer.bindMemory(to: UInt8.self, capacity: width * height * 4)
     var seed: UInt64 = 0x9E3779B97F4A7C15
@@ -143,7 +159,10 @@ func writeNoiseFixture() {
         pixels[offset + 2] = value &+ 91
         pixels[offset + 3] = 255
     }
-    guard let image = context.makeImage() else { return }
+    guard let image = context.makeImage() else {
+        print("failed large fixture: no image")
+        return false
+    }
     let outputURL = outputDirectory.appendingPathComponent("IMG_9001.JPG")
     let exif: [CFString: Any] = [
         kCGImagePropertyExifDateTimeOriginal: "2021:04:02 12:00:00",
@@ -177,13 +196,26 @@ func writeNoiseFixture() {
         UTType.jpeg.identifier as CFString,
         1,
         nil
-    ) else { return }
+    ) else {
+        print("failed large fixture: cannot create destination")
+        return false
+    }
     CGImageDestinationAddImage(destination, image, properties as CFDictionary)
     if CGImageDestinationFinalize(destination) {
         let bytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64) ?? 0
         print("wrote IMG_9001.JPG \(width)x\(height) · \(bytes) bytes")
+        return true
     }
+    print("failed large fixture")
+    return false
 }
-writeNoiseFixture()
+if !writeNoiseFixture() {
+    failed += 1
+}
+
+if failed > 0 {
+    print("\(failed) required fixtures failed")
+    exit(1)
+}
 
 print("\(written) fixtures written to \(outputDirectory.path)")

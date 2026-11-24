@@ -8,14 +8,30 @@ struct SearchScreen: View {
     @State private var showFilters = false
     @FocusState private var searchFocused: Bool
 
+    private var visiblePhotos: [PhotoItem] {
+        app.settings.showRemoteOnlyPhotos
+            ? app.catalog.photos
+            : app.catalog.photos.filter(\.isLocal)
+    }
+
+    private var visiblePhotoIDs: Set<String> {
+        Set(visiblePhotos.map(\.id))
+    }
+
     private var results: [PhotoItem] {
         var query = query
         query.text = text
-        return app.catalog.search(query)
+        let visibleIDs = visiblePhotoIDs
+        return app.catalog.search(query).filter { visibleIDs.contains($0.id) }
     }
 
     private var facets: SearchIndex.Facets {
-        app.catalog.facets(for: app.catalog.allIDs())
+        app.catalog.facets(for: visiblePhotoIDs)
+    }
+
+    private var namedPeople: [Person] {
+        let personIDs = Set(visiblePhotos.flatMap { $0.faces.compactMap(\.personID) })
+        return app.catalog.namedPeople.filter { personIDs.contains($0.id) }
     }
 
     private var columns: [GridItem] {
@@ -180,7 +196,15 @@ struct SearchScreen: View {
             } else {
                 LazyVGrid(columns: columns, spacing: 2) {
                     ForEach(results) { photo in
-                        PhotoTile(photo: photo, columns: columns.count) {
+                        PhotoTile(
+                            photo: photo,
+                            columns: columns.count,
+                            onDetails: {
+                                var presentation = app.photosForViewer(startingAt: photo.id, within: results)
+                                presentation.panel = .info
+                                app.viewer = presentation
+                            }
+                        ) {
                             app.viewer = app.photosForViewer(startingAt: photo.id, within: results)
                         }
                     }
@@ -192,7 +216,7 @@ struct SearchScreen: View {
 
     private var browseSection: some View {
         VStack(alignment: .leading, spacing: 22) {
-            if !app.catalog.namedPeople.isEmpty {
+            if !namedPeople.isEmpty {
                 peopleRow
             }
 
@@ -259,7 +283,7 @@ struct SearchScreen: View {
 
             quickFilters
 
-            if facets.tags.isEmpty && facets.cameras.isEmpty && app.catalog.namedPeople.isEmpty {
+            if facets.tags.isEmpty && facets.cameras.isEmpty && namedPeople.isEmpty {
                 EmptyStateView(
                     symbol: "text.magnifyingglass",
                     title: "Search your whole library",
@@ -303,7 +327,7 @@ struct SearchScreen: View {
 
             ScrollView(.horizontal) {
                 HStack(spacing: 16) {
-                    ForEach(app.catalog.namedPeople.prefix(12)) { person in
+                    ForEach(namedPeople.prefix(12)) { person in
                         Button {
                             query.personIDs.insert(person.id)
                         } label: {

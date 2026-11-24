@@ -14,11 +14,11 @@ export default function App() {
             name="description"
             content="Backu backs up your whole photo library to storage you already own. No subscription, no account, no middleman. Built for iPhone, iPad and Mac."
           />
-          <a class="skip-link" href="#main">
+          <a class="skip-link" href="#main" onClick={() => document.getElementById("main")?.focus()}>
             Skip to content
           </a>
           <Nav />
-          <main id="main">{props.children}</main>
+          <main id="main" tabindex="-1">{props.children}</main>
           <Footer />
         </>
       )}
