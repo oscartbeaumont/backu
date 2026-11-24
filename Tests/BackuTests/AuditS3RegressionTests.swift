@@ -96,12 +96,20 @@ final class AuditS3RegressionTests: XCTestCase {
           <Contents><Key>c</Key><Size>1</Size></Contents>
         </ListBucketResult>
         """
-        let client = makeClient { _ in
-            AuditStubURLProtocol.Result.result(status: 200, body: Data(xml.utf8), contentType: "application/xml")
+        let client = makeClient { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(query.first(where: { $0.name == "max-keys" })?.value, "2")
+            return AuditStubURLProtocol.Result.result(status: 200, body: Data(xml.utf8), contentType: "application/xml")
         }
 
-        let objects = try await client.listAllObjects(prefix: "", limit: 2)
-        XCTAssertEqual(objects.map(\.key), ["a", "b"])
+        do {
+            _ = try await client.listAllObjects(prefix: "", limit: 2)
+            XCTFail("A bounded listing must report truncation instead of returning a partial library")
+        } catch let S3Error.listTruncated(limit) {
+            XCTAssertEqual(limit, 2)
+        } catch {
+            XCTFail("Unexpected listing error: \(error)")
+        }
     }
 
     func testFullLengthPartialIsNotPromotedWithoutETagValidation() async throws {
