@@ -14,7 +14,9 @@ extension S3Client {
     /// `sizeHint` still saves a round trip for small objects, but a hint does
     /// not skip the latency probe for large ones: the app viewer always knows
     /// the byte count from the catalog, and without the probe it would stay on
-    /// one stream on every network.
+    /// one stream on every network. A small-object hint skips HEAD, so it cannot
+    /// identify an existing partial's object version; hinted downloads restart
+    /// instead of resuming.
     func downloadObject(
         key: String,
         to destination: URL,

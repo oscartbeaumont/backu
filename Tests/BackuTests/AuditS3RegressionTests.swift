@@ -219,6 +219,18 @@ final class AuditS3RegressionTests: XCTestCase {
         }
     }
 
+    func testSuccessfulGetReturnsErrorShapedXMLObject() async throws {
+        let xml = "<Error><Code>InternalError</Code><Message>object payload</Message></Error>"
+        let client = makeClient { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            return AuditStubURLProtocol.Result.result(status: 200, body: Data(xml.utf8), contentType: "application/xml")
+        }
+
+        let data = try await client.getObject(key: "Backu/error-shaped.xml")
+
+        XCTAssertEqual(data, Data(xml.utf8))
+    }
+
     func testMultipartTransportRecoveryDoesNotAcceptSameSizedOldObject() async throws {
         let sourceData = Data(repeating: 0xAB, count: 5 * 1024 * 1024 + 1)
         let source = try temporaryFile(sourceData)
@@ -325,16 +337,19 @@ final class AuditS3RegressionTests: XCTestCase {
                     contentType: "application/xml"
                 )
             }
-            if request.httpMethod == "HEAD", committed.value {
-                return AuditStubURLProtocol.Result.result(
-                    status: 200,
-                    headers: [
-                        "Content-Length": String(sourceData.count),
-                        "ETag": "\"committed-etag\"",
-                        "Accept-Ranges": "bytes"
-                    ],
-                    body: Data()
-                )
+            if request.httpMethod == "HEAD" {
+                if committed.value {
+                    return AuditStubURLProtocol.Result.result(
+                        status: 200,
+                        headers: [
+                            "Content-Length": String(sourceData.count),
+                            "ETag": "\"committed-etag\"",
+                            "Accept-Ranges": "bytes"
+                        ],
+                        body: Data()
+                    )
+                }
+                return AuditStubURLProtocol.Result.result(status: 404, body: Data())
             }
             if request.httpMethod == "DELETE" {
                 return AuditStubURLProtocol.Result.result(status: 404, body: Data())
@@ -367,6 +382,178 @@ final class AuditS3RegressionTests: XCTestCase {
         XCTAssertTrue(committed.value)
         XCTAssertTrue(reportedSuccess, "NoSuchUpload after a retryable complete response must be reconciled against the committed object")
         XCTAssertTrue(journal.records().isEmpty)
+    }
+
+    func testMultipartRetryRecoveryRejectsSameSizedOldObjectAndKeepsJournal() async throws {
+        let sourceData = Data(repeating: 0xAB, count: 5 * 1024 * 1024 + 1)
+        let source = try temporaryFile(sourceData)
+        let destination = temporaryDestination()
+        let journalURL = destination.appendingPathExtension("json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: journalURL) }
+        let journal = MultipartUploadJournal(fileURL: journalURL)
+        let completeAttempts = AuditCounter()
+        let heads = AuditCounter()
+        let deletes = AuditCounter()
+        let oldETag = #""old-object-etag""#
+        let client = makeClient { request in
+            let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+                .queryItems ?? []
+            if request.httpMethod == "POST", query.contains(where: { $0.name == "uploads" }) {
+                let xml = """
+                <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                  <Bucket>audit-bucket</Bucket><Key>Backu/large.bin</Key><UploadId>upload-1</UploadId>
+                </InitiateMultipartUploadResult>
+                """
+                return AuditStubURLProtocol.Result.result(status: 200, body: Data(xml.utf8), contentType: "application/xml")
+            }
+            if request.httpMethod == "POST", query.contains(where: { $0.name == "uploadId" }) {
+                let attempt = completeAttempts.incrementAndValue()
+                if attempt == 1 {
+                    let xml = "<Error><Code>ServiceUnavailable</Code><Message>retry</Message></Error>"
+                    return AuditStubURLProtocol.Result.result(
+                        status: 503,
+                        body: Data(xml.utf8),
+                        contentType: "application/xml"
+                    )
+                }
+                let xml = "<Error><Code>NoSuchUpload</Code><Message>already completed</Message></Error>"
+                return AuditStubURLProtocol.Result.result(
+                    status: 404,
+                    body: Data(xml.utf8),
+                    contentType: "application/xml"
+                )
+            }
+            if request.httpMethod == "HEAD" {
+                heads.increment()
+                return AuditStubURLProtocol.Result.result(
+                    status: 200,
+                    headers: [
+                        "Content-Length": String(sourceData.count),
+                        "ETag": oldETag,
+                        "Accept-Ranges": "bytes"
+                    ],
+                    body: Data()
+                )
+            }
+            if request.httpMethod == "DELETE" {
+                deletes.increment()
+                return AuditStubURLProtocol.Result.result(status: 404, body: Data())
+            }
+            throw URLError(.badServerResponse)
+        }
+        let transport = MultipartTransport(fileBacked: false) { _, number, _, _, size, progress in
+            progress.report(1)
+            return S3MultipartPart(number: number, etag: "part-\(number)", size: size)
+        }
+        let uploader = MultipartUploader(
+            client: client,
+            partSize: 5 * 1024 * 1024,
+            concurrency: 1,
+            threshold: 0,
+            transport: transport,
+            tuning: .inMemory,
+            journal: journal
+        )
+
+        var reportedSuccess = false
+        do {
+            _ = try await uploader.upload(fileURL: source, key: "Backu/large.bin", contentType: "application/octet-stream")
+            reportedSuccess = true
+        } catch {
+            // Expected: the old object's identity did not change.
+        }
+
+        XCTAssertEqual(completeAttempts.value, 2)
+        XCTAssertEqual(heads.value, 2)
+        XCTAssertFalse(reportedSuccess, "an unchanged same-sized object must not prove completion")
+        XCTAssertEqual(journal.records().map(\.uploadId), ["upload-1"])
+        XCTAssertEqual(deletes.value, 0, "an unresolved completion must not be treated as a confirmed abort")
+    }
+
+    func testMultipartTransportRetryReconcilesCommittedObjectAfterNoSuchUpload() async throws {
+        let sourceData = Data(repeating: 0xCD, count: 5 * 1024 * 1024 + 1)
+        let source = try temporaryFile(sourceData)
+        let destination = temporaryDestination()
+        let journalURL = destination.appendingPathExtension("json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: journalURL) }
+        let journal = MultipartUploadJournal(fileURL: journalURL)
+        let completeAttempts = AuditCounter()
+        let heads = AuditCounter()
+        let deletes = AuditCounter()
+        let committed = AuditFlag()
+        let client = makeClient { request in
+            let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?
+                .queryItems ?? []
+            if request.httpMethod == "POST", query.contains(where: { $0.name == "uploads" }) {
+                let xml = """
+                <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                  <Bucket>audit-bucket</Bucket><Key>Backu/large.bin</Key><UploadId>upload-1</UploadId>
+                </InitiateMultipartUploadResult>
+                """
+                return AuditStubURLProtocol.Result.result(status: 200, body: Data(xml.utf8), contentType: "application/xml")
+            }
+            if request.httpMethod == "POST", query.contains(where: { $0.name == "uploadId" }) {
+                let attempt = completeAttempts.incrementAndValue()
+                if attempt == 1 {
+                    committed.set(true)
+                    throw URLError(.networkConnectionLost)
+                }
+                let xml = "<Error><Code>NoSuchUpload</Code><Message>already completed</Message></Error>"
+                return AuditStubURLProtocol.Result.result(
+                    status: 404,
+                    body: Data(xml.utf8),
+                    contentType: "application/xml"
+                )
+            }
+            if request.httpMethod == "HEAD" {
+                heads.increment()
+                if committed.value {
+                    return AuditStubURLProtocol.Result.result(
+                        status: 200,
+                        headers: [
+                            "Content-Length": String(sourceData.count),
+                            "ETag": #""committed-etag""#,
+                            "Accept-Ranges": "bytes"
+                        ],
+                        body: Data()
+                    )
+                }
+                return AuditStubURLProtocol.Result.result(status: 404, body: Data())
+            }
+            if request.httpMethod == "DELETE" {
+                deletes.increment()
+                return AuditStubURLProtocol.Result.result(status: 404, body: Data())
+            }
+            throw URLError(.badServerResponse)
+        }
+        let transport = MultipartTransport(fileBacked: false) { _, number, _, _, size, progress in
+            progress.report(1)
+            return S3MultipartPart(number: number, etag: "part-\(number)", size: size)
+        }
+        let uploader = MultipartUploader(
+            client: client,
+            partSize: 5 * 1024 * 1024,
+            concurrency: 1,
+            threshold: 0,
+            transport: transport,
+            tuning: .inMemory,
+            journal: journal
+        )
+
+        var reportedSuccess = false
+        do {
+            _ = try await uploader.upload(fileURL: source, key: "Backu/large.bin", contentType: "application/octet-stream")
+            reportedSuccess = true
+        } catch {
+            // Expected only if the committed object cannot be identified.
+        }
+
+        XCTAssertEqual(completeAttempts.value, 2)
+        XCTAssertEqual(heads.value, 2)
+        XCTAssertTrue(committed.value)
+        XCTAssertTrue(reportedSuccess, "a transport retry followed by NoSuchUpload must reconcile a newly appeared object")
+        XCTAssertTrue(journal.records().isEmpty)
+        XCTAssertEqual(deletes.value, 0)
     }
 
     func testSinglePutThroughMultipartUploaderInvalidatesCachedHead() async throws {

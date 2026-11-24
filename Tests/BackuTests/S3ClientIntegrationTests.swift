@@ -399,8 +399,7 @@ final class S3ClientIntegrationTests: XCTestCase {
 
         try await client.downloadObject(
             key: key,
-            to: destination,
-            sizeHint: Int64(body.count)
+            to: destination
         )
         let downloaded = try Data(contentsOf: destination)
         XCTAssertEqual(downloaded, body)

@@ -27,7 +27,7 @@ struct S3ObjectHead: Sendable {
 struct S3HTTPResult: Sendable {
     var data: Data
     var response: HTTPURLResponse
-    var retryableResponses: Int
+    var retriedAttempts: Int
 }
 
 enum S3Error: LocalizedError {
@@ -364,7 +364,7 @@ struct S3Client: Sendable {
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return S3HTTPResult(data: data, response: http, retryableResponses: 0)
+            return S3HTTPResult(data: data, response: http, retriedAttempts: 0)
         }
         return (result.data, result.response)
     }
@@ -388,7 +388,7 @@ struct S3Client: Sendable {
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return S3HTTPResult(data: body, response: http, retryableResponses: 0)
+            return S3HTTPResult(data: body, response: http, retriedAttempts: 0)
         }
     }
 
@@ -402,7 +402,7 @@ struct S3Client: Sendable {
             guard let http = response as? HTTPURLResponse else {
                 throw S3Error.decoding("No HTTP response")
             }
-            return S3HTTPResult(data: body, response: http, retryableResponses: 0)
+            return S3HTTPResult(data: body, response: http, retriedAttempts: 0)
         }
         return (result.data, result.response)
     }
@@ -421,14 +421,14 @@ struct S3Client: Sendable {
         _ operation: () async throws -> S3HTTPResult
     ) async throws -> S3HTTPResult {
         var attempt = 0
-        var retryableResponses = 0
+        var retriedAttempts = 0
         while true {
             metrics?.recordRequest()
             do {
                 var result = try await operation()
                 if S3RetryPolicy.isRetryable(status: result.response.statusCode),
                    attempt + 1 < policy.maxAttempts {
-                    retryableResponses += 1
+                    retriedAttempts += 1
                     attempt += 1
                     metrics?.recordRetryableResponse()
                     metrics?.recordRetry()
@@ -438,7 +438,7 @@ struct S3Client: Sendable {
                     )
                     continue
                 }
-                result.retryableResponses = retryableResponses
+                result.retriedAttempts = retriedAttempts
                 return result
             } catch is CancellationError {
                 throw CancellationError()
@@ -454,16 +454,20 @@ struct S3Client: Sendable {
                     throw error is S3Error ? error : S3Error.transport(error)
                 }
                 attempt += 1
+                retriedAttempts += 1
                 metrics?.recordRetry()
                 try await policy.sleepBeforeRetry(attempt: attempt, retryAfter: nil)
             }
         }
     }
 
-    func validate(_ response: HTTPURLResponse, data: Data) throws {
+    func validate(
+        _ response: HTTPURLResponse,
+        data: Data,
+        rejectEmbeddedError: Bool = false
+    ) throws {
         let isSuccess = (200..<300).contains(response.statusCode)
-        let isXML = response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("xml") == true
-        let parsed = !isSuccess || isXML ? S3ErrorParser.parse(data) : (code: nil, message: nil, requestID: nil)
+        let parsed = !isSuccess || rejectEmbeddedError ? S3ErrorParser.parse(data) : (code: nil, message: nil, requestID: nil)
         if let code = parsed.code {
             throw S3Error.http(
                 status: response.statusCode,
