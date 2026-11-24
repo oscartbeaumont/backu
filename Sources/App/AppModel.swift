@@ -618,7 +618,11 @@ final class AppModel {
         }
         do {
             let report = try await client.verify(prefix: server.normalizedPrefix)
-            servers.markVerified(server.id)
+            if report.canList && report.canRead && report.canWrite {
+                servers.markVerified(server.id)
+            } else {
+                errorMessage = report.message ?? "This key must be able to list, read and write this bucket."
+            }
             return report
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -629,22 +633,34 @@ final class AppModel {
     // MARK: - Servers
 
     func addServer(_ config: ServerConfig, credentials: S3Credentials) async -> Bool {
-        servers.add(config, credentials: credentials)
+        errorMessage = nil
+        let client = S3Client(connection: config.connection, credentials: credentials)
+        defer { client.session.invalidateAndCancel() }
+
+        let report: S3Client.Verification
+        do {
+            report = try await client.verify(prefix: config.normalizedPrefix)
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
+        }
+
+        guard report.canList, report.canRead, report.canWrite else {
+            errorMessage = report.message ?? "This key must be able to list, read and write this bucket."
+            return false
+        }
+
+        // Persist only a fully verified server. A rejected Save leaves no
+        // selected or unverified record to reappear after a relaunch.
+        var verifiedConfig = config
+        verifiedConfig.lastVerifiedAt = Date()
+        servers.update(verifiedConfig, credentials: credentials)
+        servers.persistNow()
         if settings.backupServerIDs.isEmpty {
-            settings.backupServerIDs = [config.id]
+            settings.backupServerIDs = [verifiedConfig.id]
         }
-        let report = await verify(server: config)
-        if report?.canWrite == true, report?.canRead == true {
-            await importRemoteLibrary(server: config)
-            return true
-        }
-        // Keep the server so the person can fix a typo, but report the failure.
-        if errorMessage == nil {
-            errorMessage = report?.canWrite == true
-                ? (report?.message ?? "The key could not read objects back from this bucket.")
-                : "Connected, but the key could not write to this bucket."
-        }
-        return false
+        await importRemoteLibrary(server: verifiedConfig)
+        return true
     }
 
     func updateServer(_ config: ServerConfig, credentials: S3Credentials?) async -> Bool {

@@ -29,6 +29,7 @@ enum S3Error: LocalizedError {
     case http(status: Int, code: String?, message: String?, requestID: String?)
     case transport(Error)
     case decoding(String)
+    case listTruncated(limit: Int)
     case missingCredentials
 
     var errorDescription: String? {
@@ -57,6 +58,8 @@ enum S3Error: LocalizedError {
             return (error as NSError).localizedDescription
         case let .decoding(detail):
             return "The storage service returned an unexpected response. \(detail)"
+        case let .listTruncated(limit):
+            return "The storage service returned more than \(limit) objects. Backu stopped instead of importing a partial library."
         case .missingCredentials:
             return "No access key is stored for this server."
         }
@@ -138,14 +141,28 @@ struct S3Client: Sendable {
     }
 
     /// Lists every object under a prefix, following continuation tokens.
-    func listAllObjects(prefix: String, limit: Int = 20_000) async throws -> [S3Object] {
+    /// A supplied limit is a hard bound: truncation throws rather than returning
+    /// a partial library that callers could mistake for a complete import.
+    func listAllObjects(prefix: String, limit: Int? = nil) async throws -> [S3Object] {
         var results: [S3Object] = []
         var token: String?
         repeat {
             let page = try await listObjects(prefix: prefix, continuationToken: token)
             results.append(contentsOf: page.objects)
-            token = page.isTruncated ? page.nextToken : nil
-            if results.count >= limit { break }
+            if let limit, results.count > limit {
+                throw S3Error.listTruncated(limit: limit)
+            }
+            if page.isTruncated {
+                guard let nextToken = page.nextToken, !nextToken.isEmpty else {
+                    throw S3Error.decoding("List response was truncated without a continuation token.")
+                }
+                token = nextToken
+                if let limit, results.count >= limit {
+                    throw S3Error.listTruncated(limit: limit)
+                }
+            } else {
+                token = nil
+            }
         } while token != nil
         return results
     }

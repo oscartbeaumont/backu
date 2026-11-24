@@ -2,13 +2,16 @@ import CoreGraphics
 import Foundation
 import XCTest
 
-/// Focused regressions for backup issues #46, #47, #60, #62 and #63.
+/// Focused regressions for backup queue, replica, paging, and atlas state.
 @MainActor
 final class BackupIssueRegressionTests: XCTestCase {
+    private static let isolationHome = FileManager.default.temporaryDirectory
+        .appendingPathComponent("BackuIssueRegressionTests-\(UUID().uuidString)", isDirectory: true)
+
     override func setUpWithError() throws {
         try super.setUpWithError()
         continueAfterFailure = false
-        try requireIsolatedHome()
+        try isolateHome()
         BackupIssueS3URLProtocol.reset()
         BackupIssueURLProtocol.setHandler(nil)
     }
@@ -54,21 +57,23 @@ final class BackupIssueRegressionTests: XCTestCase {
         XCTAssertNil(fixture.catalog.photo(id: fixture.photoID)?.sidecarDirtyAt)
     }
 
-    func testIssue60ModifiedLocalAssetIsRequeued() async throws {
-        let directory = try temporaryDirectory()
+    func testRemoteOnlySidecarClearsAfterDestinationsWithCandidateWorkComplete() async {
+        let fixture = MetadataFixture(remoteOnlyCopyOnAOnly: true)
+        defer { fixture.stop() }
+
+        let result = await fixture.run()
+        XCTAssertEqual(result.totalCount, 1, "Only the destination holding the remote-only copy has candidate work")
+        XCTAssertEqual(result.completedCount, 1)
+        XCTAssertEqual(result.failedCount, 0)
+        XCTAssertEqual(BackupIssueS3URLProtocol.putCount(bucket: "bucket-b"), 0)
+        XCTAssertNil(
+            fixture.catalog.photo(id: fixture.photoID)?.sidecarDirtyAt,
+            "A successful sidecar write to every destination that had candidate work must clear the dirty flag"
+        )
+    }
+
+    func testIssue60ModifiedLocalAssetIsRequeued() {
         let server = makeServer()
-        BackupIssueURLProtocol.setHandler { _ in (404, Data(), [:]) }
-        let client = makeClient(server: server)
-        defer { client.session.invalidateAndCancel() }
-
-        let suiteName = "backu.issue60.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let settings = AppSettings(defaults: defaults)
-        settings.faceRecognitionEnabled = false
-        settings.atlasThumbnailsEnabled = false
-
         let uploadedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let copy = PhotoCopy(
             serverID: server.id,
@@ -89,22 +94,18 @@ final class BackupIssueRegressionTests: XCTestCase {
         let catalog = CatalogStore(loadFromDisk: false)
         catalog.mergeScanned([photo], removingMissing: false)
 
-        let engine = BackupEngine()
-        engine.start(
-            destinations: [.init(server: server, client: client)],
+        let candidates = BackupEngine().candidatesForBackup(
             catalog: catalog,
-            settings: settings,
-            faceStore: FaceEmbeddingStore(url: directory.appendingPathComponent("embeddings.bin")),
-            trigger: .manual
+            server: server,
+            force: false,
+            limit: nil
         )
-        await engine.awaitCompletion()
 
         XCTAssertEqual(
-            engine.totalCount,
-            1,
-            "A local asset modified after its recorded upload must be queued again; got status: \(engine.status)"
+            candidates.map(\.id),
+            [photo.id],
+            "A local asset modified after its recorded upload must be queued again"
         )
-        XCTAssertEqual(engine.items.map(\.id), [BackupEngine.itemID(photoID: photo.id, serverID: server.id)])
     }
 
     func testIssue62LegacySidecarFallbackImportsMoreThanFiveHundredPhotos() async throws {
@@ -147,6 +148,35 @@ final class BackupIssueRegressionTests: XCTestCase {
         XCTAssertFalse(result.indexFound)
         XCTAssertEqual(result.photos.count, count)
         XCTAssertTrue(result.photos.contains { $0.id == "remote:asset:legacy-500" })
+    }
+
+    func testListAllObjectsFollowsContinuationPagesPastTwentyThousandObjects() async throws {
+        let server = makeServer()
+        let totalCount = 20_001
+        stubObjectPages(totalCount: totalCount, pageSize: 1_000)
+        let client = makeClient(server: server)
+        defer { client.session.invalidateAndCancel() }
+
+        let objects = try await client.listAllObjects(prefix: "Backu/Photos/")
+
+        XCTAssertEqual(objects.count, totalCount)
+        XCTAssertEqual(objects.last?.key, "Backu/Photos/object-20000.jpg")
+    }
+
+    func testListAllObjectsSurfacesAnExplicitLimitWhenAnotherPageRemains() async throws {
+        let server = makeServer()
+        stubObjectPages(totalCount: 4, pageSize: 2)
+        let client = makeClient(server: server)
+        defer { client.session.invalidateAndCancel() }
+
+        do {
+            _ = try await client.listAllObjects(prefix: "Backu/Photos/", limit: 2)
+            XCTFail("A bounded listing must report truncation instead of returning a partial library")
+        } catch let S3Error.listTruncated(limit) {
+            XCTAssertEqual(limit, 2)
+        } catch {
+            XCTFail("Unexpected listing error: \(error)")
+        }
     }
 
     func testIssue63FullAtlasBatchRecordsPointerForBoundaryPhoto() async throws {
@@ -210,7 +240,7 @@ final class BackupIssueRegressionTests: XCTestCase {
         let defaultsName: String
         let faceStoreURL: URL
 
-        init(singleDestination: Bool = false) {
+        init(singleDestination: Bool = false, remoteOnlyCopyOnAOnly: Bool = false) {
             defaultsName = "BackupIssueRegressionTests.\(UUID().uuidString)"
             let defaults = UserDefaults(suiteName: defaultsName)!
             settings = AppSettings(defaults: defaults)
@@ -230,14 +260,17 @@ final class BackupIssueRegressionTests: XCTestCase {
 
             var photo = PhotoItem(
                 id: photoID,
-                localIdentifier: "issue-local-identifier",
+                localIdentifier: remoteOnlyCopyOnAOnly ? nil : "issue-local-identifier",
                 filename: "IMG_ISSUE.jpg",
                 takenAt: Date(timeIntervalSince1970: 1_700_000_000),
                 pixelWidth: 100,
-                pixelHeight: 100
+                pixelHeight: 100,
+                serverID: remoteOnlyCopyOnAOnly ? a.id : nil
             )
             photo.metadata.fileSize = 5_000_000
-            photo.copies = destinations.map { destination in
+            photo.copies = destinations.filter { destination in
+                !remoteOnlyCopyOnAOnly || destination.server.id == a.id
+            }.map { destination in
                 PhotoCopy(
                     serverID: destination.server.id,
                     objectKey: "\(destination.server.normalizedPrefix)/Photos/IMG_ISSUE.jpg",
@@ -326,6 +359,30 @@ final class BackupIssueRegressionTests: XCTestCase {
         )
     }
 
+    private func stubObjectPages(totalCount: Int, pageSize: Int) {
+        let pageCount = (totalCount + pageSize - 1) / pageSize
+        BackupIssueURLProtocol.setHandler { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            guard request.httpMethod == "GET", query.contains(where: { $0.name == "list-type" }) else {
+                return (404, Data(), [:])
+            }
+            let pageIndex = query.first(where: { $0.name == "continuation-token" })?.value.flatMap(Int.init) ?? 0
+            let start = pageIndex * pageSize
+            let end = min(totalCount, start + pageSize)
+            var xml = "<ListBucketResult>"
+            for index in start..<end {
+                xml += "<Contents><Key>Backu/Photos/object-\(index).jpg</Key><Size>1</Size></Contents>"
+            }
+            let isTruncated = pageIndex + 1 < pageCount
+            xml += "<IsTruncated>\(isTruncated ? "true" : "false")</IsTruncated>"
+            if isTruncated {
+                xml += "<NextContinuationToken>\(pageIndex + 1)</NextContinuationToken>"
+            }
+            xml += "</ListBucketResult>"
+            return (200, Data(xml.utf8), ["Content-Type": "application/xml"])
+        }
+    }
+
     private func makePhoto(id: String, filename: String = "IMG_0001.jpg", sha256: String? = nil) -> PhotoItem {
         PhotoItem(
             id: id,
@@ -336,14 +393,6 @@ final class BackupIssueRegressionTests: XCTestCase {
             pixelHeight: 1,
             sha256: sha256
         )
-    }
-
-    private func temporaryDirectory() throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("backup-issue-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
-        return url
     }
 
     private func solidImage() throws -> CGImage {
@@ -364,16 +413,22 @@ final class BackupIssueRegressionTests: XCTestCase {
         return try XCTUnwrap(context.makeImage())
     }
 
-    private func requireIsolatedHome() throws {
-        let environment = ProcessInfo.processInfo.environment
+    private func isolateHome() throws {
+        try FileManager.default.createDirectory(
+            at: Self.isolationHome,
+            withIntermediateDirectories: true
+        )
+        setenv("CFFIXED_USER_HOME", Self.isolationHome.path, 1)
+        setenv("BACKU_AUDIT_ISOLATED_HOME", "1", 1)
+        setenv("BACKU_FOREGROUND_UPLOADS", "1", 1)
+
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        guard let home = environment["CFFIXED_USER_HOME"],
-              !home.isEmpty,
-              environment["BACKU_AUDIT_ISOLATED_HOME"] == "1",
-              let support,
-              support.path.hasPrefix(URL(fileURLWithPath: home).resolvingSymlinksInPath().path + "/") else {
-            throw XCTSkip(
-                "Isolation missing: home=\(environment["CFFIXED_USER_HOME"] as Any), marker=\(environment["BACKU_AUDIT_ISOLATED_HOME"] as Any), support=\(support?.path as Any)"
+        let expectedPrefix = Self.isolationHome.resolvingSymlinksInPath().path + "/"
+        guard let support, support.path.hasPrefix(expectedPrefix) else {
+            throw NSError(
+                domain: "BackupIssueTestIsolation",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Application Support did not move into the test home: \(support?.path as Any)"]
             )
         }
     }
@@ -444,7 +499,7 @@ private final class BackupIssueS3URLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-private final class BackupIssueURLProtocol: URLProtocol, @unchecked Sendable {
+private final class BackupIssueURLProtocol: URLProtocol {
     typealias Handler = @Sendable (URLRequest) throws -> (status: Int, data: Data, headers: [String: String])
 
     private static let lock = NSLock()

@@ -7,9 +7,9 @@ final class BackupIssueUIRegressionTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(bootstrap: String) -> XCUIApplication {
+    private func launch(bootstrap: String, reset: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchEnvironment["BACKU_RESET"] = "1"
+        if reset { app.launchEnvironment["BACKU_RESET"] = "1" }
         app.launchEnvironment["BACKU_BOOTSTRAP"] = bootstrap
         app.launch()
         return app
@@ -27,22 +27,72 @@ final class BackupIssueUIRegressionTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 20), "Library never appeared")
     }
 
-    func testIssue28SaveRejectsCredentialsThatCannotReadBackTheProbe() throws {
-        let fixture = BackupIssueS3Fixture()
+    func testIssue28FailedSaveDoesNotPersistAndSuccessfulRetryCreatesOneSelectedServer() throws {
+        let fixture = BackupIssueS3Fixture(mode: .writeOnly)
         let endpoint = try fixture.start()
         defer { fixture.stop() }
 
         let app = launch(bootstrap: "{}")
+        fillCustomServerForm(app, endpoint: endpoint)
+        let save = app.buttons["Save"].firstMatch
+        assertAccessDeniedRejection(app, save: save)
+
+        app.terminate()
+        let relaunched = launch(bootstrap: "{}", reset: false)
+        let photoExplanation = relaunched.buttons["Allow Photo Access"]
+        if photoExplanation.waitForExistence(timeout: 5) { relaunched.buttons["Not Now"].tap() }
+        let add = relaunched.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Add Storage'")).firstMatch
+        XCTAssertTrue(add.waitForExistence(timeout: 10), "A failed Save must not suppress onboarding after relaunch")
+
+        fixture.setMode(.working)
+        add.tap()
+        let custom = relaunched.buttons.containing(.staticText, identifier: "Custom S3").firstMatch
+        XCTAssertTrue(custom.waitForExistence(timeout: 10), "Custom S3 provider missing")
+        custom.tap()
+        fillCustomServerFields(relaunched, endpoint: endpoint)
+        let retrySave = relaunched.buttons["Save"].firstMatch
+        XCTAssertTrue(retrySave.waitForExistence(timeout: 5), "Retry Save button missing")
+        retrySave.tap()
+        XCTAssertTrue(relaunched.staticTexts["Library"].waitForExistence(timeout: 25), "Successful retry did not open Library")
+
+        openSettings(relaunched)
+        let serversRow = relaunched.buttons["settings.servers"]
+        XCTAssertTrue(serversRow.waitForExistence(timeout: 10), "Servers row missing")
+        serversRow.tap()
+        XCTAssertTrue(relaunched.navigationBars["Servers"].waitForExistence(timeout: 10), "Servers screen missing")
+        XCTAssertEqual(relaunched.buttons.matching(identifier: "server.card").count, 1, "A failed Save followed by retry must leave exactly one server")
+        XCTAssertTrue(relaunched.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'Verified'")).firstMatch.exists)
+        XCTAssertFalse(relaunched.staticTexts["Not verified yet"].exists, "The saved server must be fully verified")
+        XCTAssertTrue(
+            relaunched.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'Auto-backup destination'")).firstMatch.exists,
+            "The successful retry must be the selected backup destination"
+        )
+    }
+
+    func testListDeniedCredentialsAreRejected() throws {
+        let fixture = BackupIssueS3Fixture(mode: .listDenied)
+        let endpoint = try fixture.start()
+        defer { fixture.stop() }
+
+        let app = launch(bootstrap: "{}")
+        fillCustomServerForm(app, endpoint: endpoint)
+        let save = app.buttons["Save"].firstMatch
+        assertAccessDeniedRejection(app, save: save)
+    }
+
+    private func fillCustomServerForm(_ app: XCUIApplication, endpoint: String) {
         let photoExplanation = app.buttons["Allow Photo Access"]
         if photoExplanation.waitForExistence(timeout: 5) { app.buttons["Not Now"].tap() }
         let add = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Add Storage'")).firstMatch
         XCTAssertTrue(add.waitForExistence(timeout: 10), "Add Storage never appeared")
         add.tap()
-
         let custom = app.buttons.containing(.staticText, identifier: "Custom S3").firstMatch
         XCTAssertTrue(custom.waitForExistence(timeout: 10), "Custom S3 provider missing")
         custom.tap()
+        fillCustomServerFields(app, endpoint: endpoint)
+    }
 
+    private func fillCustomServerFields(_ app: XCUIApplication, endpoint: String) {
         let bucket = app.textFields["my-photos"]
         let endpointField = app.textFields["s3.your-domain.com"]
         let key = app.textFields["Access key ID"]
@@ -56,8 +106,9 @@ final class BackupIssueUIRegressionTests: XCTestCase {
         key.typeText("testkey")
         secret.tap()
         secret.typeText("testsecret")
+    }
 
-        let save = app.buttons["Save"].firstMatch
+    private func assertAccessDeniedRejection(_ app: XCUIApplication, save: XCUIElement) {
         XCTAssertTrue(save.waitForExistence(timeout: 5), "Save button missing")
         XCTAssertTrue(save.isEnabled, "Save should be enabled for a complete form")
         save.tap()
@@ -70,14 +121,27 @@ final class BackupIssueUIRegressionTests: XCTestCase {
         )
         wait(for: [outcome], timeout: 25)
 
-        XCTAssertFalse(library.exists, "Save completed onboarding despite the failed read-back check")
-        XCTAssertTrue(rejection.exists, "The failed read permission was not reported")
+        XCTAssertFalse(library.exists, "Save completed onboarding despite failed credential verification")
+        XCTAssertTrue(rejection.exists, "The failed permission was not reported")
         XCTAssertTrue(save.exists, "The form should remain available after rejected credentials")
+    }
+
+    private func openSettings(_ app: XCUIApplication) {
+        XCTAssertTrue(app.staticTexts["Library"].waitForExistence(timeout: 20), "Library never appeared")
+        if app.buttons["tabs.show"].exists { app.buttons["tabs.show"].tap() }
+        app.buttons["tab.settings"].tap()
+        XCTAssertTrue(app.staticTexts["Settings"].waitForExistence(timeout: 10), "Settings never appeared")
     }
 }
 
 /// Loopback-only S3 fixture for the write-only credential regression.
 private final class BackupIssueS3Fixture {
+    enum Mode: Equatable {
+        case writeOnly
+        case listDenied
+        case working
+    }
+
     private struct Request {
         var method: String
         var target: String
@@ -94,6 +158,15 @@ private final class BackupIssueS3Fixture {
     private var listener: NWListener?
     private var connections: [NWConnection] = []
     private var objects: [String: Data] = [:]
+    private var mode: Mode
+
+    init(mode: Mode = .writeOnly) {
+        self.mode = mode
+    }
+
+    func setMode(_ mode: Mode) {
+        queue.sync { self.mode = mode }
+    }
 
     func start() throws -> String {
         let listener = try NWListener(using: .tcp, on: .any)
@@ -163,11 +236,16 @@ private final class BackupIssueS3Fixture {
             status = 204
             body = Data()
         } else if request.method == "GET", query.contains(where: { $0.name == "list-type" }) {
-            let prefix = query.first(where: { $0.name == "prefix" })?.value ?? ""
-            let entries = objects.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }
-            body = Data(listXML(entries: entries).utf8)
-            status = 200
-        } else if request.method == "GET", key == "Backu/.backu/connection-probe" {
+            if mode == .listDenied {
+                body = Data("<Error><Code>AccessDenied</Code><Message>ListBucket denied</Message></Error>".utf8)
+                status = 403
+            } else {
+                let prefix = query.first(where: { $0.name == "prefix" })?.value ?? ""
+                let entries = objects.filter { $0.key.hasPrefix(prefix) }.sorted { $0.key < $1.key }
+                body = Data(listXML(entries: entries).utf8)
+                status = 200
+            }
+        } else if request.method == "GET", key == "Backu/.backu/connection-probe", mode == .writeOnly {
             body = Data("<Error><Code>AccessDenied</Code><Message>GetObject denied</Message></Error>".utf8)
             status = 403
         } else if request.method == "GET" || request.method == "HEAD", let stored = objects[key] {

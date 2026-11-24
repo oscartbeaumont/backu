@@ -269,6 +269,7 @@ final class BackupEngine {
             // that landed while the app was closed and makes the queue honest.
             var plans: [(destination: Destination, candidates: [PhotoItem])] = []
             var pendingSidecarDirtyAt: [String: Date] = [:]
+            var candidateDestinationIDs: [String: Set<UUID>] = [:]
             for destination in destinations {
                 if Task.isCancelled { break }
                 await destination.client.abortStaleMultipartUploads()
@@ -288,11 +289,11 @@ final class BackupEngine {
                     force: force,
                     limit: perDestinationLimit
                 )
-                for photo in candidates {
-                    if let dirtyAt = photo.sidecarDirtyAt,
-                       pendingSidecarDirtyAt[photo.id] == nil {
-                        pendingSidecarDirtyAt[photo.id] = dirtyAt
+                for photo in candidates where photo.sidecarDirtyAt != nil {
+                    if pendingSidecarDirtyAt[photo.id] == nil {
+                        pendingSidecarDirtyAt[photo.id] = photo.sidecarDirtyAt
                     }
+                    candidateDestinationIDs[photo.id, default: []].insert(destination.server.id)
                 }
                 self.totalCount += candidates.count
                 self.totalBytes += candidates.reduce(into: 0) { total, photo in
@@ -366,12 +367,14 @@ final class BackupEngine {
             }
             self.activeServerID = nil
 
-            // A sidecar edit is shared by every selected replica. Clear it
-            // only after all destinations wrote it; one failed bucket must
-            // leave the photo queued for the next run.
-            let allDestinationIDs = Set(destinations.map { $0.server.id })
-            for (photoID, serverIDs) in writtenSidecars where serverIDs == allDestinationIDs {
-                guard let dirtyAt = pendingSidecarDirtyAt[photoID],
+            // Clear a sidecar edit only after every destination that had
+            // candidate work wrote it. A remote-only photo may exist on just
+            // one selected bucket; destinations without a copy have no sidecar
+            // to update and must not keep the flag pending forever.
+            for (photoID, serverIDs) in writtenSidecars {
+                guard let expectedIDs = candidateDestinationIDs[photoID],
+                      serverIDs == expectedIDs,
+                      let dirtyAt = pendingSidecarDirtyAt[photoID],
                       catalog.photo(id: photoID)?.sidecarDirtyAt == dirtyAt else { continue }
                 catalog.mutatePhoto(photoID) { $0.sidecarDirtyAt = nil }
             }
@@ -444,7 +447,7 @@ final class BackupEngine {
         BackgroundUploader.shared.cancelAll()
     }
 
-    private func candidatesForBackup(
+    func candidatesForBackup(
         catalog: CatalogStore,
         server: ServerConfig,
         force: Bool,
