@@ -16,7 +16,9 @@ import Darwin
 //   swiftc -O -o /tmp/backu-atlas-bench \
 //     Sources/Core/Models/StorageProvider.swift \
 //     Sources/Core/Models/ServerConfig.swift \
+//     Sources/Core/Models/PhotoItem.swift Sources/Core/Models/Person.swift \
 //     Sources/Core/S3/*.swift \
+//     Sources/Core/Storage/AppPaths.swift Sources/Core/Sync/Sidecar.swift \
 //     Sources/Core/Library/ThumbnailAtlas.swift \
 //     Tools/AtlasBench/main.swift
 //

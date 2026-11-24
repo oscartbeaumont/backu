@@ -7,6 +7,7 @@ cd "$(dirname "$0")/../.."
 
 DIR="Tests/Fixtures/raw"
 mkdir -p "$DIR"
+FAILED=0
 
 fetch() {
   local name="$1" file="$2"
@@ -25,17 +26,23 @@ fetch() {
   done
   echo "  skip $name (download failed)" >&2
   rm -f "$DIR/$name"
+  return 1
 }
 
 echo "→ Fetching fixtures into $DIR"
-fetch obama.jpg       "President_Barack_Obama.jpg"
-fetch obama-2.jpg     "Official_portrait_of_Barack_Obama.jpg"
-fetch michelle.jpg    "Michelle_Obama_2013_official_portrait.jpg"
-fetch biden.jpg       "Joe_Biden_presidential_portrait.jpg"
-fetch harris.jpg      "Kamala_Harris_Vice_Presidential_Portrait.jpg"
-fetch jemison.jpg     "Mae_Jemison.jpg"
-fetch two-people.jpg  "Barack_Obama_and_Joe_Biden_in_the_Oval_Office_-_2015.jpg"
-fetch golden.jpg      "Golden_Retriever_Carlos_(10581910556).jpg"
-fetch dog-2.jpg       "Dülmen,_Hausdülmen,_Golden_Retriever_--_2022_--_5530.jpg"
+fetch obama.jpg       "President_Barack_Obama.jpg" || FAILED=1
+fetch obama-2.jpg     "Official_portrait_of_Barack_Obama.jpg" || FAILED=1
+fetch michelle.jpg    "Michelle_Obama_2013_official_portrait.jpg" || FAILED=1
+fetch biden.jpg       "Joe_Biden_presidential_portrait.jpg" || FAILED=1
+fetch harris.jpg      "Kamala_Harris_Vice_Presidential_Portrait.jpg" || FAILED=1
+fetch jemison.jpg     "Mae_Jemison.jpg" || FAILED=1
+fetch two-people.jpg  "Barack_Obama_and_Joe_Biden_in_the_Oval_Office_-_2015.jpg" || FAILED=1
+fetch golden.jpg      "Golden_Retriever_Carlos_(10581910556).jpg" || FAILED=1
+fetch dog-2.jpg       "Dülmen,_Hausdülmen,_Golden_Retriever_--_2022_--_5530.jpg" || FAILED=1
+
+if [ "$FAILED" -ne 0 ]; then
+  echo "Failed to download one or more required fixtures." >&2
+  exit 1
+fi
 
 echo "Done."
