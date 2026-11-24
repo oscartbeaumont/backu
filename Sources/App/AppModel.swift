@@ -270,7 +270,7 @@ final class AppModel {
         if let failure = catalog.loadFailure {
             errorMessage = failure
         }
-        if servers.servers.isEmpty {
+        if servers.servers.isEmpty, !settings.hasCompletedOnboarding {
             showOnboarding = true
         }
         if authorization == .authorized || authorization == .limited {
@@ -634,13 +634,15 @@ final class AppModel {
             settings.backupServerIDs = [config.id]
         }
         let report = await verify(server: config)
-        if report?.canWrite == true {
+        if report?.canWrite == true, report?.canRead == true {
             await importRemoteLibrary(server: config)
             return true
         }
         // Keep the server so the person can fix a typo, but report the failure.
         if errorMessage == nil {
-            errorMessage = "Connected, but the key could not write to this bucket."
+            errorMessage = report?.canWrite == true
+                ? (report?.message ?? "The key could not read objects back from this bucket.")
+                : "Connected, but the key could not write to this bucket."
         }
         return false
     }
